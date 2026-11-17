@@ -3,6 +3,7 @@
 Registry: `/storage/emulated/0/Download/WC3RUST_CODE_AUDIT_TZ_P0-P4.md` §0/0.1/0.2,
 mirrored as `docs/audit/WC3RUST_CODE_AUDIT.md`.
 Repo: `herofolends-rs`, branch `main`, lane base `dea209d` (2026-11-17).
+Fix commit: **`716a8c2`**; test-hardening follow-up: **`0725598`**.
 Every cargo invocation went through `scripts/h2-cargo` (single-slot wrapper:
 one cargo at a time, memory gate, capped test threads) because other audit lanes
 were building on the same device.
@@ -203,3 +204,68 @@ neither of which is hashed; no `Sim` field was added and no ordering changed
 `tests::simulation_is_deterministic`), `tests/determinism.rs` (14 tests), and
 `aud013_...`'s save round trip asserting `restored.state_hash() ==
 sim.state_hash()` plus `aud017_...`'s same-seed replay comparison.
+
+---
+
+## Gates (commands, rc, counts)
+
+All runs on the patched working tree, 2026-11-17, `scripts/h2-cargo`, cargo
+`--offline`, `--test-threads=1` (device shared with other lanes).
+
+```text
+$ scripts/h2-cargo test -p wc3-sim --offline --test audit_sim2 -- --test-threads=1
+test aud012_invalid_location_handles_are_diagnostics_not_the_world_origin ... ok
+test aud013_unit_add_and_remove_type_change_the_runtime_classification ... ok
+test aud017_indirect_trigger_sleep_action_parks_the_thread ... ok
+test aud021_spatial_hash_query_honours_limit_and_degenerate_inputs ... ok
+test aud022_trace_flow_rejects_an_inconsistent_distance_field ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+rc=0
+
+$ scripts/h2-cargo test -p wc3-sim --offline --lib -- --test-threads=1
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+rc=0
+    (includes save::tests::version_6_file_loads_with_neutral_unit_types,
+     save::tests::version_5_file_loads_with_neutral_ui_state,
+     save::tests::version_2_file_loads_with_ethereal_false,
+     spatial::tests::query_is_bounded_and_indexes_units,
+     tests::simulation_is_deterministic, the native-status module tests)
+
+$ scripts/h2-cargo test -p wc3-sim --offline --test jass_natives --test jass_trigger_fires \
+    --test save_script --test save_load --test determinism --test script_roster \
+    --test fog --test combat --test gameplay_1v1 -- --test-threads=1
+test result: ok. 10 passed / 3 / 4 / 1 / 14 / 5 / 14 / 2 / 2 passed; 0 failed in every binary
+rc=0
+
+$ scripts/h2-cargo test -p wc3-sim --offline --test jass_native_coverage -- --test-threads=1
+test convert_natives_resolve_through_the_identity_rule ... ok
+test every_native_the_justice_script_calls_has_a_handler ... ok
+test justiice_script_runs_with_zero_unresolved_natives ... ok
+test registry_covers_every_native_name_the_engine_registers ... ok
+test the_whole_extracted_corpus_runs_with_zero_unresolved_natives ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+rc=0
+    (the 96-map corpus still runs with zero unresolved natives and no new
+     script errors after the location/type changes)
+```
+
+Self-contained commit check: a detached worktree at `716a8c2` (i.e. the commit
+without any other lane's uncommitted work) compiles:
+
+```text
+$ git worktree add --detach <tmp> 716a8c2
+$ cd <tmp> && CARGO_TARGET_DIR=<repo>/target scripts/h2-cargo check -p wc3-sim --offline
+    Finished `dev` profile ... rc=0
+$ git worktree remove --force <tmp>
+```
+
+`0725598` is the follow-up that makes the two header-dependent tests skip
+(`find_game_scripts()?` → explicit skip message) when `common.j`/`Blizzard.j`
+are absent, matching the rest of the JASS-native suite; AUD-017/021/022 need no
+game data and always run.
+
+Device note: a full `cargo test -p wc3-sim` (all 390+ tests in one process) was
+killed twice by the shared device while other lanes were running their own test
+binaries (the h2-cargo wrapper gates memory at start, not during a run), so the
+suite was run per target — the four commands above cover every test file that
+touches the changed code paths plus the whole corpus.
