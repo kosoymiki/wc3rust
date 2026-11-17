@@ -1391,6 +1391,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "libc",
+ "naga",
  "png",
  "pollster",
  "serde_json",

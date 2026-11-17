@@ -75,3 +75,7 @@ ae_trace_crash.log
 /tools/adrenotools_probe
 /tools/storm_probe
 /tools/vk_probe
+
+# Signing material never ships in a public tree; scripts/build-apk.sh
+# expects the file locally (`keytool ... -storepass android`).
+apps/android/debug.keystore
