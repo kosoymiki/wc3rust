@@ -4,6 +4,12 @@ Registry: `/storage/emulated/0/Download/WC3RUST_CODE_AUDIT_TZ_P0-P4.md` §0/0.1/
 Repo: `herofolends-rs`, branch `main`, base revision `dea209d` (2026-11-17).
 Items: **AUD-016, AUD-018, AUD-019, AUD-023, AUD-024, AUD-027, AUD-028**.
 
+Landing commit: **`716a8c2`** — the shared-worktree index was committed by the
+parallel AUD-012/013/017/021/022 lane, which therefore carries this lane's code
+and its 24 tests (its message does not list AUD-016/018/019/023/024/027/028).
+The commit that records this lane's status/evidence is the docs commit that adds
+this file's final revision.
+
 Evidence artifacts `analysis/audit/sim3_handler_scan.py`,
 `analysis/audit/sim3_usage_search.py` and `analysis/audit/native_status.json`
 live on disk but are **not** in git: the repository ignores `/analysis/**` by
@@ -304,10 +310,9 @@ scripts/h2-cargo run   -p wc3-sim --offline --example native_status        rc=0 
 scripts/h2-cargo test  -p wc3-sim --offline --no-fail-fast          see "Full suite" below
 ```
 
-Full suite: 64 lib tests + every integration target green on this tree; the one
-failure in the run was `aud017_indirect_trigger_sleep_action_parks_the_thread`
-(`tests/audit_sim2.rs`), the AUD-017 owner's own in-flight test — not a
-regression of this lane (its handler/test are that lane's uncommitted work).
+Full suite: `scripts/h2-cargo test -p wc3-sim --offline --no-fail-fast` →
+**rc=0, 422 passed / 0 failed** over 64 lib tests and every integration target
+(including the AUD-017 sleep test that was red while that lane was in flight).
 
 ## Determinism and contracts
 

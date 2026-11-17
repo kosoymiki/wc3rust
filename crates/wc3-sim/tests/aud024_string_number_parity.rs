@@ -24,8 +24,6 @@
 
 mod common;
 
-use wc3_sim::jass::Value;
-
 fn int_of(scripted: &wc3_sim::jass::ScriptedSim, name: &str) -> i32 {
     let index = scripted.vm().code.global_by_name[name];
     scripted.vm().globals[index as usize].int()
