@@ -79,10 +79,9 @@ su -c 'restorecon -R /data/data/org.wc3rust.p0/files'
 ```
 
 uid берите из `su -c 'stat -c %u /data/data/org.wc3rust.p0'` — он выделяется при установке. Первый
-запуск после этого находит `War3.mpq`, `War3x.mpq`, melee-карту и HUD-пак в новом каталоге.
-Чекпойнт, записанный до переименования (`herofolends-resume.sav`), по-прежнему читается, если нового
-`wc3rust-resume.sav` нет, а следующее сохранение пишет уже новое имя
-(`apps/android-native/src/lib.rs`, `pre_rename_checkpoint`).
+запуск после этого находит архивы игры, melee-карту и HUD-пак в новом каталоге. Чекпойнт, записанный
+до переименования, по-прежнему читается, если нового `wc3rust-resume.sav` нет, а следующее сохранение
+пишет уже новое имя (`apps/android-native/src/lib.rs`, `pre_rename_checkpoint`).
 
 ### Файлы данных в каталоге приложения
 

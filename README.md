@@ -79,10 +79,9 @@ su -c 'restorecon -R /data/data/org.wc3rust.p0/files'
 ```
 
 Take the uid from `su -c 'stat -c %u /data/data/org.wc3rust.p0'` — it is allocated per install. The
-first launch then finds `War3.mpq`, `War3x.mpq`, the melee map and the HUD pack in the new
-directory. A checkpoint written before the rename (`herofolends-resume.sav`) is still read when the
-new `wc3rust-resume.sav` is absent, and the next save writes the new name
-(`apps/android-native/src/lib.rs`, `pre_rename_checkpoint`).
+first launch then finds the game archives, the melee map and the HUD pack in the new directory. A
+checkpoint written before the rename is still read when `wc3rust-resume.sav` is absent, and the next
+save writes the new name (`apps/android-native/src/lib.rs`, `pre_rename_checkpoint`).
 
 ### Data files in the app directory
 
