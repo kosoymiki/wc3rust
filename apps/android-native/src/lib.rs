@@ -1706,6 +1706,11 @@ fn run() -> Result<(), String> {
         }
         let scene = game.scene();
         renderer.set_fog(&game.sim, game.player);
+        // The simulation owns the clock: without this the renderer advances a
+        // private day/night clock, so the world rendered noon while GAME_TIME
+        // reported 00.00 (device 2026-11-17). `sync_day_night` stops the private
+        // advance and logs `GAME_LIGHT` once per game hour.
+        renderer.sync_day_night(wc3_game::render::SimDayNight::time_of_day(&game.sim));
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
