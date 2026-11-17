@@ -148,6 +148,16 @@ were left to their owners; `wc3-render` dev-dependencies pull them in, which is
 why the regression gate for ASTC is the `--lib astc::tests` run above plus the
 `check --lib` build.
 
+The same window later closed `wc3-render --lib` itself:
+`error[E0004]: non-exhaustive patterns: 'LightModel::Legacy' not covered` at
+`crates/wc3-render/src/mesh.rs:1440` (another owner's in-flight lighting
+refactor, retried three times over four minutes). That blocked
+`crates/wc3-render/tests/astc.rs` and `tests/cache.rs`, which decode real
+`astcenc` fixtures through `astc::decode`; `src/astc.rs` is byte-identical to the
+tree that produced the 10/10 run (`git diff HEAD -- crates/wc3-render/src/astc.rs`
+empty), so the committed module is the one that passed. The real fixtures are
+66x66 @6x6 and 64x64 @8x8 — orders of magnitude below the new caps.
+
 ## New findings raised during this pass
 
 * **`CompressedLevel::expected_bytes` still multiplies in `u32`** —
