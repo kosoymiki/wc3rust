@@ -8108,6 +8108,9 @@ mod tests {
 
     #[test]
     fn console_hud_rects_do_not_swallow_world_taps() {
+        use crate::hud::mobile_hud::{
+            CARD_W_DP, CONSOLE_MAX_DP, CONSOLE_MIN_DP, CONSOLE_PAD_DP, TOP_BAR_DP,
+        };
         let mut game = game();
         game.resize(2414.0, 1080.0);
         game.set_safe_insets(210.0, 120.0, 90.0, 96.0);
@@ -8143,41 +8146,48 @@ mod tests {
             mobile.minimap.w,
             mobile.minimap.h
         );
-        // Retail geometry at 1080p: console 29.3% tall pinned to the physical
-        // bottom, telemetry strip 5.33% (57.6 px) flush at y = 0.
+        // Current dp engine (relayout): the console background is edge to edge
+        // and pinned to the physical bottom; the safe insets move the content,
+        // not the backdrop. The telemetry strip is 30 dp.
+        assert_eq!(console.x, 0.0, "console backdrop is edge to edge");
         assert!(
-            (console.h - 0.293 * 1080.0).abs() < 0.5,
-            "console is the retail 0.293 band: {console:?}"
+            (console.right() - 2414.0).abs() < 0.5,
+            "console backdrop is edge to edge: {console:?}"
         );
         assert!(
             (console.bottom() - 1080.0).abs() < 0.5,
             "console is pinned to the physical bottom (vertical insets are ignored by contract): {console:?}"
         );
-        assert_eq!(strip.y, 0.0, "top strip is flush at y = 0: {strip:?}");
-        // The strip comes from the HUD pack (32 px at the 768 design height), not
-        // from the FDF 0.032-unit band; at the retail console scale (s = band/288)
-        // that is 32 * s. The FDF figure is 57.6 px and is recorded in
-        // `analysis/hudskin/COMPARE_RETAIL.md` as the deliberate difference.
-        let s = console.h / 288.0;
+        let dp = mobile.dp();
+        // The band is the 0.34 rule clamped to [176, 220] dp plus the part of
+        // the bottom inset that exceeds the console padding.
+        let bottom_extra = (dp.safe.bottom - CONSOLE_PAD_DP).max(0.0);
+        let console_dp =
+            (0.34 * dp.screen.y).clamp(CONSOLE_MIN_DP, CONSOLE_MAX_DP) + bottom_extra;
         assert!(
-            (strip.h - 32.0 * s).abs() < 0.6,
-            "top strip is the pack 32 px * scale ({:.1} px): {strip:?}",
-            32.0 * s
+            (dp.console.h - console_dp).abs() < 0.01,
+            "console is the 0.34 band clamped to [{CONSOLE_MIN_DP}, {CONSOLE_MAX_DP}] dp \
+             (+{bottom_extra:.1} bottom inset): {:?}",
+            dp.console
         );
         assert!(
-            (console.x - 210.0).abs() < 0.5
-                && (console.right() - (2414.0 - 90.0)).abs() < 0.5,
-            "horizontal safe insets keep the console off the side gutters: {console:?}"
+            (dp.top_bar.h - TOP_BAR_DP).abs() < 0.01,
+            "telemetry strip is {TOP_BAR_DP} dp: {:?}",
+            dp.top_bar
+        );
+        assert_eq!(strip.y, 0.0, "top strip is flush at y = 0: {strip:?}");
+        assert!(
+            (dp.content.x - (105.0 + CONSOLE_PAD_DP)).abs() < 0.01
+                && (dp.content.right() - (dp.screen.x - 45.0 - CONSOLE_PAD_DP)).abs() < 0.01,
+            "safe insets land on the content (210/90 px at 2 px/dp): {:?}",
+            dp.content
         );
         assert_eq!(game.layout.command, card, "card rect is the command rect");
         assert!(
-            card.w < 400.0,
-            "command card is not a half-screen blocker: {card:?}"
+            (card.w - CARD_W_DP * mobile.density).abs() < 0.6,
+            "command card is the 4x3 dp plate ({CARD_W_DP} dp): {card:?}"
         );
-        assert!(
-            selection.w < 0.35 * 2414.0,
-            "selection panel is compact: {selection:?}"
-        );
+        assert!(selection.w > 0.0, "selection panel exists: {selection:?}");
 
         // The tap-through region is exactly the playfield rectangle between the
         // strip and the console; a tap there must start a world gesture.

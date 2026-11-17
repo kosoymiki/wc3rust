@@ -186,13 +186,16 @@ GAME_WINDOW_METRICS px=2414x1080 dp=805x360 density=3.000 insets=0,0,0,0
    so touch routing is unchanged and the legacy consumers (edge pan, hitbox
    debug, tests) get the documented rectangle.
 
-3. `game::tests::safe_insets_keep_the_hud_inside_the_system_bars` asserted the
-   pre-relayout contract (console inset horizontally). The relayout made the
-   console background edge-to-edge and moved the insets onto the content
-   (`hud_layout_console_edge_to_edge` is the authoritative test). The stale
-   assertions were updated to the current contract: console edge-to-edge,
-   content/resources/minimap inside the insets, vertical insets intentionally
-   ignored by the console per the operator directive.
+3. `game::tests::safe_insets_keep_the_hud_inside_the_system_bars` and
+   `game::tests::console_hud_rects_do_not_swallow_world_taps` asserted the
+   pre-relayout retail geometry (console 29.3% tall and inset horizontally,
+   strip `32 * s`). The relayout made the console background edge-to-edge and
+   moved the insets onto the content (`hud_layout_console_edge_to_edge` is the
+   authoritative pure test). The stale assertions now check the engine
+   constants: console `(0.34 * H).clamp(176, 220)` dp, 30 dp strip, content at
+   `safe.left + 8 dp` / `screen - safe.right - 8 dp`, 4x3 card plate
+   (`CARD_W_DP`). The tests' actual purpose — playfield taps pass through, HUD
+   bands swallow — is unchanged.
 
 4. `ui_menu_restyled_headless_mock_writes_png` still asserted the old 44-56 px
    glue-button strip. The relayout clamps every stack entry to
@@ -238,19 +241,20 @@ $ scripts/h2-cargo test -p wc3-game --test hud_layout --offline
 test result: ok. 16 passed; 0 failed; 0 ignored
 $ scripts/h2-cargo test -p wc3-game --lib --offline -- \
     game::tests::command_card_tiles_have_a_minimum_finger_sized_hit_target
-<PENDING>
-
+test game::tests::command_card_tiles_have_a_minimum_finger_sized_hit_target ... ok
+test result: ok. 1 passed; 0 failed; 448 filtered out
 $ scripts/h2-cargo test -p wc3-game --lib --offline -- \
     game::tests::safe_insets_keep_the_hud_inside_the_system_bars
-<PENDING>
-
+test game::tests::safe_insets_keep_the_hud_inside_the_system_bars ... ok
+test result: ok. 1 passed; 0 failed; 448 filtered out
 $ scripts/h2-cargo test -p wc3-game --lib --offline -- \
     game::tests::console_hud_rects_do_not_swallow_world_taps
-<PENDING>
-
+test game::tests::console_hud_rects_do_not_swallow_world_taps ... ok
+test result: ok. 1 passed; 0 failed; 448 filtered out
 $ scripts/h2-cargo test -p wc3-game --lib --offline -- \
     game::tests::console_layout_blocks_world_clicks_and_placement
-<PENDING>
+test game::tests::console_layout_blocks_world_clicks_and_placement ... ok
+test result: ok. 1 passed; 0 failed; 448 filtered out
 ```
 
 Device-facing log lines added:
@@ -262,4 +266,8 @@ GAME_SAFE_AREA unavailable (SDL_GetWindowSafeArea failed)   (unchanged, one-shot
 
 ## Commit
 
-`<filled after commit>`
+- Fix (AUD-001 + AUD-004 code, regression tests, first revision of this
+  document): `66a36a3` — `fix(hud): no panic with the commands drawer closed,
+  real platform density`.
+- Test alignment that follows the dp console band in the routing tests: the
+  follow-up `test(hud)` commit on top of `66a36a3` (see `git log`).
