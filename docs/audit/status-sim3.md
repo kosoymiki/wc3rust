@@ -298,7 +298,9 @@ names, with the reason in `natives.rs` and the handler doc comment. Verdict:
 
 ```
 scripts/h2-cargo check -p wc3-sim --offline                         rc=0
-scripts/h2-cargo check -p wc3-game --offline                        rc=0
+scripts/h2-cargo check -p wc3-game --offline                        rc=0 (run when this
+    code landed; a later re-run is blocked by a sibling lane's in-progress
+    crates/wc3-render/src/texture.rs edit — "unclosed delimiter" at texture.rs:1595)
 scripts/h2-cargo test  -p wc3-sim --offline --test aud016_native_status    4 passed / 0 failed
 scripts/h2-cargo test  -p wc3-sim --offline --test aud018_clear_text       2 passed / 0 failed
 scripts/h2-cargo test  -p wc3-sim --offline --test aud019_host_queries     2 passed / 0 failed
