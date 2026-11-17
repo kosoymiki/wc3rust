@@ -9,7 +9,8 @@
 use glam::Vec2;
 
 use crate::jass::host::{
-    CameraSetup, CinematicEvent, Object, RegEvent, SoundState, StartLocation,
+    CameraSetup, CinematicEvent, EVENT_GAME_STATE_LIMIT, GameEventSupport, Object, RegEvent,
+    SoundState, StartLocation, game_event_support,
 };
 use crate::jass::value::{Handle, HandleKind, Value, real_to_int};
 use crate::jass::vm::JassVm;
@@ -248,13 +249,17 @@ pub(super) fn get_camera_bound_max_y(vm: &mut JassVm, _a: &[Value]) -> Value {
     Value::Real(camera_bound(vm, 3))
 }
 
-/// `CreateTimerDialog(timer)` — the dialog shows the timer's remaining time; the
-/// handle exists so `TimerDialogDisplay`/`DestroyTimerDialog` behave.
+/// `CreateTimerDialog(timer)` — the dialog shows the timer's remaining time.
 pub(super) fn create_timer_dialog(vm: &mut JassVm, a: &[Value]) -> Value {
     let timer = hd(a, 0).map_or(0, |handle| handle.id);
     Value::Handle(vm.host.create(Object::TimerDialog {
         timer,
         title: String::new(),
+        shown: false,
+        speed: 1.0,
+        remaining_override: None,
+        time_color: [255, 255, 255, 255],
+        title_color: [255, 255, 255, 255],
     }))
 }
 
@@ -265,10 +270,36 @@ pub(super) fn destroy_timer_dialog(vm: &mut JassVm, a: &[Value]) -> Value {
     Value::Null
 }
 
+/// True when `handle` is a timer dialog; otherwise records the diagnostic the
+/// caller's `null` return stands for (no silent success on a wrong handle).
+fn is_timer_dialog(vm: &mut JassVm, handle: Handle, native: &str) -> bool {
+    if matches!(vm.host.object(handle), Some(Object::TimerDialog { .. })) {
+        return true;
+    }
+    vm.errors.push(format!(
+        "{native}: handle {} is not a timer dialog",
+        handle.id
+    ));
+    false
+}
+
+/// True when `handle` is a dialog; otherwise records the diagnostic.
+fn is_dialog(vm: &mut JassVm, handle: Handle, native: &str) -> bool {
+    if matches!(vm.host.object(handle), Some(Object::Dialog { .. })) {
+        return true;
+    }
+    vm.errors
+        .push(format!("{native}: handle {} is not a dialog", handle.id));
+    false
+}
+
 pub(super) fn timer_dialog_set_title(vm: &mut JassVm, a: &[Value]) -> Value {
     let Some(handle) = hd(a, 0) else {
         return Value::Null;
     };
+    if !is_timer_dialog(vm, handle, "TimerDialogSetTitle") {
+        return Value::Null;
+    }
     let title = s(a, 1);
     if let Some(Object::TimerDialog { title: state, .. }) = vm.host.object_mut(handle) {
         *state = title;
@@ -276,18 +307,140 @@ pub(super) fn timer_dialog_set_title(vm: &mut JassVm, a: &[Value]) -> Value {
     Value::Null
 }
 
-pub(super) fn timer_dialog_display(_vm: &mut JassVm, _a: &[Value]) -> Value {
+/// `TimerDialogDisplay(timerdialog, show)` — recorded display state; the HUD
+/// reads it from the host (a headless run has no window to draw into).
+pub(super) fn timer_dialog_display(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(handle) = hd(a, 0) else {
+        return Value::Null;
+    };
+    if !is_timer_dialog(vm, handle, "TimerDialogDisplay") {
+        return Value::Null;
+    }
+    let shown = b(a, 1);
+    if let Some(Object::TimerDialog { shown: state, .. }) = vm.host.object_mut(handle) {
+        *state = shown;
+    }
     Value::Null
 }
 
-/// `TriggerRegisterGameStateEvent(trigger, state, op, limit)` — game state
-/// events (`EVENT_GAME_STATE_LIMIT`) have no equivalent in the headless
-/// simulation, so the registration is recorded and never fires.
+/// `TimerDialogSetSpeed(timerdialog, speed)` — `1.0` = real time.
+pub(super) fn timer_dialog_set_speed(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(handle) = hd(a, 0) else {
+        return Value::Null;
+    };
+    if !is_timer_dialog(vm, handle, "TimerDialogSetSpeed") {
+        return Value::Null;
+    }
+    let speed = r(a, 1);
+    if let Some(Object::TimerDialog { speed: state, .. }) = vm.host.object_mut(handle) {
+        *state = speed;
+    }
+    Value::Null
+}
+
+/// `TimerDialogSetRealTimeRemaining(timerdialog, seconds)` — overrides the
+/// number the dialog shows without touching the timer itself.
+pub(super) fn timer_dialog_set_real_time_remaining(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(handle) = hd(a, 0) else {
+        return Value::Null;
+    };
+    if !is_timer_dialog(vm, handle, "TimerDialogSetRealTimeRemaining") {
+        return Value::Null;
+    }
+    let seconds = r(a, 1);
+    if let Some(Object::TimerDialog {
+        remaining_override, ..
+    }) = vm.host.object_mut(handle)
+    {
+        *remaining_override = Some(seconds);
+    }
+    Value::Null
+}
+
+fn timer_dialog_color(vm: &mut JassVm, a: &[Value], title: bool) -> Value {
+    let Some(handle) = hd(a, 0) else {
+        return Value::Null;
+    };
+    let native = if title {
+        "TimerDialogSetTitleColor"
+    } else {
+        "TimerDialogSetTimeColor"
+    };
+    if !is_timer_dialog(vm, handle, native) {
+        return Value::Null;
+    }
+    let color = [i(a, 1), i(a, 2), i(a, 3), i(a, 4)];
+    if let Some(Object::TimerDialog {
+        time_color,
+        title_color,
+        ..
+    }) = vm.host.object_mut(handle)
+    {
+        if title {
+            *title_color = color;
+        } else {
+            *time_color = color;
+        }
+    }
+    Value::Null
+}
+
+/// `TimerDialogSetTimeColor(timerdialog, red, green, blue, alpha)`.
+pub(super) fn timer_dialog_set_time_color(vm: &mut JassVm, a: &[Value]) -> Value {
+    timer_dialog_color(vm, a, false)
+}
+
+/// `TimerDialogSetTitleColor(timerdialog, red, green, blue, alpha)`.
+pub(super) fn timer_dialog_set_title_color(vm: &mut JassVm, a: &[Value]) -> Value {
+    timer_dialog_color(vm, a, true)
+}
+
+/// `TriggerRegisterGameStateEvent(trigger, state, op, limit)`.
+///
+/// Registers a real per-tick watch on the game-state value (the same number
+/// `GetFloatGameState`/`GetIntegerGameState` read) and returns the engine's
+/// `EVENT_GAME_STATE_LIMIT` event handle. The trigger fires on the false → true
+/// crossing of `state op limit`, so a registration that already holds does not
+/// fire until the state leaves and re-enters — the rule
+/// `TriggerRegisterPlayerStateEvent` uses.
+///
+/// An invalid limit-op or a handle that is not a trigger is a typed diagnostic in
+/// `vm.errors` plus a `null` return, never a fake success.
 pub(super) fn trigger_register_game_state_event(vm: &mut JassVm, a: &[Value]) -> Value {
-    let trigger = hd(a, 0);
-    let _ = (i(a, 1), i(a, 2), r(a, 3));
-    let _ = (trigger, vm);
-    Value::Handle(Handle::new(HandleKind::GameEvent, 0))
+    let Some(trigger) = hd(a, 0) else {
+        vm.errors
+            .push("TriggerRegisterGameStateEvent: null trigger handle".into());
+        return Value::Null;
+    };
+    if vm.host.trigger(trigger).is_none() {
+        vm.errors.push(format!(
+            "TriggerRegisterGameStateEvent: handle {} is not a trigger",
+            trigger.id
+        ));
+        return Value::Null;
+    }
+    let state = i(a, 1);
+    let op = i(a, 2);
+    let value = r(a, 3);
+    if super::core::compare_limit(0.0, op, 0.0).is_none() {
+        vm.errors.push(format!(
+            "TriggerRegisterGameStateEvent: unknown limitop {op}"
+        ));
+        return Value::Null;
+    }
+    let current = super::core::game_state_value(&vm.host, state);
+    let held = super::core::compare_limit(current, op, value).unwrap_or(false);
+    vm.host
+        .game_state_watch
+        .insert((trigger.id, state, op, value.to_bits()), held);
+    if let Some(trigger_state) = vm.host.trigger_mut(trigger) {
+        trigger_state.events.push(RegEvent::GameStateEvent {
+            state,
+            op,
+            value,
+        });
+    }
+    Value::Handle(vm.host.game_event_handle(EVENT_GAME_STATE_LIMIT))
 }
 
 /// `GetCameraMargin(side)` — the engine's hard-coded margins, in world units:
@@ -770,7 +923,12 @@ pub(super) fn get_filter_item(vm: &mut JassVm, _a: &[Value]) -> Value {
 // ---------------------------------------------------------------------------
 
 pub(super) fn dialog_create(vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Handle(vm.host.create(Object::Dialog { buttons: Vec::new() }))
+    Value::Handle(vm.host.create(Object::Dialog {
+        message: String::new(),
+        shown_to: None,
+        asynchronous: false,
+        buttons: Vec::new(),
+    }))
 }
 
 pub(super) fn dialog_add_button(vm: &mut JassVm, a: &[Value]) -> Value {
@@ -779,28 +937,138 @@ pub(super) fn dialog_add_button(vm: &mut JassVm, a: &[Value]) -> Value {
     };
     let text = s(a, 1);
     let hotkey = i(a, 2);
-    let button = vm.host.create(Object::Button { text, hotkey });
-    if let Some(Object::Dialog { buttons }) = vm.host.object_mut(dialog) {
+    add_dialog_button(vm, dialog, text, hotkey, false)
+}
+
+/// `DialogAddQuitButton(dialog, doScoreScreen, buttonText, hotkey)` — same button
+/// payload plus the engine's "quit to score screen" flag.
+pub(super) fn dialog_add_quit_button(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(dialog) = hd(a, 0) else {
+        return Value::Null;
+    };
+    let text = s(a, 2);
+    let hotkey = i(a, 3);
+    add_dialog_button(vm, dialog, text, hotkey, true)
+}
+
+fn add_dialog_button(
+    vm: &mut JassVm,
+    dialog: Handle,
+    text: String,
+    hotkey: i32,
+    quit: bool,
+) -> Value {
+    let native = if quit {
+        "DialogAddQuitButton"
+    } else {
+        "DialogAddButton"
+    };
+    if !is_dialog(vm, dialog, native) {
+        return Value::Null;
+    }
+    let button = vm.host.create(Object::Button { text, hotkey, quit });
+    if let Some(Object::Dialog { buttons, .. }) = vm.host.object_mut(dialog) {
         buttons.push(button.id);
     }
     Value::Handle(button)
 }
 
 pub(super) fn dialog_clear(vm: &mut JassVm, a: &[Value]) -> Value {
-    if let Some(dialog) = hd(a, 0)
-        && let Some(Object::Dialog { buttons }) = vm.host.object_mut(dialog)
-    {
-        buttons.clear();
+    let Some(dialog) = hd(a, 0) else {
+        return Value::Null;
+    };
+    if !is_dialog(vm, dialog, "DialogClear") {
+        return Value::Null;
+    }
+    let buttons = match vm.host.object_mut(dialog) {
+        Some(Object::Dialog { buttons, .. }) => std::mem::take(buttons),
+        _ => return Value::Null,
+    };
+    for button in buttons {
+        vm.host.objects.remove(&button);
     }
     Value::Null
 }
 
-pub(super) fn dialog_set_message(_vm: &mut JassVm, a: &[Value]) -> Value {
-    let _ = s(a, 1);
+/// `DialogSetMessage(dialog, text)` — the text the headless UI model stores and
+/// the renderer reads.
+pub(super) fn dialog_set_message(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(dialog) = hd(a, 0) else {
+        return Value::Null;
+    };
+    let message = s(a, 1);
+    if !is_dialog(vm, dialog, "DialogSetMessage") {
+        return Value::Null;
+    }
+    if let Some(Object::Dialog {
+        message: state, ..
+    }) = vm.host.object_mut(dialog)
+    {
+        *state = message;
+    }
     Value::Null
 }
 
-pub(super) fn dialog_display(_vm: &mut JassVm, _a: &[Value]) -> Value {
+/// `DialogDisplay(player, dialog, show)` — records who the dialog is shown to;
+/// `false` hides it. The player slot is validated so a script cannot display to
+/// a slot that does not exist.
+pub(super) fn dialog_display(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(dialog) = hd(a, 1) else {
+        return Value::Null;
+    };
+    let shown = b(a, 2);
+    let player = player_index(a, 0);
+    if shown && player.is_none() {
+        vm.errors
+            .push("DialogDisplay: invalid player handle".into());
+        return Value::Null;
+    }
+    if !is_dialog(vm, dialog, "DialogDisplay") {
+        return Value::Null;
+    }
+    if let Some(Object::Dialog { shown_to, .. }) = vm.host.object_mut(dialog) {
+        *shown_to = if shown { player } else { None };
+    }
+    Value::Null
+}
+
+/// `DialogSetAsync(dialog)` — the dialog may be shown per player. Recorded so the
+/// headless model is complete; the single display target still reports the last
+/// `DialogDisplay`.
+pub(super) fn dialog_set_async(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(dialog) = hd(a, 0) else {
+        return Value::Null;
+    };
+    if !is_dialog(vm, dialog, "DialogSetAsync") {
+        return Value::Null;
+    }
+    if let Some(Object::Dialog { asynchronous, .. }) = vm.host.object_mut(dialog) {
+        *asynchronous = true;
+    }
+    Value::Null
+}
+
+/// `DialogDestroy(dialog)` — frees the dialog and the buttons it owns. Buttons
+/// referenced by a `TriggerRegisterDialogButtonEvent` registration lose their
+/// object here, exactly like the engine freeing them with their dialog; the
+/// registration itself stays and simply never compares equal again.
+pub(super) fn dialog_destroy(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(dialog) = hd(a, 0) else {
+        return Value::Null;
+    };
+    let buttons = match vm.host.objects.remove(&dialog.id) {
+        Some(Object::Dialog { buttons, .. }) => buttons,
+        Some(other) => {
+            vm.host.objects.insert(dialog.id, other);
+            vm.errors
+                .push(format!("DialogDestroy: handle {} is not a dialog", dialog.id));
+            return Value::Null;
+        }
+        None => return Value::Null,
+    };
+    for button in buttons {
+        vm.host.objects.remove(&button);
+    }
     Value::Null
 }
 
@@ -1186,9 +1454,36 @@ pub(super) fn unit_pool_add_unit(vm: &mut JassVm, a: &[Value]) -> Value {
 // Game events / misc
 // ---------------------------------------------------------------------------
 
-pub(super) fn trigger_register_game_event(_vm: &mut JassVm, a: &[Value]) -> Value {
-    let _ = hd(a, 0);
-    Value::Handle(Handle::new(HandleKind::GameEvent, i(a, 1).max(0) as u32))
+/// `TriggerRegisterGameEvent(trigger, gameevent)`.
+///
+/// Stores a real registration on the trigger and returns the engine's event
+/// handle for that `gameevent` id. The engine itself raises only
+/// `EVENT_GAME_STATE_LIMIT` (from `TriggerRegisterGameStateEvent` crossings);
+/// every other `EVENT_GAME_*` constant is delivered through
+/// [`crate::jass::host::Host::raise_game_event`], which is what the game layer
+/// and tests use. Those ids are recorded in `host.raise_only_game_events` — the
+/// explicit `Partial` status, so a script never gets a silent no-op registration.
+pub(super) fn trigger_register_game_event(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(trigger) = hd(a, 0) else {
+        vm.errors
+            .push("TriggerRegisterGameEvent: null trigger handle".into());
+        return Value::Null;
+    };
+    if vm.host.trigger(trigger).is_none() {
+        vm.errors.push(format!(
+            "TriggerRegisterGameEvent: handle {} is not a trigger",
+            trigger.id
+        ));
+        return Value::Null;
+    }
+    let event = i64::from(i(a, 1));
+    if let Some(state) = vm.host.trigger_mut(trigger) {
+        state.events.push(RegEvent::GameEvent { event });
+    }
+    if game_event_support(event) == GameEventSupport::Partial {
+        vm.host.raise_only_game_events.insert(event);
+    }
+    Value::Handle(vm.host.game_event_handle(event))
 }
 
 pub(super) fn add_camera_blocker(_vm: &mut JassVm, _a: &[Value]) -> Value {

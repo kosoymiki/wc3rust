@@ -48,10 +48,17 @@ pub struct EventIds {
     /// `EVENT_PLAYER_ALLIANCE_CHANGED` (raised by
     /// `TriggerRegisterPlayerAllianceChange`).
     pub player_alliance_changed: i64,
+    /// `EVENT_GAME_STATE_LIMIT` (raised by `TriggerRegisterGameStateEvent`
+    /// crossings and watched by `TriggerRegisterGameEvent`).
+    pub game_state_limit: i64,
 }
 
 impl Default for EventIds {
-    /// Values from `TestData/Jass/1.32.9/common.j` (the header in this tree).
+    /// Values from `TestData/Jass/1.32.9/common.j` (the header in this tree),
+    /// used when a map ships no header of its own. `from_vm` overrides every field
+    /// from the loaded header; `jass_natives_event_id_defaults_match_the_shipped_header`
+    /// pins these numbers against that file so a typo cannot hide behind the
+    /// override.
     fn default() -> Self {
         Self {
             unit_death: 53,
@@ -60,9 +67,11 @@ impl Default for EventIds {
             unit_construct: 65,
             unit_researched: 74,
             unit_hero_level: 78,
-            unit_spell: 77,
+            // line 844: `EVENT_UNIT_SPELL_EFFECT = ConvertUnitEvent(291)`
+            unit_spell: 291,
             unit_orders: 75,
-            unit_change_owner: 80,
+            // line 840: `EVENT_UNIT_CHANGE_OWNER = ConvertUnitEvent(287)`
+            unit_change_owner: 287,
             unit_attacked: 62,
             player_unit_death: 20,
             player_unit_damaged: 308,
@@ -70,13 +79,17 @@ impl Default for EventIds {
             player_unit_construct: 28,
             player_unit_researched: 37,
             player_hero_level: 41,
-            player_unit_spell: 44,
+            // line 829: `EVENT_PLAYER_UNIT_SPELL_EFFECT = ConvertPlayerUnitEvent(274)`
+            player_unit_spell: 274,
             player_unit_orders: 38,
-            player_unit_change_owner: 43,
+            // line 825: `EVENT_PLAYER_UNIT_CHANGE_OWNER = ConvertPlayerUnitEvent(270)`
+            player_unit_change_owner: 270,
             player_unit_attacked: 18,
             player_chat: 16,
             player_state_limit: 11,
             player_alliance_changed: 12,
+            // line 642: `EVENT_GAME_STATE_LIMIT = ConvertGameEvent(3)`.
+            game_state_limit: crate::jass::host::EVENT_GAME_STATE_LIMIT,
         }
     }
 }
@@ -127,6 +140,7 @@ impl EventIds {
             "EVENT_PLAYER_ALLIANCE_CHANGED",
             &mut ids.player_alliance_changed,
         );
+        read("EVENT_GAME_STATE_LIMIT", &mut ids.game_state_limit);
         ids
     }
 
@@ -152,6 +166,7 @@ impl JassVm {
     /// event-buffer reset.
     pub fn dispatch_pending_events(&mut self) {
         self.dispatch_sim_events();
+        self.run_game_events();
     }
 
     /// Advances script time by one simulation tick: raises events, runs timers,
@@ -161,6 +176,7 @@ impl JassVm {
         self.tick += 1;
         self.dispatch_sim_events();
         self.run_player_watch_events();
+        self.run_game_events();
         self.run_timers(dt);
         self.run_trigger_periods(dt);
         self.resume_threads();
@@ -253,6 +269,124 @@ impl JassVm {
                         conditions: state.conditions.clone(),
                         context,
                     });
+                }
+            }
+        }
+        for activation in activations {
+            let handle = Handle::new(HandleKind::Trigger, activation.trigger);
+            self.run_trigger_actions(
+                handle,
+                &activation.actions,
+                activation.conditions,
+                activation.context,
+            );
+        }
+    }
+
+    /// Raises the game-scoped registrations that are sampled once per tick or
+    /// queued by the host:
+    ///
+    /// * `TriggerRegisterGameStateEvent` — the game state value (the same number
+    ///   `GetFloatGameState`/`GetIntegerGameState` read) is compared with the
+    ///   registration's `limitop`; the trigger fires on the false → true
+    ///   crossing, the rule `TriggerRegisterPlayerStateEvent` uses. A crossing
+    ///   also raises `EVENT_GAME_STATE_LIMIT` for every
+    ///   `TriggerRegisterGameEvent` watch on that id, which is what the constant
+    ///   means in the shipped header.
+    /// * `TriggerRegisterGameEvent` — every event queued through
+    ///   [`crate::jass::host::Host::raise_game_event`] is delivered once.
+    pub(crate) fn run_game_events(&mut self) {
+        let pending: Vec<i64> = std::mem::take(&mut self.host.pending_game_events);
+        let watched: Vec<(u32, crate::jass::host::TriggerState)> = self
+            .host
+            .objects
+            .iter()
+            .filter_map(|(id, object)| match object {
+                Object::Trigger(state)
+                    if state.enabled
+                        && state.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                RegEvent::GameStateEvent { .. } | RegEvent::GameEvent { .. }
+                            )
+                        }) =>
+                {
+                    Some((*id, state.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if watched.is_empty() && pending.is_empty() {
+            return;
+        }
+        let ids = self.event_ids;
+        let mut activations: Vec<Activation> = Vec::new();
+        for (trigger_id, state) in &watched {
+            for registered in &state.events {
+                match registered {
+                    RegEvent::GameStateEvent {
+                        state: which,
+                        op,
+                        value,
+                    } => {
+                        let current = super::natives::game_state_value(&self.host, *which);
+                        let Some(held) = super::natives::compare_limit(current, *op, *value)
+                        else {
+                            continue;
+                        };
+                        let key = (*trigger_id, *which, *op, value.to_bits());
+                        let previous = self.host.game_state_watch.insert(key, held);
+                        if held && previous == Some(false) {
+                            activations.push(Activation {
+                                trigger: *trigger_id,
+                                actions: state.actions.clone(),
+                                conditions: state.conditions.clone(),
+                                context: EventContext {
+                                    event_id: ids.game_state_limit,
+                                    game_state: Some(*which),
+                                    ..EventContext::none()
+                                },
+                            });
+                            // `EVENT_GAME_STATE_LIMIT` is a game event: deliver it
+                            // to the `TriggerRegisterGameEvent` watches too.
+                            for (other_id, other) in &watched {
+                                if other.enabled
+                                    && other.events.iter().any(|registered| {
+                                        matches!(
+                                            registered,
+                                            RegEvent::GameEvent { event }
+                                                if *event == ids.game_state_limit
+                                        )
+                                    })
+                                {
+                                    activations.push(Activation {
+                                        trigger: *other_id,
+                                        actions: other.actions.clone(),
+                                        conditions: other.conditions.clone(),
+                                        context: EventContext {
+                                            event_id: ids.game_state_limit,
+                                            game_state: Some(*which),
+                                            ..EventContext::none()
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    RegEvent::GameEvent { event } => {
+                        if pending.contains(event) {
+                            activations.push(Activation {
+                                trigger: *trigger_id,
+                                actions: state.actions.clone(),
+                                conditions: state.conditions.clone(),
+                                context: EventContext {
+                                    event_id: *event,
+                                    ..EventContext::none()
+                                },
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

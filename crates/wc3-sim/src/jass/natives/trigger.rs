@@ -476,6 +476,15 @@ pub(super) fn get_spell_ability_id(vm: &mut JassVm, _a: &[Value]) -> Value {
     Value::Int(vm.event().spell_id as i32)
 }
 
+/// `GetEventGameState()` — the `gamestate` whose limit fired a
+/// `TriggerRegisterGameStateEvent` (the header documents this read under
+/// `EVENT_GAME_STATE_LIMIT`). `0` outside such an event, which is also
+/// `GAME_STATE_DIVINE_INTERVENTION` — an honest answer rather than a null handle
+/// a numeric comparison cannot use.
+pub(super) fn get_event_game_state(vm: &mut JassVm, _a: &[Value]) -> Value {
+    Value::Int(vm.event().game_state.unwrap_or(0))
+}
+
 pub(super) fn get_spell_ability_unit(vm: &mut JassVm, _a: &[Value]) -> Value {
     unit_handle_or_null(vm.event().unit)
 }

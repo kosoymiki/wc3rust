@@ -241,6 +241,14 @@ fn save_load_every_entity_class_roundtrip() {
     sim.upgrades[0].insert(upgrade_id, 2);
     sim.upgrades[1].insert(UPGRADES[1].id, 1);
 
+    // The entities above were pushed with explicit ids, so the counters have to
+    // follow them: `next_*` must stay above every live id or the next spawn would
+    // collide (the loader rejects a save where it does not).
+    sim.next_item_id = 902;
+    sim.next_camp_id = 8;
+    sim.next_destructable_id = 502;
+    sim.next_projectile_id = 802;
+
     let bytes = sim.to_save_bytes();
     let restored = Sim::from_save(&bytes).expect("save must load");
     assert_eq!(restored.save_digest(), sim.save_digest());
@@ -587,4 +595,232 @@ fn save_ai_composition_round_trips() {
     let bytes = sim.to_save_bytes();
     let restored = Sim::from_save(&bytes).expect("resume with the live AI composition");
     assert_eq!(restored.state_hash(), sim.state_hash(), "hash after resume");
+}
+
+// ---------------------------------------------------------------------------
+// AUD-002 — the ID-space bound at the public API (see `src/save.rs` unit tests
+// for the crafted-payload matrix: next_id 0 / above cap / u32::MAX, duplicate
+// ids, unit id >= next_id, recomputed checksums)
+// ---------------------------------------------------------------------------
+
+/// A minimal valid save loads, keeps its counters and continues identically: the
+/// bound added for AUD-002 must not reject an ordinary file.
+#[test]
+fn save_load_minimal_sim_round_trip_keeps_counters_and_state() {
+    let mut sim = sandbox(0x5157);
+    let worker = sim
+        .spawn_def(0, "hpea", Vec2::new(700.0, 700.0))
+        .expect("worker");
+    sim.step(&[]);
+    let next_id = sim.next_id;
+    assert!(next_id > 1, "the sandbox handed out ids");
+
+    let bytes = sim.to_save_bytes();
+    let mut restored = Sim::from_save(&bytes).expect("minimal save loads");
+    assert_eq!(restored.state_hash(), sim.state_hash());
+    assert_eq!(restored.next_id, next_id, "the unit counter survives");
+    assert_eq!(
+        restored.next_item_id, sim.next_item_id,
+        "the item counter survives"
+    );
+    assert!(restored.unit(worker).is_some(), "the unit survives");
+
+    // Sixty more ticks on both sides: the restored sim must stay bit-identical.
+    for tick in 0..60 {
+        sim.step(&[]);
+        restored.step(&[]);
+        assert_eq!(
+            restored.state_hash(),
+            sim.state_hash(),
+            "state diverged at tick {tick} after the load"
+        );
+    }
+}
+
+/// The dialog/button/timer-dialog state added for AUD-007 survives a save/load
+/// round trip: a restored world shows the same message to the same player.
+#[test]
+fn save_load_dialog_state_survives_the_round_trip() {
+    use wc3_sim::jass::{Object, ScriptBundle, Value};
+
+    // A script world with a dialog is what makes v5 -> v6 interesting.
+    let mut sim = sandbox(0x5305);
+    let mut bundle = ScriptBundle::new();
+    if let Some(dir) = wc3_sim::jass::find_game_scripts() {
+        bundle.add_game_scripts(&dir).expect("headers");
+    }
+    bundle
+        .add_source(
+            "dialog.j",
+            r#"
+            globals
+                dialog probe_dialog = null
+            endglobals
+            function setup takes nothing returns nothing
+                set probe_dialog = DialogCreate()
+                call DialogSetMessage(probe_dialog, "current build")
+                call DialogDisplay(Player(0), probe_dialog, true)
+            endfunction
+            "#,
+        )
+        .expect("parse");
+    sim.attach_script(&bundle, 0x5305).expect("compile");
+    sim.with_script(|vm| vm.run_function("setup"))
+        .expect("script")
+        .expect("setup runs");
+    let dialog = sim
+        .with_script(|vm| {
+            let index = vm.code.global_by_name["probe_dialog"] as usize;
+            match vm.globals[index].clone() {
+                Value::Handle(handle) => handle,
+                other => panic!("probe_dialog is {other:?}"),
+            }
+        })
+        .expect("script attached");
+    assert!(
+        matches!(
+            sim.script().and_then(|vm| vm.host.object(dialog)),
+            Some(Object::Dialog { message, shown_to: Some(0), .. }) if message == "current build"
+        ),
+        "the live world carries the dialog state"
+    );
+
+    let bytes = sim.to_save_bytes();
+    let restored = Sim::from_save(&bytes).expect("v6 save loads");
+    assert_eq!(restored.state_hash(), sim.state_hash());
+    assert!(
+        matches!(
+            restored.script().and_then(|vm| vm.host.object(dialog)),
+            Some(Object::Dialog { message, shown_to: Some(0), asynchronous: false, .. })
+                if message == "current build"
+        ),
+        "v6 restores the dialog message and display target"
+    );
+}
+
+/// The two trigger registrations added for AUD-006 survive a save/load: the
+/// restored world keeps the state watch and the game-event watch, keeps one event
+/// object per `gameevent` id, and keeps firing on later crossings / raised events.
+#[test]
+fn save_load_game_state_and_game_event_registrations_survive() {
+    use wc3_sim::jass::{Object, ScriptBundle, Value};
+
+    fn probe(sim: &Sim, name: &str) -> i64 {
+        let vm = sim.script().expect("script attached");
+        let index = vm.code.global_by_name[name] as usize;
+        vm.globals[index].int() as i64
+    }
+    fn handle_global(sim: &Sim, name: &str) -> wc3_sim::jass::Handle {
+        let vm = sim.script().expect("script attached");
+        let index = vm.code.global_by_name[name] as usize;
+        match vm.globals[index].clone() {
+            Value::Handle(handle) => handle,
+            other => panic!("{name} is {other:?}"),
+        }
+    }
+    fn run(sim: &mut Sim, name: &str) {
+        sim.with_script(|vm| vm.run_function(name))
+            .expect("script attached")
+            .expect("function runs");
+    }
+
+    let mut sim = sandbox(0x6606);
+    let mut bundle = ScriptBundle::new();
+    if let Some(dir) = wc3_sim::jass::find_game_scripts() {
+        bundle.add_game_scripts(&dir).expect("headers");
+    }
+    bundle
+        .add_source(
+            "events.j",
+            r#"
+            globals
+                trigger state_trigger = null
+                trigger game_trigger = null
+                event game_event = null
+                integer state_fires = 0
+                integer game_fires = 0
+            endglobals
+            function on_state takes nothing returns nothing
+                set state_fires = state_fires + 1
+            endfunction
+            function on_game takes nothing returns nothing
+                set game_fires = game_fires + 1
+            endfunction
+            function setup takes nothing returns nothing
+                set state_trigger = CreateTrigger()
+                call TriggerAddAction(state_trigger, function on_state)
+                call TriggerRegisterGameStateEvent(state_trigger, ConvertFGameState(2), ConvertLimitOp(4), 10.0)
+                set game_trigger = CreateTrigger()
+                call TriggerAddAction(game_trigger, function on_game)
+                set game_event = TriggerRegisterGameEvent(game_trigger, ConvertGameEvent(3))
+            endfunction
+            function set_night takes nothing returns nothing
+                call SetFloatGameState(ConvertFGameState(2), 21.0)
+            endfunction
+            function set_day takes nothing returns nothing
+                call SetFloatGameState(ConvertFGameState(2), 3.0)
+            endfunction
+            "#,
+        )
+        .expect("parse");
+    sim.attach_script(&bundle, 0x6606).expect("compile");
+    run(&mut sim, "setup");
+
+    // One crossing before the save: both the state watch and the
+    // EVENT_GAME_STATE_LIMIT game event fire.
+    run(&mut sim, "set_night");
+    for _ in 0..3 {
+        sim.step(&[]);
+    }
+    assert_eq!(probe(&sim, "state_fires"), 1, "state trigger before save");
+    assert_eq!(probe(&sim, "game_fires"), 1, "game event before save");
+
+    let event_handle = handle_global(&sim, "game_event");
+    let bytes = sim.to_save_bytes();
+    let mut restored = Sim::from_save(&bytes).expect("save loads");
+    assert_eq!(restored.state_hash(), sim.state_hash());
+
+    // Registration and handle identity are restored, not rebuilt from scratch.
+    assert!(
+        matches!(
+            restored.script().and_then(|vm| vm.host.object(event_handle)),
+            Some(Object::GameEvent { id: 3 })
+        ),
+        "the event object survives"
+    );
+    assert_eq!(
+        restored
+            .script()
+            .and_then(|vm| vm.host.game_event_handles.get(&3).copied()),
+        Some(event_handle.id),
+        "one event object per gameevent id after the load"
+    );
+    assert!(
+        restored
+            .script()
+            .map(|vm| vm.host.raise_only_game_events.is_empty())
+            .unwrap_or(false),
+        "EVENT_GAME_STATE_LIMIT is engine-raised, not raise-only"
+    );
+
+    // The restored watch still works: leave the limit, cross again.
+    run(&mut restored, "set_day");
+    for _ in 0..2 {
+        restored.step(&[]);
+    }
+    run(&mut restored, "set_night");
+    for _ in 0..2 {
+        restored.step(&[]);
+    }
+    assert_eq!(probe(&restored, "state_fires"), 2, "crossing after load");
+    assert_eq!(probe(&restored, "game_fires"), 2, "game event after load");
+
+    // A host-raised event still reaches the restored trigger.
+    restored
+        .with_script(|vm| vm.host.raise_game_event(3))
+        .expect("script attached");
+    for _ in 0..2 {
+        restored.step(&[]);
+    }
+    assert_eq!(probe(&restored, "game_fires"), 3, "raised event after load");
 }

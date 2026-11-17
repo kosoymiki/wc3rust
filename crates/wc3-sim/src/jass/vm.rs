@@ -230,6 +230,9 @@ pub struct EventContext {
     pub killing_unit: Option<u32>,
     pub cancelable: Option<u32>,
     pub order_id: Option<i64>,
+    /// The `gamestate` that raised a `TriggerRegisterGameStateEvent` firing,
+    /// read back by `GetEventGameState`. `None` for every other event.
+    pub game_state: Option<i32>,
 }
 
 impl EventContext {

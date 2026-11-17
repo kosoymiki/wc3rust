@@ -130,10 +130,28 @@ pub const SAVE_MAGIC: [u8; 4] = *b"W3SV";
 /// order-stamp sections; version 3 appends the per-unit `ethereal` byte; version
 /// 4 appends the JASS script section (compiled code, globals, threads, host
 /// objects, timers and triggers); version 5 appends the per-unit life-regen
-/// accumulator and rate (`hp_milli`/`hp_regen_milli`).  Older files are still
-/// readable through their decode arms; those versions never stored the newer
-/// state, so it restores to its neutral value.
-pub const SAVE_FORMAT_VERSION: u16 = 5;
+/// accumulator and rate (`hp_milli`/`hp_regen_milli`); version 6 appends the
+/// headless UI state of `dialog`/`button`/`timerdialog` objects (message,
+/// display target, quit flag, timer-dialog speed/colours/remaining override) and
+/// the two trigger registrations that used to be discarded
+/// (`TriggerRegisterGameStateEvent`, `TriggerRegisterGameEvent`).  Older files
+/// are still readable through their decode arms; those versions never stored the
+/// newer state, so it restores to its neutral value.
+pub const SAVE_FORMAT_VERSION: u16 = 6;
+
+/// Hard ceiling for every ID space a save can carry (`next_id`, `next_item_id`,
+/// `next_destructable_id`, `next_camp_id`, `next_projectile_id` and the script
+/// handle counter).
+///
+/// Justification, from the format and the entity counts the simulation supports:
+/// a save belongs to one map, and `Sim::new`/`decode_payload` reject any grid
+/// larger than 1024×1024 = 2^20 cells, so no legitimate save can hold more than
+/// one entity per cell. The only save-derived dense structure is the unit id
+/// index (`4` bytes per slot), so the cap bounds it at 4 MiB no matter what the
+/// file claims. In practice the simulation runs thousands of units and tens of
+/// thousands of destructables, which is two orders of magnitude below the cap:
+/// this is a hostile-input bound, not a gameplay limit.
+pub const MAX_ID_SPACE: u32 = 1 << 20;
 /// Bytes before the payload: magic + version + flags + payload length.
 const HEADER_LEN: usize = 12;
 /// Checksum appended after the payload.
@@ -196,6 +214,16 @@ pub enum SaveError {
         index: u32,
         limit: usize,
     },
+    /// An ID counter or ID is outside the save's documented ID space, or two
+    /// entities claim the same slot. `field` names the counter (`ids.next_id`,
+    /// `script.next_object`, …), `value` is the offending number and `detail`
+    /// states which rule was broken. Rejected before any allocation is sized
+    /// from it, so a crafted file can never turn into an OOM or a panic.
+    InvalidIdSpace {
+        field: &'static str,
+        value: u32,
+        detail: String,
+    },
     /// A stored string id is not a known roster/item/upgrade/ability id.
     UnknownName { section: &'static str, name: String },
     /// An AI composition table is not one of the shipped static tables.
@@ -244,6 +272,11 @@ impl fmt::Display for SaveError {
                 index,
                 limit,
             } => write!(f, "index {index} out of range in {section} (limit {limit})"),
+            Self::InvalidIdSpace {
+                field,
+                value,
+                detail,
+            } => write!(f, "invalid {field} {value}: {detail}"),
             Self::UnknownName { section, name } => {
                 write!(f, "unknown id {name:?} in section {section}")
             }
@@ -351,6 +384,16 @@ impl W {
             Some(byte) => {
                 self.u8(1);
                 self.u8(byte);
+            }
+            None => self.u8(0),
+        }
+    }
+
+    fn opt_f32(&mut self, value: Option<f32>) {
+        match value {
+            Some(real) => {
+                self.u8(1);
+                self.f32(real);
             }
             None => self.u8(0),
         }
@@ -538,6 +581,17 @@ impl<'a> R<'a> {
             1 => Ok(Some(self.u32()?)),
             other => Err(SaveError::InvalidValue {
                 field: "Option<u32>",
+                detail: format!("tag {other}"),
+            }),
+        }
+    }
+
+    fn opt_f32(&mut self) -> SaveResult<Option<f32>> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.f32()?)),
+            other => Err(SaveError::InvalidValue {
+                field: "Option<f32>",
                 detail: format!("tag {other}"),
             }),
         }
@@ -2231,7 +2285,7 @@ fn validate_code(code: &Code) -> SaveResult<()> {
     Ok(())
 }
 
-fn write_event_context(w: &mut W, event: &EventContext) {
+fn write_event_context(w: &mut W, event: &EventContext, version: u16) {
     w.opt_u32(event.trigger);
     w.u64(event.event_id as u64);
     w.opt_u32(event.unit);
@@ -2255,9 +2309,12 @@ fn write_event_context(w: &mut W, event: &EventContext) {
     w.opt_u32(event.killing_unit);
     w.opt_u32(event.cancelable);
     write_opt_i64(w, event.order_id);
+    if version >= 6 {
+        write_opt_i64(w, event.game_state.map(i64::from));
+    }
 }
 
-fn read_event_context(r: &mut R<'_>) -> SaveResult<EventContext> {
+fn read_event_context(r: &mut R<'_>, version: u16) -> SaveResult<EventContext> {
     Ok(EventContext {
         trigger: r.opt_u32()?,
         event_id: r.u64()? as i64,
@@ -2282,17 +2339,22 @@ fn read_event_context(r: &mut R<'_>) -> SaveResult<EventContext> {
         killing_unit: r.opt_u32()?,
         cancelable: r.opt_u32()?,
         order_id: read_opt_i64(r)?,
+        game_state: if version >= 6 {
+            read_opt_i64(r)?.map(|state| state as i32)
+        } else {
+            None
+        },
     })
 }
 
-fn write_thread(w: &mut W, thread: &ThreadState) {
+fn write_thread(w: &mut W, thread: &ThreadState, version: u16) {
     w.str(&thread.name);
     write_f64(w, thread.started_at);
     w.u64(thread.steps);
     match &thread.event {
         Some(event) => {
             w.u8(1);
-            write_event_context(w, event);
+            write_event_context(w, event, version);
         }
         None => w.u8(0),
     }
@@ -2322,13 +2384,13 @@ fn write_thread(w: &mut W, thread: &ThreadState) {
     }
 }
 
-fn read_thread(r: &mut R<'_>, code: &Code) -> SaveResult<ThreadState> {
+fn read_thread(r: &mut R<'_>, code: &Code, version: u16) -> SaveResult<ThreadState> {
     let name = r.str()?.to_string();
     let started_at = read_f64(r)?;
     let steps = r.u64()?;
     let event = match r.u8()? {
         0 => None,
-        1 => Some(read_event_context(r)?),
+        1 => Some(read_event_context(r, version)?),
         other => {
             return Err(SaveError::InvalidValue {
                 field: "script.thread.event",
@@ -2529,6 +2591,16 @@ fn write_reg_event(w: &mut W, event: &RegEvent) {
             w.u32(*op as u32);
             w.f32(*value);
         }
+        RegEvent::GameStateEvent { state, op, value } => {
+            w.u8(13);
+            w.u32(*state as u32);
+            w.u32(*op as u32);
+            w.f32(*value);
+        }
+        RegEvent::GameEvent { event } => {
+            w.u8(14);
+            w.u64(*event as u64);
+        }
     }
 }
 
@@ -2578,6 +2650,14 @@ fn read_reg_event(r: &mut R<'_>) -> SaveResult<RegEvent> {
             state: r.u32()? as i32,
             op: r.u32()? as i32,
             value: r.f32()?,
+        },
+        13 => RegEvent::GameStateEvent {
+            state: r.u32()? as i32,
+            op: r.u32()? as i32,
+            value: r.f32()?,
+        },
+        14 => RegEvent::GameEvent {
+            event: r.u64()? as i64,
         },
         other => {
             return Err(SaveError::BadTag {
@@ -2698,7 +2778,7 @@ fn read_camera_setup(r: &mut R<'_>) -> SaveResult<CameraSetup> {
     Ok(CameraSetup { fields })
 }
 
-fn write_object(w: &mut W, object: &Object) {
+fn write_object(w: &mut W, object: &Object, version: u16) {
     match object {
         Object::Group(members) => {
             w.u8(0);
@@ -2758,17 +2838,31 @@ fn write_object(w: &mut W, object: &Object) {
             w.u32(*rect);
             w.bool(*enabled);
         }
-        Object::Dialog { buttons } => {
+        Object::Dialog {
+            message,
+            shown_to,
+            asynchronous,
+            buttons,
+        } => {
             w.u8(12);
             w.len(buttons.len());
             for button in buttons {
                 w.u32(*button);
             }
+            // Version 6: the headless UI state the pre-v6 writer dropped.
+            if version >= 6 {
+                w.str(message);
+                w.opt_u8(*shown_to);
+                w.bool(*asynchronous);
+            }
         }
-        Object::Button { text, hotkey } => {
+        Object::Button { text, hotkey, quit } => {
             w.u8(13);
             w.str(text);
             w.i32(*hotkey);
+            if version >= 6 {
+                w.bool(*quit);
+            }
         }
         Object::Leaderboard { rows } => {
             w.u8(14);
@@ -2867,10 +2961,26 @@ fn write_object(w: &mut W, object: &Object) {
             w.u8(25);
             w.i32(*index);
         }
-        Object::TimerDialog { timer, title } => {
+        Object::TimerDialog {
+            timer,
+            title,
+            shown,
+            speed,
+            remaining_override,
+            time_color,
+            title_color,
+        } => {
             w.u8(26);
             w.u32(*timer);
             w.str(title);
+            if version >= 6 {
+                w.bool(*shown);
+                w.f32(*speed);
+                w.opt_f32(*remaining_override);
+                for channel in time_color.iter().chain(title_color.iter()) {
+                    w.i32(*channel);
+                }
+            }
         }
         Object::Ability { id, level } => {
             w.u8(27);
@@ -2899,7 +3009,7 @@ fn write_object(w: &mut W, object: &Object) {
     }
 }
 
-fn read_object(r: &mut R<'_>, code_function_count: usize) -> SaveResult<Object> {
+fn read_object(r: &mut R<'_>, code_function_count: usize, version: u16) -> SaveResult<Object> {
     Ok(match r.u8()? {
         0 => {
             let count = r.len()?;
@@ -2948,12 +3058,34 @@ fn read_object(r: &mut R<'_>, code_function_count: usize) -> SaveResult<Object> 
             for _ in 0..count {
                 buttons.push(r.u32()?);
             }
-            Object::Dialog { buttons }
+            // Version 6 appended the dialog's own state; a v5 file restores the
+            // neutral value (no message, hidden, not async).
+            let (message, shown_to, asynchronous) = if version >= 6 {
+                (
+                    r.str()?.to_string(),
+                    r.opt_u8()?,
+                    r.bool("script.dialog.async")?,
+                )
+            } else {
+                (String::new(), None, false)
+            };
+            Object::Dialog {
+                message,
+                shown_to,
+                asynchronous,
+                buttons,
+            }
         }
-        13 => Object::Button {
-            text: r.str()?.to_string(),
-            hotkey: r.i32()?,
-        },
+        13 => {
+            let text = r.str()?.to_string();
+            let hotkey = r.i32()?;
+            let quit = if version >= 6 {
+                r.bool("script.button.quit")?
+            } else {
+                false
+            };
+            Object::Button { text, hotkey, quit }
+        }
         14 => {
             let count = r.len()?;
             let mut rows = BTreeMap::new();
@@ -3045,10 +3177,35 @@ fn read_object(r: &mut R<'_>, code_function_count: usize) -> SaveResult<Object> 
         },
         24 => Object::GameEvent { id: r.u64()? as i64 },
         25 => Object::StartLocation(r.i32()?),
-        26 => Object::TimerDialog {
-            timer: r.u32()?,
-            title: r.str()?.to_string(),
-        },
+        26 => {
+            let timer = r.u32()?;
+            let title = r.str()?.to_string();
+            let mut shown = false;
+            let mut speed = 1.0;
+            let mut remaining = None;
+            let mut time_color = [255, 255, 255, 255];
+            let mut title_color = [255, 255, 255, 255];
+            if version >= 6 {
+                shown = r.bool("script.timerdialog.shown")?;
+                speed = r.f32()?;
+                remaining = r.opt_f32()?;
+                let mut channels = [255i32; 8];
+                for channel in &mut channels {
+                    *channel = r.i32()?;
+                }
+                time_color = [channels[0], channels[1], channels[2], channels[3]];
+                title_color = [channels[4], channels[5], channels[6], channels[7]];
+            }
+            Object::TimerDialog {
+                timer,
+                title,
+                shown,
+                speed,
+                remaining_override: remaining,
+                time_color,
+                title_color,
+            }
+        }
         27 => Object::Ability {
             id: r.u64()? as i64,
             level: r.i32()?,
@@ -3350,7 +3507,7 @@ fn read_cine_filter(r: &mut R<'_>) -> SaveResult<CineFilter> {
     })
 }
 
-fn write_script_section(w: &mut W, vm: Option<&JassVm>) {
+fn write_script_section(w: &mut W, vm: Option<&JassVm>, version: u16) {
     w.u32(SEC_SCRIPT);
     match vm {
         Some(vm) => {
@@ -3378,7 +3535,7 @@ fn write_script_section(w: &mut W, vm: Option<&JassVm>) {
             }
             w.len(vm.threads.len());
             for thread in &vm.threads {
-                write_thread(w, thread);
+                write_thread(w, thread, version);
             }
             // Host: unit handle table first (handle → unit id, ascending).
             let handles = vm.host.units.handles();
@@ -3396,7 +3553,7 @@ fn write_script_section(w: &mut W, vm: Option<&JassVm>) {
             w.len(vm.host.objects.len());
             for (id, object) in &vm.host.objects {
                 w.u32(*id);
-                write_object(w, object);
+                write_object(w, object, version);
             }
             w.len(vm.host.unit_meta.len());
             for (handle, meta) in &vm.host.unit_meta {
@@ -3527,7 +3684,7 @@ fn write_script_section(w: &mut W, vm: Option<&JassVm>) {
             }
             w.len(vm.host.event_stack.len());
             for event in &vm.host.event_stack {
-                write_event_context(w, event);
+                write_event_context(w, event, version);
             }
             w.opt_u32(vm.host.last_created_group);
             w.len(vm.host.created_units.len());
@@ -3565,6 +3722,7 @@ fn write_script_section(w: &mut W, vm: Option<&JassVm>) {
 /// with no script attached.
 fn read_script_section(
     r: &mut R<'_>,
+    version: u16,
     next_unit_id: u32,
     next_item_id: u32,
     next_destructable_id: u32,
@@ -3668,7 +3826,7 @@ fn read_script_section(
     }
     let mut threads = Vec::with_capacity(thread_count);
     for _ in 0..thread_count {
-        threads.push(read_thread(r, &code)?);
+        threads.push(read_thread(r, &code, version)?);
     }
 
     // Host: unit handles are allocated sequentially from 0x1000_0000 and never
@@ -3705,6 +3863,11 @@ fn read_script_section(
         }
     }
     let next_object = r.u32()?;
+    // The script handle counter is an external ID space too: it indexes nothing
+    // dense (objects live in a `BTreeMap`), but a file whose counter is below the
+    // handle base or more than one ID space above it is corrupt and must not be
+    // accepted as a valid save.
+    check_object_handle_counter(next_object)?;
     let object_count = r.len()?;
     if object_count > 1_000_000 {
         return Err(SaveError::InvalidValue {
@@ -3722,11 +3885,35 @@ fn read_script_section(
                 limit: next_object as usize,
             });
         }
-        let object = read_object(r, function_count)?;
+        let object = read_object(r, function_count, version)?;
         objects.insert(id, object);
     }
     host.objects = objects;
     host.set_next_object_id(next_object);
+    // Derived from the restored objects, exactly like `next_buff_id` is derived
+    // from the restored buffs: `gameevent` ids are engine globals with one event
+    // object each, and the set of registrations the engine itself never raises is
+    // a property of the trigger table, not extra save state.
+    host.game_event_handles = host
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| match object {
+            Object::GameEvent { id: event } => Some((*event, *handle)),
+            _ => None,
+        })
+        .collect();
+    for object in host.objects.values() {
+        if let Object::Trigger(state) = object {
+            for event in &state.events {
+                if let RegEvent::GameEvent { event } = event
+                    && crate::jass::host::game_event_support(*event)
+                        == crate::jass::host::GameEventSupport::Partial
+                {
+                    host.raise_only_game_events.insert(*event);
+                }
+            }
+        }
+    }
 
     let meta_count = r.len()?;
     let mut unit_meta = BTreeMap::new();
@@ -3934,7 +4121,7 @@ fn read_script_section(
     let stack_count = r.len()?;
     let mut event_stack = Vec::with_capacity(stack_count);
     for _ in 0..stack_count {
-        event_stack.push(read_event_context(r)?);
+        event_stack.push(read_event_context(r, version)?);
     }
     host.event_stack = event_stack;
 
@@ -4263,11 +4450,86 @@ fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
 
     // Version 4: the JASS script world. Older layouts have no script section.
     if version >= 4 {
-        write_script_section(&mut w, sim.script.as_deref());
+        write_script_section(&mut w, sim.script.as_deref(), version);
     }
 
     w.u32(SEC_END);
     w.buf
+}
+
+/// Bounds one external ID counter before it can size an allocation or index a
+/// table.
+///
+/// The format starts every space at 1 (`Sim::new` hands out `1` first) and no
+/// legitimate save can carry a counter above [`MAX_ID_SPACE`]; both rules are
+/// checked here so every caller reports the same typed error instead of trusting
+/// the scalar it just read.
+fn check_id_counter(field: &'static str, value: u32) -> SaveResult<()> {
+    if value == 0 {
+        return Err(SaveError::InvalidIdSpace {
+            field,
+            value,
+            detail: "id counters start at 1".into(),
+        });
+    }
+    if value > MAX_ID_SPACE {
+        return Err(SaveError::InvalidIdSpace {
+            field,
+            value,
+            detail: format!("above the {MAX_ID_SPACE} slot id-space cap"),
+        });
+    }
+    Ok(())
+}
+
+/// Bounds the script-object handle counter, whose space starts at
+/// [`crate::jass::host::OBJECT_HANDLE_BASE`] rather than at 1.
+fn check_object_handle_counter(value: u32) -> SaveResult<()> {
+    let base = crate::jass::host::OBJECT_HANDLE_BASE;
+    if value < base {
+        return Err(SaveError::InvalidIdSpace {
+            field: "script.next_object",
+            value,
+            detail: format!("below the script handle base {base:#x}"),
+        });
+    }
+    if value - base > MAX_ID_SPACE {
+        return Err(SaveError::InvalidIdSpace {
+            field: "script.next_object",
+            value,
+            detail: format!("more than {MAX_ID_SPACE} handles above the base {base:#x}"),
+        });
+    }
+    Ok(())
+}
+
+/// Validates one whole entity ID space: the counter is inside the documented
+/// range, every stored id is below it (checked), and no two entities share an id.
+fn check_id_space(
+    field: &'static str,
+    section: &'static str,
+    next: u32,
+    ids: impl IntoIterator<Item = u32>,
+) -> SaveResult<()> {
+    check_id_counter(field, next)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if id >= next {
+            return Err(SaveError::OutOfRange {
+                section,
+                index: id,
+                limit: next as usize,
+            });
+        }
+        if !seen.insert(id) {
+            return Err(SaveError::InvalidIdSpace {
+                field,
+                value: id,
+                detail: "duplicate id in one ID space".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
@@ -4618,7 +4880,7 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     };
 
     let script = if version >= 4 {
-        read_script_section(&mut r, next_id, next_item_id, next_destructable_id)?
+        read_script_section(&mut r, version, next_id, next_item_id, next_destructable_id)?
     } else {
         None
     };
@@ -4627,19 +4889,41 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     if r.remaining() != 0 {
         return Err(SaveError::TrailingBytes(r.remaining()));
     }
-    // Structural validation: ids must be below their counters and unique.
-    let mut max_id = 0u32;
-    for unit in &units {
-        if unit.id.0 >= next_id {
-            return Err(SaveError::OutOfRange {
-                section: "units.id",
-                index: unit.id.0,
-                limit: next_id as usize,
-            });
-        }
-        max_id = max_id.max(unit.id.0);
-    }
-    let _ = max_id;
+    // Structural validation, before a single derived structure is allocated:
+    // every counter is inside the documented ID space, every stored id is below
+    // its counter, and no ID space contains a duplicate. The counters stay the
+    // counters and are never trusted as allocation sizes (see `rebuild_derived`,
+    // which sizes the dense unit index from the units that exist).
+    check_id_space(
+        "ids.next_id",
+        "units.id",
+        next_id,
+        units.iter().map(|unit| unit.id.0),
+    )?;
+    check_id_space(
+        "ids.next_item_id",
+        "items.id",
+        next_item_id,
+        items.iter().map(|item| item.id.0),
+    )?;
+    check_id_space(
+        "ids.next_destructable_id",
+        "destructables.id",
+        next_destructable_id,
+        destructables.iter().map(|tree| tree.id.0),
+    )?;
+    check_id_space(
+        "ids.next_camp_id",
+        "camps.id",
+        next_camp_id,
+        camps.iter().map(|camp| camp.id),
+    )?;
+    check_id_space(
+        "ids.next_projectile_id",
+        "projectiles.id",
+        next_projectile_id,
+        projectiles.iter().map(|shot| shot.id.0),
+    )?;
 
     let mut sim = Sim::new(seed, width, height);
     sim.tick = tick;
@@ -4961,7 +5245,17 @@ impl Sim {
         let height = self.grid.height;
         let cells = width as usize * height as usize;
 
-        let mut index_of = vec![u32::MAX; self.next_id.max(1) as usize];
+        // Sized from the units that exist, never from the counter: the counter is
+        // save input (bounded by `MAX_ID_SPACE`), but the index only has to cover
+        // real ids. A save with three units and a counter at the cap therefore
+        // costs three slots, not four megabytes.
+        let max_id = self
+            .units
+            .iter()
+            .map(|unit| unit.id.0 as usize)
+            .max()
+            .unwrap_or(0);
+        let mut index_of = vec![u32::MAX; max_id.saturating_add(1)];
         for (index, unit) in self.units.iter().enumerate() {
             let slot = unit.id.0 as usize;
             if slot >= index_of.len() {
@@ -5082,6 +5376,12 @@ fn decode_v5(payload: &[u8]) -> SaveResult<Sim> {
     decode_payload(payload, 5)
 }
 
+/// Decodes the current version-6 payload: the headless dialog/button/timer-dialog
+/// state and the two game-event trigger registrations appended to their records.
+fn decode_v6(payload: &[u8]) -> SaveResult<Sim> {
+    decode_payload(payload, 6)
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -5109,6 +5409,7 @@ impl Sim {
             3 => decode_v3(payload),
             4 => decode_v4(payload),
             5 => decode_v5(payload),
+            6 => decode_v6(payload),
             other => Err(SaveError::UnknownVersion(other)),
         }
     }
@@ -5139,6 +5440,25 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Offset of the `SEC_IDS` frame body inside an encoded payload.
+    ///
+    /// Frames are tag-prefixed without a length field, so reaching the ID block
+    /// means walking the two frames in front of it. Both tags and the grid size
+    /// are asserted, so a writer layout change makes this helper fail loudly
+    /// instead of patching the wrong four bytes.
+    fn ids_frame_offset(payload: &[u8]) -> usize {
+        const HEADER: usize = 4 + 8 + 8 + 8 + 1 + 1;
+        let tag = |at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
+        assert_eq!(tag(0), SEC_HEADER, "first frame is the header");
+        assert_eq!(tag(HEADER), SEC_GRID, "second frame is the grid");
+        let width = u32::from_le_bytes(payload[HEADER + 4..HEADER + 8].try_into().unwrap());
+        let height = u32::from_le_bytes(payload[HEADER + 8..HEADER + 12].try_into().unwrap());
+        let bits = (width as usize * height as usize).div_ceil(8);
+        let ids = HEADER + 20 + bits;
+        assert_eq!(tag(ids), SEC_IDS, "third frame is the id counters");
+        ids + 4
+    }
 
     #[test]
     fn save_format_roundtrip_empty_sim() {
@@ -5218,5 +5538,228 @@ mod tests {
             "v3 restores the ethereal combat state"
         );
         assert_eq!(restored.state_hash(), sim.state_hash());
+    }
+
+    /// A save whose `next_id` was raised past the ID space must be rejected with
+    /// a typed error before the dense id index is sized from it. Reproduced
+    /// pre-fix: `from_save` accepted `next_id` values that only the counter
+    /// bounds, and `rebuild_derived` then allocated `next_id` slots.
+    #[test]
+    fn id_counters_above_the_id_space_are_rejected_before_allocating() {
+        let mut sim = Sim::new(3, 32, 32);
+        sim.spawn_def(0, "hpea", Vec2::new(300.0, 300.0))
+            .expect("worker");
+        sim.step(&[]);
+        let payload = encode_payload_version(&sim, SAVE_FORMAT_VERSION);
+        let ids = ids_frame_offset(&payload);
+        // 2_000_000 is above the ID-space cap but small enough that the pre-fix
+        // reader survives allocating it, so the reproduction is observable
+        // without an OOM (the u32::MAX case below is the one that aborts).
+        for value in [0u32, 2_000_000, u32::MAX] {
+            let mut hostile = payload.clone();
+            hostile[ids..ids + 4].copy_from_slice(&value.to_le_bytes());
+            let error = Sim::from_save(&seal_version(&hostile, SAVE_FORMAT_VERSION))
+                .err()
+                .unwrap_or_else(|| panic!("next_id={value} must not load"));
+            assert!(
+                matches!(
+                    error,
+                    SaveError::InvalidIdSpace { .. } | SaveError::InvalidValue { .. }
+                ),
+                "next_id={value}: {error:?}"
+            );
+        }
+
+        // The counter rule is unconditional: an empty world with `next_id=0`
+        // must be rejected too (there are no ids to compare against).
+        let empty = Sim::new(9, 32, 32);
+        let payload = encode_payload_version(&empty, SAVE_FORMAT_VERSION);
+        let ids = ids_frame_offset(&payload);
+        let mut hostile = payload.clone();
+        hostile[ids..ids + 4].copy_from_slice(&0u32.to_le_bytes());
+        let error = Sim::from_save(&seal_version(&hostile, SAVE_FORMAT_VERSION))
+            .err()
+            .expect("empty save with next_id=0 must not load");
+        assert!(
+            matches!(error, SaveError::InvalidIdSpace { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// Every entity ID space has the same bound: a crafted counter for items,
+    /// destructables, camps or projectiles is rejected like `next_id`.
+    #[test]
+    fn every_entity_counter_is_bounded_by_the_id_space() {
+        let mut sim = Sim::new(4, 32, 32);
+        sim.spawn_def(0, "hpea", Vec2::new(300.0, 300.0))
+            .expect("worker");
+        sim.step(&[]);
+        let payload = encode_payload_version(&sim, SAVE_FORMAT_VERSION);
+        let ids = ids_frame_offset(&payload);
+        for index in 0..5 {
+            let mut hostile = payload.clone();
+            let at = ids + index * 4;
+            hostile[at..at + 4].copy_from_slice(&(MAX_ID_SPACE + 1).to_le_bytes());
+            let error = Sim::from_save(&seal_version(&hostile, SAVE_FORMAT_VERSION))
+                .err()
+                .unwrap_or_else(|| panic!("counter {index} must not load"));
+            assert!(
+                matches!(error, SaveError::InvalidIdSpace { .. }),
+                "counter {index}: {error:?}"
+            );
+        }
+    }
+
+    /// A unit whose id is not below `next_id` is rejected; the save's own IDs
+    /// and its counter must agree before any derived state is built.
+    #[test]
+    fn unit_id_at_or_above_next_id_is_rejected() {
+        let mut sim = Sim::new(5, 32, 32);
+        let worker = sim
+            .spawn_def(0, "hpea", Vec2::new(300.0, 300.0))
+            .expect("worker");
+        let index = sim.unit_index(worker).expect("index");
+        for id in [sim.next_id, sim.next_id + 7, u32::MAX - 1] {
+            sim.units[index].id = crate::UnitId(id);
+            let error = Sim::from_save(&sim.to_save_bytes())
+                .err()
+                .unwrap_or_else(|| panic!("unit id {id} must not load"));
+            assert!(
+                matches!(
+                    error,
+                    SaveError::OutOfRange {
+                        section: "units.id",
+                        ..
+                    } | SaveError::InvalidIdSpace { .. }
+                ),
+                "unit id {id}: {error:?}"
+            );
+        }
+    }
+
+    /// Duplicate unit IDs are a corrupt save: two index slots would map to one
+    /// unit and the second unit would become unreachable.
+    #[test]
+    fn duplicate_unit_ids_are_rejected() {
+        let mut sim = Sim::new(6, 32, 32);
+        let first = sim
+            .spawn_def(0, "hpea", Vec2::new(300.0, 300.0))
+            .expect("worker");
+        let second = sim
+            .spawn_def(0, "hfoo", Vec2::new(400.0, 300.0))
+            .expect("footman");
+        let index = sim.unit_index(second).expect("index");
+        sim.units[index].id = first;
+        let error = Sim::from_save(&sim.to_save_bytes())
+            .err()
+            .expect("duplicate ids must not load");
+        assert!(
+            matches!(error, SaveError::InvalidIdSpace { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// A version-5 file (written before the headless UI state existed) still
+    /// loads: the dialog fields it never stored restore to their neutral values,
+    /// which is what "keep old valid saves loading" means for the AUD-007 format
+    /// extension.
+    #[test]
+    fn version_5_file_loads_with_neutral_ui_state() {
+        let mut sim = Sim::new(0x55, 32, 32);
+        let mut bundle = crate::jass::ScriptBundle::new();
+        bundle
+            .add_source(
+                "dialog_v5.j",
+                r#"
+                globals
+                    dialog probe_dialog = null
+                endglobals
+                function setup takes nothing returns nothing
+                    set probe_dialog = DialogCreate()
+                    call DialogSetMessage(probe_dialog, "written then dropped by v5")
+                    call DialogAddButton(probe_dialog, "OK", 0)
+                    call DialogDisplay(Player(0), probe_dialog, true)
+                endfunction
+                "#,
+            )
+            .expect("parse");
+        sim.attach_script(&bundle, 0x55).expect("compile");
+        sim.with_script(|vm| vm.run_function("setup"))
+            .expect("script attached")
+            .expect("setup runs");
+        let dialog = sim
+            .with_script(|vm| {
+                let index = vm.code.global_by_name["probe_dialog"] as usize;
+                match vm.globals[index].clone() {
+                    Value::Handle(handle) => handle,
+                    other => panic!("probe_dialog is {other:?}"),
+                }
+            })
+            .expect("script");
+
+        // A genuine v5 payload: same layout, no dialogue fields in the object.
+        let v5 = seal_version(&encode_payload_version(&sim, 5), 5);
+        assert_eq!(u16::from_le_bytes([v5[4], v5[5]]), 5);
+        let restored = Sim::from_save(&v5).expect("v5 file still loads");
+        assert_eq!(restored.state_hash(), sim.state_hash());
+        match restored.script().and_then(|vm| vm.host.object(dialog)) {
+            Some(Object::Dialog {
+                message,
+                shown_to,
+                asynchronous,
+                buttons,
+            }) => {
+                assert_eq!(message, "", "v5 stored no message: neutral value");
+                assert_eq!(*shown_to, None, "v5 stored no display target");
+                assert!(!*asynchronous, "v5 stored no async flag");
+                assert_eq!(buttons.len(), 1, "the button list is still there");
+            }
+            other => panic!("restored dialog is {other:?}"),
+        }
+        // And the v6 file this build writes keeps the full state.
+        let v6 = sim.to_save_bytes();
+        let restored = Sim::from_save(&v6).expect("v6 round trip");
+        assert!(
+            matches!(
+                restored.script().and_then(|vm| vm.host.object(dialog)),
+                Some(Object::Dialog { message, shown_to: Some(0), .. })
+                    if message == "written then dropped by v5"
+            ),
+            "v6 keeps the dialog message and display target"
+        );
+    }
+
+    /// The scalar counter contract, property-tested over the whole `u32` domain
+    /// (sampled): a counter is valid exactly inside `1..=MAX_ID_SPACE`.
+    #[test]
+    fn id_space_counter_bound_holds_over_sampled_values() {
+        let mut samples: Vec<u32> = vec![
+            0,
+            1,
+            2,
+            MAX_ID_SPACE - 1,
+            MAX_ID_SPACE,
+            MAX_ID_SPACE + 1,
+            MAX_ID_SPACE * 2,
+            u32::MAX / 2,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..200 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            samples.push(state as u32);
+        }
+        for value in samples {
+            let result = check_id_counter("ids.next_id", value);
+            let expected_ok = (1..=MAX_ID_SPACE).contains(&value);
+            assert_eq!(
+                result.is_ok(),
+                expected_ok,
+                "counter {value}: {result:?} (expected ok={expected_ok})"
+            );
+        }
     }
 }

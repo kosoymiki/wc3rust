@@ -9,15 +9,60 @@
 //! `trackable`) still get an id so `GetHandleId`, equality and `null` checks
 //! behave, which is what the map scripts actually rely on.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Vec2;
 use crate::jass_api::SimJass;
 
 use super::value::{Handle, HandleKind, Value};
 
+/// Pending `Host::raise_game_event` entries kept for the next scheduler pass.
+/// A driver raising events faster than the script consumes them is a bug, but it
+/// must not grow without bound; the overflow counter keeps the loss observable.
+pub const GAME_EVENT_QUEUE_LIMIT: usize = 4096;
+
+/// `EVENT_GAME_STATE_LIMIT` (`common.j` 1.32.9 line 642, `ConvertGameEvent(3)`).
+///
+/// The one game event the engine itself raises: any
+/// `TriggerRegisterGameStateEvent` crossing also raises this event, which is what
+/// the value means in the shipped header.
+pub const EVENT_GAME_STATE_LIMIT: i64 = 3;
+
+/// Whether the engine raises a `gameevent` on its own, or only through
+/// `Host::raise_game_event`.
+///
+/// `EVENT_GAME_STATE_LIMIT` is raised by the per-tick game-state watch. The other
+/// shipped game events need subsystems the headless simulation does not have —
+/// victory conditions, variable watches, trackable hit tests, tournament timing —
+/// so a script that registers them gets a real, savable registration plus this
+/// explicit `Partial` verdict instead of a fake success. The driver (or a test)
+/// can still raise any of them by id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameEventSupport {
+    /// The engine raises it when the matching state crosses a limit.
+    EngineRaised,
+    /// Registered and savable; fires only through `Host::raise_game_event`.
+    Partial,
+}
+
+/// Support verdict for one `gameevent` id.
+pub fn game_event_support(event: i64) -> GameEventSupport {
+    if event == EVENT_GAME_STATE_LIMIT {
+        GameEventSupport::EngineRaised
+    } else {
+        GameEventSupport::Partial
+    }
+}
+
 /// JASS Bools/Integers/Reals/strings are all stored per handle in a hashtable.
 pub type HashtableCells = BTreeMap<(i64, i64), Value>;
+
+/// First script-object handle id.
+///
+/// Script handles (groups, locations, triggers, dialogs, …) live in their own
+/// number space above the unit-handle range so one allocator can never hand out
+/// an id another table already uses. `Host::new` starts `next_object` here.
+pub const OBJECT_HANDLE_BASE: u32 = 0x4000_0000;
 
 /// Trigger registration: what makes a trigger's actions run.
 #[derive(Debug, Clone)]
@@ -59,6 +104,17 @@ pub enum RegEvent {
         op: i32,
         value: f32,
     },
+    /// `TriggerRegisterGameStateEvent` — fired when the game state `state`
+    /// crosses the `op`/`value` comparison, checked once per tick against the
+    /// same value `GetFloatGameState`/`GetIntegerGameState` return.
+    GameStateEvent {
+        state: i32,
+        op: i32,
+        value: f32,
+    },
+    /// `TriggerRegisterGameEvent` — fired when the engine (or the host through
+    /// [`Host::raise_game_event`]) raises the game event `event`.
+    GameEvent { event: i64 },
 }
 
 /// A script trigger.
@@ -449,8 +505,24 @@ pub enum Object {
     TriggerCondition { func: Option<u32>, trigger: u32 },
     CameraSetup(CameraSetup),
     FogModifier { rect: u32, enabled: bool },
-    Dialog { buttons: Vec<u32> },
-    Button { text: String, hotkey: i32 },
+    Dialog {
+        /// `DialogSetMessage` text (empty until set).
+        message: String,
+        /// Player the dialog is currently shown to (`DialogDisplay` with `true`),
+        /// `None` after `DialogDisplay(.., false)` or before the first display.
+        shown_to: Option<u8>,
+        /// `DialogSetAsync` — the dialog may be shown per player. Recorded state;
+        /// the headless model keeps one display target.
+        asynchronous: bool,
+        buttons: Vec<u32>,
+    },
+    Button {
+        text: String,
+        hotkey: i32,
+        /// `DialogAddQuitButton` (quits to the score screen instead of running a
+        /// script action).
+        quit: bool,
+    },
     Leaderboard { rows: BTreeMap<i32, (String, i32, String)> },
     Multiboard { rows: BTreeMap<i32, (String, i32)> },
     Quest {
@@ -471,7 +543,21 @@ pub enum Object {
     TerrainDeformation { radius: f32, duration: f32 },
     GameEvent { id: i64 },
     StartLocation(i32),
-    TimerDialog { timer: u32, title: String },
+    TimerDialog {
+        /// Timer handle the dialog counts down (`CreateTimerDialog`).
+        timer: u32,
+        title: String,
+        /// `TimerDialogDisplay` state.
+        shown: bool,
+        /// `TimerDialogSetSpeed` multiplier (1.0 = real time).
+        speed: f32,
+        /// `TimerDialogSetRealTimeRemaining` override in seconds.
+        remaining_override: Option<f32>,
+        /// `TimerDialogSetTimeColor` RGBA.
+        time_color: [i32; 4],
+        /// `TimerDialogSetTitleColor` RGBA.
+        title_color: [i32; 4],
+    },
     Ability { id: i64, level: i32 },
     Buff { rawcode: i64 },
     Image { pos: Vec2, file: String },
@@ -681,6 +767,22 @@ pub struct Host {
     /// false → true crossing, so a registration whose comparison already holds
     /// at registration time does not fire until the state leaves and re-enters.
     pub state_watch: BTreeMap<(u32, u8, i32, i32, u32), bool>,
+    /// Same crossing record for `TriggerRegisterGameStateEvent`, keyed
+    /// `(trigger, state, op, value bits)`.
+    pub game_state_watch: BTreeMap<(u32, i32, i32, u32), bool>,
+    /// Game events queued by [`Host::raise_game_event`], drained by the scheduler
+    /// on its next pass.
+    pub pending_game_events: Vec<i64>,
+    /// Raises dropped because a driver queued more than
+    /// [`GAME_EVENT_QUEUE_LIMIT`] events between two scheduler passes.
+    pub pending_game_events_dropped: u64,
+    /// Stable `event` handle per `gameevent` id: the engine has one global event
+    /// object per event type, so every registration returns the same handle.
+    pub game_event_handles: BTreeMap<i64, u32>,
+    /// `gameevent` ids a script registered that the engine itself never raises
+    /// (see [`game_event_support`]): the explicit `Partial` status, readable by a
+    /// test or the HUD instead of a silent registration.
+    pub raise_only_game_events: BTreeSet<i64>,
 }
 
 impl Default for Host {
@@ -697,7 +799,7 @@ impl Host {
             objects: BTreeMap::new(),
             item_binding: BTreeMap::new(),
             destructable_binding: BTreeMap::new(),
-            next_object: 0x4000_0000,
+            next_object: OBJECT_HANDLE_BASE,
             players: (0..PLAYER_SLOTS).map(|index| PlayerState::new(index as u8)).collect(),
             start_locations: Vec::new(),
             map_name: String::new(),
@@ -757,7 +859,38 @@ impl Host {
             next_alliance_epoch: 0,
             alliance_watch: BTreeMap::new(),
             state_watch: BTreeMap::new(),
+            game_state_watch: BTreeMap::new(),
+            pending_game_events: Vec::new(),
+            pending_game_events_dropped: 0,
+            game_event_handles: BTreeMap::new(),
+            raise_only_game_events: BTreeSet::new(),
         }
+    }
+
+    /// Queues one `gameevent` for the next scheduler pass.
+    ///
+    /// The engine itself only raises [`EVENT_GAME_STATE_LIMIT`]; every other
+    /// `EVENT_GAME_*` constant is delivered through this entry point by the
+    /// driver that owns the corresponding subsystem (the game layer on
+    /// save/load/victory, a test that forces an end-level). The queue is
+    /// bounded: overflow is counted, never silently swallowed.
+    pub fn raise_game_event(&mut self, event: i64) {
+        if self.pending_game_events.len() >= GAME_EVENT_QUEUE_LIMIT {
+            self.pending_game_events_dropped += 1;
+            return;
+        }
+        self.pending_game_events.push(event);
+    }
+
+    /// The event handle for `event` (`gameevent` ids are engine globals: one
+    /// object per id, reused by every registration).
+    pub fn game_event_handle(&mut self, event: i64) -> Handle {
+        if let Some(id) = self.game_event_handles.get(&event) {
+            return Handle::new(HandleKind::GameEvent, *id);
+        }
+        let handle = self.create(Object::GameEvent { id: event });
+        self.game_event_handles.insert(event, handle.id);
+        handle
     }
 
     /// Records that `player`'s alliance state for `alliance` changed and

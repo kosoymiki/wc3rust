@@ -664,6 +664,26 @@ pub(super) fn get_game_type_selected(vm: &mut JassVm, _a: &[Value]) -> Value {
     )
 }
 
+/// The game-state value behind both `GetFloatGameState`/`GetIntegerGameState`
+/// and `TriggerRegisterGameStateEvent`.
+///
+/// One definition shared by the getters and the per-tick watch, so a script can
+/// never read one number and have a trigger fire on another. The headless model
+/// is the script's own game-state table: `SetFloatGameState` writes the real view
+/// (`fgamestate`, e.g. `GAME_STATE_TIME_OF_DAY` = 2 in `common.j` 1.32.9),
+/// `SetIntegerGameState` writes the integer view (`igamestate`, e.g.
+/// `GAME_STATE_DIVINE_INTERVENTION` = 0). An unset state reads 0, which is the
+/// same answer the getters gave before the event path existed.
+pub(crate) fn game_state_value(host: &crate::jass::host::Host, state: i32) -> f32 {
+    if let Some(value) = host.float_states.get(&state) {
+        return value.real();
+    }
+    host.integer_game_states
+        .get(&state)
+        .copied()
+        .unwrap_or(0) as f32
+}
+
 pub(super) fn set_float_game_state(vm: &mut JassVm, a: &[Value]) -> Value {
     vm.host
         .float_states
@@ -672,11 +692,15 @@ pub(super) fn set_float_game_state(vm: &mut JassVm, a: &[Value]) -> Value {
 }
 
 pub(super) fn get_float_game_state(vm: &mut JassVm, a: &[Value]) -> Value {
-    vm.host
-        .float_states
-        .get(&i(a, 0))
-        .cloned()
-        .unwrap_or(Value::Real(0.0))
+    Value::Real(game_state_value(&vm.host, i(a, 0)))
+}
+
+/// `SetIntegerGameState(state, value)` — the integer game-state view
+/// (`GAME_STATE_DIVINE_INTERVENTION`, `GAME_STATE_DISCONNECTED`). Recorded, read
+/// back by `GetIntegerGameState`, and watched by `TriggerRegisterGameStateEvent`.
+pub(super) fn set_integer_game_state(vm: &mut JassVm, a: &[Value]) -> Value {
+    vm.host.integer_game_states.insert(i(a, 0), i(a, 1));
+    Value::Null
 }
 
 /// `BlzGetPlayerTownHallCount(player)` — the player's finished main halls,
@@ -695,11 +719,11 @@ pub(super) fn blz_get_player_town_hall_count(vm: &mut JassVm, a: &[Value]) -> Va
     Value::Int(count as i32)
 }
 
-/// `GetIntegerGameState(state)` — 0 means "no limit reached"; the simulation has
-/// no victory-condition counters, so every game state reads 0.
+/// `GetIntegerGameState(state)` — the integer view of the same game-state model
+/// the event sampler watches (`SetIntegerGameState`/`SetFloatGameState`), so a
+/// limit registration and this getter can never disagree.
 pub(super) fn get_integer_game_state(vm: &mut JassVm, a: &[Value]) -> Value {
-    let key = i(a, 0);
-    Value::Int(vm.host.integer_game_states.get(&key).copied().unwrap_or(0))
+    Value::Int(game_state_value(&vm.host, i(a, 0)) as i32)
 }
 
 /// `GetGameDifficulty` — melee default `GAME_DIFFICULTY_NORMAL` (2).

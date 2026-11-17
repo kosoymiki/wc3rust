@@ -21,7 +21,7 @@ pub(crate) mod trigger;
 mod unit;
 mod world;
 
-pub(crate) use core::{compare_limit, player_state_value};
+pub(crate) use core::{compare_limit, game_state_value, player_state_value};
 
 /// Handler signature: the machine plus the evaluated arguments.
 pub type NativeFn = fn(&mut JassVm, &[Value]) -> Value;
@@ -123,6 +123,7 @@ handler_table! {
     "GetGameTypeSelected" => core::get_game_type_selected,
     "SetFloatGameState" => core::set_float_game_state,
     "GetFloatGameState" => core::get_float_game_state,
+    "SetIntegerGameState" => core::set_integer_game_state,
     "GetGameDifficulty" => core::get_game_difficulty,
     "BlzGetPlayerTownHallCount" => core::blz_get_player_town_hall_count,
     "GetIntegerGameState" => core::get_integer_game_state,
@@ -350,6 +351,7 @@ handler_table! {
     "TriggerRegisterGameEvent" => world::trigger_register_game_event,
     "TriggerRegisterDialogEvent" => trigger::trigger_register_dialog_event,
     "TriggerRegisterUnitInRange" => trigger::trigger_register_unit_in_range,
+    "GetEventGameState" => trigger::get_event_game_state,
     "IsPlayerInForce" => trigger::is_player_in_force,
     "TriggerExecute" => trigger::trigger_execute,
     "TriggerEvaluate" => trigger::trigger_evaluate,
@@ -473,6 +475,10 @@ handler_table! {
     "DestroyTimerDialog" => world::destroy_timer_dialog,
     "TimerDialogSetTitle" => world::timer_dialog_set_title,
     "TimerDialogDisplay" => world::timer_dialog_display,
+    "TimerDialogSetSpeed" => world::timer_dialog_set_speed,
+    "TimerDialogSetRealTimeRemaining" => world::timer_dialog_set_real_time_remaining,
+    "TimerDialogSetTimeColor" => world::timer_dialog_set_time_color,
+    "TimerDialogSetTitleColor" => world::timer_dialog_set_title_color,
     "GetCameraMargin" => world::get_camera_margin,
     "SetCameraField" => world::set_camera_field,
     "SetCameraPosition" => world::set_camera_position,
@@ -602,9 +608,12 @@ handler_table! {
     // --- UI -------------------------------------------------------------
     "DialogCreate" => world::dialog_create,
     "DialogAddButton" => world::dialog_add_button,
+    "DialogAddQuitButton" => world::dialog_add_quit_button,
     "DialogClear" => world::dialog_clear,
     "DialogSetMessage" => world::dialog_set_message,
     "DialogDisplay" => world::dialog_display,
+    "DialogSetAsync" => world::dialog_set_async,
+    "DialogDestroy" => world::dialog_destroy,
     "CreateTextTag" => world::create_text_tag,
     "SetTextTagText" => world::set_text_tag_text,
     "SetTextTagPos" => world::set_text_tag_pos,
@@ -735,13 +744,14 @@ pub fn unit_rawcode(id: &str) -> i32 {
 }
 
 /// Integer rawcode of a spell id (`Spell` enum → its ability four-character id).
+///
+/// The id comes from the ability data the variant is bound to — the typed spells'
+/// `SpellDef` row or the data-backed variant's own `id` — never from the `Debug`
+/// name. `unit_rawcode` then converts the four characters the same way the engine
+/// stores a rawcode, so `GetSpellAbilityId()` returns the value a script compares
+/// against `'AHhb'`.
 pub fn spell_rawcode(spell: crate::Spell) -> i32 {
-    let name = format!("{spell:?}");
-    // `Spell` variants carry the ability's four-character id in the data table;
-    // the variant name is the closest stable identifier when the table has no
-    // direct mapping, and 0 tells the script "unknown ability" honestly.
-    let _ = name;
-    0
+    unit_rawcode(spell.ability_id())
 }
 
 /// Natives that only exist in Reforged-era headers (1.33+). No `common.j` in
