@@ -9538,6 +9538,30 @@ mod tests {
         load_texture_path(textures, &path)
     }
 
+    /// `MenuSkin` carries nine-slice parts (texture + authored size + insets),
+    /// not bare texture indices: wrap a loaded BLP in a `MenuPart` sized from
+    /// the decoded image, the same shape the runtime `Game::menu_skin` builds.
+    fn menu_part_from(index: Option<usize>, textures: &[TextureImage]) -> Option<MenuPart> {
+        let index = index?;
+        let image = textures.get(index)?;
+        Some(MenuPart::new(
+            index,
+            image.width as f32,
+            image.height as f32,
+            [24.0, 24.0, 24.0, 24.0],
+        ))
+    }
+
+    fn load_menu_pack_part(textures: &mut Vec<TextureImage>, relative: &str) -> Option<MenuPart> {
+        let index = load_pack_texture(textures, relative);
+        menu_part_from(index, textures)
+    }
+
+    fn load_menu_ui_part(textures: &mut Vec<TextureImage>, relative: &str) -> Option<MenuPart> {
+        let index = load_ui_texture(textures, relative);
+        menu_part_from(index, textures)
+    }
+
     #[test]
     fn ui_command_card_peon_headless_mock_writes_png() {
         // Device-free proof that the worker card is filled: the real
@@ -9662,35 +9686,37 @@ mod tests {
         let map = map_texture();
         let viewport = Vec2::new(2414.0, 1080.0);
         let skin = MenuSkin {
-            panel: load_pack_texture(&mut textures, "UI/Console/Human/HumanMenuPanel.blp"),
-            button_normal: load_pack_texture(
+            panel: load_menu_pack_part(&mut textures, "UI/Console/Human/HumanMenuPanel.blp"),
+            button_normal: load_menu_pack_part(
                 &mut textures,
                 "UI/Console/Human/HumanMenuButtonNormal.blp",
             ),
-            button_pressed: load_pack_texture(
+            button_pressed: load_menu_pack_part(
                 &mut textures,
                 "UI/Console/Human/HumanMenuButtonPressed.blp",
             ),
-            button_disabled: load_pack_texture(
+            button_disabled: load_menu_pack_part(
                 &mut textures,
                 "UI/Console/Human/HumanMenuButtonDisabled.blp",
             ),
-            loading_frame: load_pack_texture(
+            loading_frame: load_menu_pack_part(
                 &mut textures,
                 "UI/Console/Human/HumanLoadingFrame.blp",
             ),
-            panel_border: load_ui_texture(
+            panel_border: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/EscMenu/Human/human-options-menu-border.blp",
             ),
-            title_band: load_ui_texture(
+            title_band: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
             ),
-            button_hover: load_ui_texture(
+            button_hover: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button-KeyboardHighlight.blp",
             ),
+            banner: None,
+            fonts: None,
         };
         if skin.panel.is_none() && skin.button_normal.is_none() {
             eprintln!("skip: pack menu BLP missing");
@@ -9701,10 +9727,13 @@ mod tests {
         let mut batch = UiBatch::default();
         let layout = hud.draw_menu(&view, &mut batch, &font, &chrome);
         assert!(layout.title_band.h >= 56.0, "title band");
+        // Relayout contract: glue entries are finger targets clamped to
+        // [MENU_MIN_TARGET_PX, 150] px (operator's 90 px floor), not the old
+        // 44-56 px desktop strip.
         for rect in &layout.buttons {
             assert!(
-                rect.h >= 44.0 && rect.h <= 56.0,
-                "dialog button height {}",
+                rect.h + 0.01 >= MENU_MIN_TARGET_PX && rect.h <= 150.0 + 0.01,
+                "dialog button height {} outside [{MENU_MIN_TARGET_PX}, 150]",
                 rect.h
             );
         }
@@ -9734,35 +9763,37 @@ mod tests {
         let map = map_texture();
         let viewport = Vec2::new(1920.0, 1080.0);
         let skin = MenuSkin {
-            panel: load_ui_texture(
+            panel: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/EscMenu/Human/human-options-menu-background.blp",
             ),
-            panel_border: load_ui_texture(
+            panel_border: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/EscMenu/Human/human-options-menu-border.blp",
             ),
-            title_band: load_ui_texture(
+            title_band: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
             ),
-            button_normal: load_ui_texture(
+            button_normal: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button1-BackdropBackground.blp",
             ),
-            button_hover: load_ui_texture(
+            button_hover: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button-KeyboardHighlight.blp",
             ),
-            button_pressed: load_ui_texture(
+            button_pressed: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button1-BackdropBackground-Down.blp",
             ),
-            button_disabled: load_ui_texture(
+            button_disabled: load_menu_ui_part(
                 &mut textures,
                 "UI/Widgets/Glues/GlueScreen-Button1-BackdropBackground-Disabled.blp",
             ),
             loading_frame: None,
+            banner: None,
+            fonts: None,
         };
         assert!(skin.panel.is_some() && skin.panel_border.is_some(), "panel art");
         assert!(

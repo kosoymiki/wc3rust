@@ -1839,8 +1839,9 @@ impl Game {
         self.refresh_buttons();
     }
 
-    /// Pixels per logical dp reported by the platform (SDL: window pixels /
-    /// window points). Re-solves the HUD in dp; no second scale transform.
+    /// Pixels per logical dp reported by the platform (SDL:
+    /// `SDL_GetWindowDisplayScale`, the Android `densityDpi / 160` content
+    /// scale). Re-solves the HUD in dp; no second scale transform.
     pub fn set_density(&mut self, density_scale: f32) -> bool {
         let next = if density_scale.is_finite() && density_scale > 0.05 {
             density_scale.clamp(0.5, 8.0)
@@ -1976,7 +1977,10 @@ impl Game {
         // (ring radii, edge pan, hitbox debug). The pack art has its own scale
         // inside `MobileHudLayout::scale`.
         layout.scale = self.density_scale;
-        layout.top_bar = mobile.top_meta;
+        // `HudLayout::top_bar` is the console blocker (see its doc): the top
+        // strip is published separately through the mobile layout and
+        // `blocked_rects` adds it explicitly.
+        layout.top_bar = mobile.console;
         layout.resource_row = mobile.resources;
         layout.minimap = mobile.minimap;
         layout.minimap_image = mobile.minimap_image;
@@ -7891,23 +7895,38 @@ mod tests {
             "unchanged is a no-op"
         );
 
-        // Horizontal insets stay authoritative.
+        // Horizontal insets stay authoritative for the content; the console
+        // background itself is edge to edge (TZ §4.3), so the insets land on
+        // the content, the resources and the minimap — never on the backdrop.
         assert!(game.set_safe_insets(80.0, 96.0, 80.0, 48.0));
+        assert!(game.layout.top_bar.x.abs() < 1e-3, "console background is edge to edge");
         assert!(
-            (game.layout.top_bar.x - 80.0).abs() < 1e-3,
-            "console left edge honours the left inset: {:?}",
+            (game.layout.top_bar.right() - 1280.0).abs() < 1e-3,
+            "console background is edge to edge: {:?}",
             game.layout.top_bar
         );
+        let mobile = game.mobile_layout.as_ref().expect("mobile layout");
         assert!(
-            (game.layout.top_bar.right() - (1280.0 - 80.0)).abs() < 1e-3,
-            "console right edge honours the right inset: {:?}",
-            game.layout.top_bar
+            (mobile.dp().safe.left - 40.0).abs() < 1e-3
+                && (mobile.dp().safe.right - 40.0).abs() < 1e-3,
+            "80 px insets are 40 dp at density 2.0: {:?}",
+            mobile.dp().safe
         );
-        assert!(game.layout.minimap.x >= 80.0 - 1e-3);
         assert!(
-            game.layout.command.x + game.layout.command.w <= 1280.0 - 80.0 + 1e-3,
-            "command cluster inside the right inset: {:?}",
-            game.layout.command
+            (mobile.dp().content.x - 48.0).abs() < 1e-3,
+            "content starts after the left inset + pad: {:?}",
+            mobile.dp().content
+        );
+        assert!(
+            mobile.dp().content.right() <= 640.0 - 40.0 - 8.0 + 1e-3,
+            "content ends before the right inset + pad: {:?}",
+            mobile.dp().content
+        );
+        assert!(game.layout.minimap.x >= 96.0 - 1e-3);
+        assert!(
+            game.layout.resource_row.right() <= 1280.0 - 80.0 + 1e-3,
+            "resource row inside the right inset: {:?}",
+            game.layout.resource_row
         );
 
         // Insets survive a resize (rotation / window size change): vertical
@@ -7928,10 +7947,17 @@ mod tests {
             game.layout.top_bar
         );
         assert!(
-            (game.layout.top_bar.x - 80.0).abs() < 1e-3
-                && (game.layout.top_bar.right() - (1600.0 - 80.0)).abs() < 1e-3,
-            "horizontal insets survive the resize: {:?}",
+            game.layout.top_bar.x.abs() < 1e-3
+                && (game.layout.top_bar.right() - 1600.0).abs() < 1e-3,
+            "console background stays edge to edge: {:?}",
             game.layout.top_bar
+        );
+        let mobile = game.mobile_layout.as_ref().expect("mobile layout");
+        assert!(
+            (mobile.dp().safe.left - 40.0).abs() < 1e-3
+                && (mobile.dp().safe.right - 40.0).abs() < 1e-3,
+            "horizontal insets survive the resize: {:?}",
+            mobile.dp().safe
         );
     }
 
@@ -8878,19 +8904,198 @@ mod tests {
     #[test]
     fn command_card_tiles_have_a_minimum_finger_sized_hit_target() {
         let mut game = touch_game();
+        // Pin 1 px/dp so the 1280x720 viewport is the inline wide card; the
+        // 2.0 phone fallback makes it the compact drawer (no tile on screen)
+        // and is not what this target-padding test is about.
+        game.set_density(1.0);
         // The first card tile sits on the top row, so the padded hit target
         // above it can only be claimed by the button itself.
         let tile_index = game.card_button_indices()[0];
         let tile = game.buttons[tile_index].clone();
-        let above = Vec2::new(tile.rect.centre().x, tile.rect.y - 8.0 * game.layout.scale);
-        assert!(!tile.rect.contains(above), "outside the visual tile");
-        game.pointer_down(above);
+        let min_target = wc3_input::MIN_BUTTON_TARGET * game.layout.scale;
+        assert!(
+            tile.rect.w + 0.01 >= min_target && tile.rect.h + 0.01 >= min_target,
+            "card tile is a minimum finger target: {:?}",
+            tile.rect
+        );
+        // The router pads a target by `max((min_target - h) / 2, slop)`;
+        // a probe inside that band must press this very tile.
+        let inside = Vec2::new(tile.rect.centre().x, tile.rect.y - 2.0 * game.layout.scale);
+        assert!(!tile.rect.contains(inside), "outside the visual tile");
+        game.pointer_down(inside);
         assert_eq!(
             game.touch.pressed_button(),
             Some(tile_index),
             "the padded card hit target must claim a finger just above the tile"
         );
-        game.pointer_up(above);
+        game.pointer_cancel();
+        // A finger beyond the pad is not hijacked by the tile.
+        let tile = game.buttons[tile_index].rect;
+        let outside = Vec2::new(tile.centre().x, tile.y - 12.0 * game.layout.scale);
+        game.pointer_down(outside);
+        assert_ne!(
+            game.touch.pressed_button(),
+            Some(tile_index),
+            "a finger beyond the target band is not the tile"
+        );
+        game.pointer_cancel();
+    }
+
+    #[test]
+    fn compact_landscape_closed_drawer_keeps_card_actions_non_interactive() {
+        // AUD-001: compact landscape has no `card_slots` while the command
+        // drawer is closed. A refresh/resize in that state must not index the
+        // empty slot list, and every action stays list-only (zero rect, not a
+        // phantom target) until the drawer opens.
+        use crate::hud::mobile_hud::HudLayoutMode;
+
+        let mut game = touch_game(); // 1280x720 px @ 2.0 px/dp = 640x360 dp
+        assert_eq!(
+            game.mobile_layout.as_ref().expect("layout").layout_mode,
+            HudLayoutMode::LandscapeCompact
+        );
+        assert_eq!(
+            hud::build_buttons(&game).len(),
+            12,
+            "build_buttons authors all 12 card slots"
+        );
+        assert_eq!(game.card_button_indices(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        let hidden = |game: &Game| {
+            game.card_button_indices().iter().all(|index| {
+                let rect = game.buttons[*index].rect;
+                rect.w == 0.0 && rect.h == 0.0
+            })
+        };
+        assert!(game.mobile_layout.as_ref().unwrap().card_slots.is_empty());
+        assert!(hidden(&game), "closed drawer: card actions have no rect");
+
+        // The crash path from AUD-001: refresh with an empty `card_slots`.
+        game.refresh_buttons();
+        assert!(hidden(&game));
+        assert!(
+            game.touch_buttons
+                .iter()
+                .filter(|button| button.index < 12)
+                .all(|button| button.rect.w == 0.0 && button.rect.h == 0.0),
+            "hidden card actions must not keep a touch rect"
+        );
+        let blocked = game.blocked_rects();
+        let layout = TouchLayout {
+            minimap: Some(touch_rect(game.layout.minimap)),
+            blocked: &blocked,
+            buttons: &game.touch_buttons,
+            placing: false,
+            scale: game.density_scale,
+        };
+        assert_eq!(wc3_input::hit_button(Vec2::ZERO, &layout), None);
+
+        // Open: the 12 actions map one-to-one onto the rendered drawer slots,
+        // and the router's hitbox is the rendered rect.
+        assert!(game.toggle_commands_drawer());
+        let slots = game.mobile_layout.as_ref().unwrap().card_slots.clone();
+        assert_eq!(slots.len(), 12, "4x3 drawer");
+        for (slot, index) in game.card_button_indices().iter().enumerate() {
+            let rect = game.buttons[*index].rect;
+            assert_eq!(rect, slots[slot], "action {index} must sit on slot {slot}");
+            let target = game
+                .touch_buttons
+                .iter()
+                .find(|button| button.index == *index)
+                .expect("card touch target");
+            assert_eq!(
+                target.rect,
+                wc3_input::Rect::new(rect.x, rect.y, rect.w, rect.h),
+                "hitbox == rendered rect for action {index}"
+            );
+            game.pointer_down(rect.centre());
+            assert_eq!(game.touch.pressed_button(), Some(*index));
+            game.pointer_cancel();
+        }
+
+        // Resize with the drawer open re-solves both sides together.
+        game.resize(1600.0, 900.0);
+        let slots = game.mobile_layout.as_ref().unwrap().card_slots.clone();
+        assert_eq!(slots.len(), 12);
+        for (slot, index) in game.card_button_indices().iter().enumerate() {
+            assert_eq!(game.buttons[*index].rect, slots[slot]);
+        }
+
+        // Close again -> list-only, then portrait keeps the card inline, then
+        // back to the compact drawer.
+        assert!(game.close_hud_drawers());
+        assert!(hidden(&game));
+        game.resize(720.0, 1280.0);
+        assert_eq!(
+            game.mobile_layout.as_ref().unwrap().layout_mode,
+            HudLayoutMode::Portrait
+        );
+        assert_eq!(game.mobile_layout.as_ref().unwrap().card_slots.len(), 12);
+        assert!(!hidden(&game), "portrait card is inline");
+        game.resize(1280.0, 720.0);
+        assert!(hidden(&game), "back to compact: list-only again");
+
+        // Smallest supported window: no panic and no phantom targets.
+        game.resize(320.0, 240.0);
+        assert!(hidden(&game));
+    }
+
+    #[test]
+    fn window_metrics_push_framebuffer_density_and_insets_once() {
+        // AUD-004: the platform hook hands the HUD the real framebuffer, the
+        // real density and pixel insets in one snapshot; the layout divides
+        // the insets once and multiplies dp rects once.
+        use crate::hud::mobile_hud::HudLayoutMode;
+
+        let mut game = game();
+        game.set_window_metrics(Vec2::new(1280.0, 720.0), 1.0, SafeInsets::default());
+        assert_eq!(game.viewport, Vec2::new(1280.0, 720.0));
+        assert_eq!(game.density_scale, 1.0);
+        {
+            let mobile = game.mobile_layout.as_ref().expect("layout");
+            assert_eq!(mobile.layout_mode, HudLayoutMode::LandscapeWide);
+            assert_eq!(mobile.dp().screen, Vec2::new(1280.0, 720.0));
+            assert_eq!(game.buttons[0].rect, mobile.card_slots[0]);
+        }
+
+        // 1280x720 px at 2 px/dp is a 640x360 dp phone: compact, drawer shut.
+        game.set_window_metrics(Vec2::new(1280.0, 720.0), 2.0, SafeInsets::default());
+        assert_eq!(game.density_scale, 2.0);
+        {
+            let mobile = game.mobile_layout.as_ref().expect("layout");
+            assert_eq!(mobile.dp().screen, Vec2::new(640.0, 360.0));
+            assert_eq!(mobile.layout_mode, HudLayoutMode::LandscapeCompact);
+            assert!(mobile.card_slots.is_empty());
+        }
+
+        // 40 px inset at 2 px/dp is 20 dp -> 40 px on screen, never 80 px.
+        game.set_window_metrics(
+            Vec2::new(1280.0, 720.0),
+            2.0,
+            SafeInsets::new(40.0, 0.0, 0.0, 0.0),
+        );
+        {
+            let mobile = game.mobile_layout.as_ref().expect("layout");
+            assert!((mobile.dp().safe.left - 20.0).abs() < 1e-3);
+            assert!((mobile.safe_frame.x - 40.0).abs() < 0.51);
+            assert!(
+                mobile.console.x.abs() < 1e-3,
+                "console stays edge to edge"
+            );
+        }
+
+        // Rotation keeps the density; portrait solves an inline card.
+        game.set_window_metrics(Vec2::new(720.0, 1280.0), 2.0, SafeInsets::default());
+        {
+            let mobile = game.mobile_layout.as_ref().expect("layout");
+            assert_eq!(mobile.layout_mode, HudLayoutMode::Portrait);
+            assert_eq!(mobile.card_slots.len(), 12);
+            assert_eq!(game.buttons[0].rect, mobile.card_slots[0]);
+        }
+
+        // `set_density` is the single-value path and rejects a no-op.
+        assert!(game.set_density(3.0));
+        assert_eq!(game.density_scale, 3.0);
+        assert!(!game.set_density(3.0));
     }
 
     #[test]

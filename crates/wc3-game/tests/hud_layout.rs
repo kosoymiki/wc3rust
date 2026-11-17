@@ -13,9 +13,9 @@
 use glam::Vec2;
 use wc3_game::hud::Rect;
 use wc3_game::hud::mobile_hud::{
-    HudLayout, HudLayoutMode, HudLayoutState, Orientation, SafeArea, UiPreferences, WindowMetrics,
-    CARD_COLUMNS, CARD_GAP_DP, CARD_ROWS, CARD_SLOTS, CARD_W_DP, CONSOLE_PAD_DP, GROUP_COUNT,
-    TOUCH_DP, ZONE_GAP_DP,
+    HudHit, HudLayout, HudLayoutMode, HudLayoutState, Orientation, SafeArea, UiPreferences,
+    WindowMetrics, CARD_COLUMNS, CARD_GAP_DP, CARD_ROWS, CARD_SLOTS, CARD_W_DP, CONSOLE_PAD_DP,
+    GROUP_COUNT, TOUCH_DP, ZONE_GAP_DP,
 };
 
 /// The measured target phone (tech-lead 2026-11-17): 2414x1080 px at density
@@ -150,6 +150,50 @@ fn hud_layout_single_px_conversion() {
             assert!((dp.w * density - px_rect.w).abs() < 0.01, "{name}: card slot");
         }
     }
+}
+
+#[test]
+fn hud_layout_points_pixels_round_trip() {
+    // AUD-004: the platform reports framebuffer pixels plus pixels per logical
+    // dp (SDL `SDL_GetWindowDisplayScale` on Android). Both directions are a
+    // single multiply/divide: dp -> px for drawing, px -> dp for insets, never
+    // a second scale on an already-pixel rect.
+    let metrics = WindowMetrics::new(Vec2::new(1440.0, 3120.0), 2.75);
+    assert!((metrics.density() - 2.75).abs() < 1e-6);
+    assert!((metrics.screen_dp().x - 1440.0 / 2.75).abs() < 1e-3);
+    assert!((metrics.screen_dp().y - 3120.0 / 2.75).abs() < 1e-3);
+
+    // Insets arrive in framebuffer pixels and become dp exactly once.
+    let with = metrics.with_pixel_insets(SafeArea::new(82.5, 0.0, 0.0, 66.0));
+    assert!((with.safe().left - 30.0).abs() < 1e-3);
+    assert!((with.safe().bottom - 24.0).abs() < 1e-3);
+    assert!((with.safe().left * with.density() - 82.5).abs() < 1e-3);
+
+    // A 48 dp target is 132 px at density 2.75, never 48 * 2.75 * 2.75.
+    let l = layout(with, HudLayoutState::default());
+    let p = l.to_px(with.density());
+    assert!((p.cell - TOUCH_DP * 2.75).abs() < 1e-3, "cell {}", p.cell);
+    let middle = CARD_SLOTS / 2;
+    for (dp, px) in l.card_slots.iter().zip(&p.card_slots) {
+        assert!(
+            (dp.x * 2.75 - px.x).abs() < 0.01 && (dp.w * 2.75 - px.w).abs() < 0.01,
+            "card slot dp {:?} -> px {:?} is not a single multiply",
+            dp,
+            px
+        );
+    }
+
+    // The rendered pixel rect is the hit target, and the dp centre maps onto
+    // that same pixel centre.
+    let slot = p.card_slots[middle];
+    assert_eq!(p.hit(slot.centre()), Some(HudHit::Card(middle)));
+    let dp_centre_px = l.card_slots[middle].centre() * with.density();
+    assert!(
+        (dp_centre_px - slot.centre()).length() < 1e-3,
+        "dp centre {:?} != px centre {:?}",
+        dp_centre_px,
+        slot.centre()
+    );
 }
 
 // ---------------------------------------------------------------------- §11

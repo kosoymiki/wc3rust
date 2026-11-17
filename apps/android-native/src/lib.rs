@@ -20,6 +20,7 @@ use glam::Vec2;
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
+use wc3_game::game::SafeInsets;
 use wc3_game::sim_bridge::{CheckpointMeta, MapStamp, ResumeReject};
 use wc3_game::{Assets, Game, Renderer};
 use wc3_input::lifecycle::{Effects, Lifecycle};
@@ -45,6 +46,7 @@ const SDL_EVENT_WINDOW_OCCLUDED: u32 = sdl_event::WINDOW_OCCLUDED;
 const SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: u32 = sdl_event::WINDOW_PIXEL_SIZE_CHANGED;
 const SDL_EVENT_WINDOW_CLOSE_REQUESTED: u32 = sdl_event::WINDOW_CLOSE_REQUESTED;
 const SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: u32 = sdl_event::WINDOW_SAFE_AREA_CHANGED;
+const SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: u32 = sdl_event::WINDOW_DISPLAY_SCALE_CHANGED;
 const SDL_EVENT_KEY_DOWN: u32 = sdl_event::KEY_DOWN;
 const SDL_EVENT_KEY_UP: u32 = sdl_event::KEY_UP;
 const SDL_EVENT_MOUSE_MOTION: u32 = sdl_event::MOUSE_MOTION;
@@ -232,6 +234,9 @@ unsafe extern "C" {
     fn SDL_SetWindowFullscreen(window: *mut SdlWindow, fullscreen: bool) -> bool;
     fn SDL_SetWindowFullscreenMode(window: *mut SdlWindow, mode: *const c_void) -> bool;
     fn SDL_GetWindowFlags(window: *mut SdlWindow) -> u64;
+    fn SDL_GetWindowDisplayScale(window: *mut SdlWindow) -> f32;
+    fn SDL_GetPrimaryDisplay() -> u32;
+    fn SDL_GetDisplayContentScale(display: u32) -> f32;
     fn SDL_GetWindowSafeArea(window: *mut SdlWindow, rect: *mut SdlRect) -> bool;
     fn SDL_SyncWindow(window: *mut SdlWindow) -> bool;
     fn SDL_DisableScreenSaver() -> bool;
@@ -357,21 +362,109 @@ fn window_insets(window: *mut SdlWindow) -> Option<(f32, f32, f32, f32)> {
     Some((left.max(0.0), top.max(0.0), right.max(0.0), bottom.max(0.0)))
 }
 
-fn apply_safe_insets(
+/// One platform snapshot of everything that changes HUD geometry: the
+/// framebuffer the renderer draws into, pixels per logical dp, and the
+/// window-manager safe insets in framebuffer pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowMetrics {
+    framebuffer: Vec2,
+    /// Pixels per dp (Android `densityDpi / 160`).
+    density: f32,
+    /// Safe insets in framebuffer pixels: left, top, right, bottom.
+    insets: (f32, f32, f32, f32),
+    /// `SDL_GetWindowSafeArea` answered; false means the zero insets are a
+    /// gap in the platform data, not a real full-window safe area.
+    insets_ok: bool,
+}
+
+/// Pixels per logical dp.
+///
+/// SDL3's Android backend reports the window in surface pixels
+/// (`donors/SDL/src/video/android/SDL_androidwindow.c`: `window->w =
+/// Android_SurfaceWidth`) and publishes the platform density as the display
+/// content scale (`SDL_androidvideo.c`: `display->content_scale =
+/// Android_ScreenDensity`, fed by `SDLSurface.surfaceChanged` with
+/// `densityDpi / 160`). `SDL_GetWindowDisplayScale` is
+/// `pixel_density * content_scale` (`SDL_video.c`), i.e. the Android density
+/// itself, and it is the scale UI content must be drawn at.
+/// `SDL_GetWindowPixelDensity` is 1.0 here (window points == surface pixels),
+/// so it is only the last-resort fallback, never the density.
+fn window_density(window: *mut SdlWindow) -> f32 {
+    // SAFETY: window is live for the whole loop.
+    let scale = unsafe { SDL_GetWindowDisplayScale(window) };
+    if scale.is_finite() && scale > 0.05 {
+        return scale.clamp(0.5, 8.0);
+    }
+    // The window value is refreshed on window events; the display content
+    // scale is set at video init and survives a window that has not resized.
+    // SAFETY: SDL is initialised for the whole run; the primary display exists.
+    let display = unsafe { SDL_GetPrimaryDisplay() };
+    let content = unsafe { SDL_GetDisplayContentScale(display) };
+    if content.is_finite() && content > 0.05 {
+        return content.clamp(0.5, 8.0);
+    }
+    1.0
+}
+
+fn window_metrics(window: *mut SdlWindow) -> Option<WindowMetrics> {
+    let mut width = 0i32;
+    let mut height = 0i32;
+    // SAFETY: window is live; out-pointers are valid.
+    unsafe { SDL_GetWindowSizeInPixels(window, &mut width, &mut height) };
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let insets = window_insets(window);
+    Some(WindowMetrics {
+        framebuffer: Vec2::new(width as f32, height as f32),
+        density: window_density(window),
+        insets: insets.unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        insets_ok: insets.is_some(),
+    })
+}
+
+/// Push framebuffer pixels + density + insets to the game layer in one call.
+///
+/// The HUD works in dp: this is the only place the platform values enter, and
+/// `Game::set_window_metrics` performs the single dp/px conversion (insets are
+/// divided by density there, HUD rects are multiplied back once). Never scale
+/// a rect that is already in pixels.
+fn apply_window_metrics(
     game: &mut Game,
     window: *mut SdlWindow,
-    last: &mut Option<(f32, f32, f32, f32)>,
+    last: &mut Option<WindowMetrics>,
 ) {
-    let Some((left, top, right, bottom)) = window_insets(window) else {
+    let Some(metrics) = window_metrics(window) else {
         return;
     };
-    let changed = game.set_safe_insets(left, top, right, bottom);
-    if changed || *last != Some((left, top, right, bottom)) {
-        log(&format!(
-            "GAME_SAFE_AREA left={left:.0} top={top:.0} right={right:.0} bottom={bottom:.0}"
-        ));
-        *last = Some((left, top, right, bottom));
+    if *last == Some(metrics) {
+        return;
     }
+    game.set_window_metrics(
+        metrics.framebuffer,
+        metrics.density,
+        SafeInsets::new(
+            metrics.insets.0,
+            metrics.insets.1,
+            metrics.insets.2,
+            metrics.insets.3,
+        ),
+    );
+    let dp = metrics.framebuffer / metrics.density.max(0.05);
+    log(&format!(
+        "GAME_WINDOW_METRICS px={:.0}x{:.0} dp={:.0}x{:.0} density={:.3} \
+         insets={:.0},{:.0},{:.0},{:.0}",
+        metrics.framebuffer.x,
+        metrics.framebuffer.y,
+        dp.x,
+        dp.y,
+        metrics.density,
+        metrics.insets.0,
+        metrics.insets.1,
+        metrics.insets.2,
+        metrics.insets.3
+    ));
+    *last = Some(metrics);
 }
 
 // ---------------------------------------------------------------- haptics
@@ -1293,13 +1386,14 @@ fn run() -> Result<(), String> {
     ));
 
     let mut game = Game::new(assets, 0xC0FFEE);
-    game.resize(config.width as f32, config.height as f32);
+    let mut last_metrics: Option<WindowMetrics> = None;
+    // First frame: the same snapshot path every resize/density/inset change
+    // takes, so the starting HUD is not built from the 2.0 fallback density.
+    apply_window_metrics(&mut game, window, &mut last_metrics);
     restore_checkpoint(&mut game);
     // The pointer is cleared before the game is dropped and is only read by
     // the event watcher while the loop is blocked in SDL_PumpEvents.
     GAME_FOR_CHECKPOINT.store(&mut game as *mut Game, Ordering::Release);
-    let mut last_insets: Option<(f32, f32, f32, f32)> = None;
-    apply_safe_insets(&mut game, window, &mut last_insets);
     let mut renderer = Renderer::new(
         &device,
         &queue,
@@ -1390,7 +1484,10 @@ fn run() -> Result<(), String> {
                         log("P0_WINDOW exposed=0");
                     }
                 }
-                SDL_EVENT_WINDOW_SAFE_AREA_CHANGED => {
+                SDL_EVENT_WINDOW_SAFE_AREA_CHANGED
+                | SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED => {
+                    // Both change the dp math: the insets move the content and
+                    // the display scale changes how many pixels one dp is.
                     needs_safe_area = true;
                 }
                 SDL_EVENT_FINGER_DOWN => {
@@ -1580,8 +1677,7 @@ fn run() -> Result<(), String> {
                     error
                 })?;
                 renderer.resize(&device, config.width, config.height);
-                game.resize(config.width as f32, config.height as f32);
-                apply_safe_insets(&mut game, window, &mut last_insets);
+                apply_window_metrics(&mut game, window, &mut last_metrics);
                 log(&format!(
                     "GAME_SURFACE_RESIZED {}x{} reason={reason} selection={} phase={:?} tick={}",
                     config.width,
@@ -1594,8 +1690,8 @@ fn run() -> Result<(), String> {
             needs_surface = false;
         }
         if needs_safe_area || frames % 30 == 0 {
-            apply_safe_insets(&mut game, window, &mut last_insets);
-            if last_insets.is_none() && frames == 90 {
+            apply_window_metrics(&mut game, window, &mut last_metrics);
+            if last_metrics.is_some_and(|metrics| !metrics.insets_ok) && frames == 90 {
                 log("GAME_SAFE_AREA unavailable (SDL_GetWindowSafeArea failed)");
             }
         }
@@ -1646,8 +1742,7 @@ fn run() -> Result<(), String> {
                         error
                     })?;
                     renderer.resize(&device, config.width, config.height);
-                    game.resize(config.width as f32, config.height as f32);
-                    apply_safe_insets(&mut game, window, &mut last_insets);
+                    apply_window_metrics(&mut game, window, &mut last_metrics);
                     last_frame_at = Instant::now();
                     log("P0_SURFACE_WATCHDOG recreated after 1.5 s without a frame");
                 }
@@ -1683,8 +1778,7 @@ fn run() -> Result<(), String> {
                     error
                 })?;
                 renderer.resize(&device, config.width, config.height);
-                game.resize(config.width as f32, config.height as f32);
-                apply_safe_insets(&mut game, window, &mut last_insets);
+                apply_window_metrics(&mut game, window, &mut last_metrics);
                 continue;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
