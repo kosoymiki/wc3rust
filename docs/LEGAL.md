@@ -22,7 +22,7 @@
 3. Эмулировать Battle.net/официальные сервисы, использовать официальные аккаунты/токены.
 4. Включать Blizzard-код, ассеты, SDK, art tools, editor code без лицензии.
 5. Распространять «готовый APK с игрой» — только движок; данные пользователь добавляет сам.
-6. Использовать чужие ассеты из Herofolends/репаков без прав.
+6. Использовать чужие ассеты из wc3rust/репаков без прав.
 
 ## 3. Что разрешено/планируется
 
@@ -33,7 +33,7 @@
 - Donor-код MIT/BSD с attribution; independent tests.
 - Документация/исследование форматов.
 
-## 4. FreeArc-архивы Herofolends
+## 4. FreeArc-архивы wc3rust
 
 `data1/2/3.bin` — FreeArc **AES-256/CTR**, пароль не в APK; `setup.exe` — Inno Setup без пароля,
 но архивный ключ встроен/выдаётся installer'ом. Мы **не ломаем** шифрование и не брутфорсим.
@@ -76,7 +76,7 @@
 | **Mesa/Turnip** | MIT (core; files may differ) | optional driver; notices/provenance |
 | parry / kira | Apache-2.0 | collision/audio; notices |
 | libxemit | unknown | research only; no linking until clarified |
-| Urho3D (Herofolends) | MIT | UI/architecture reference only |
+| Urho3D (wc3rust) | MIT | UI/architecture reference only |
 | BLPConverter | MIT | format reference only |
 
 ## 7. Blizzard AUP/EULA
@@ -106,4 +106,4 @@
 - Если когда-либо платно: только собственные косметические/сервисные функции, legal review,
   налоги/возвраты; не продавать доступ к «Warcraft III».
 - Не использовать торговые марки в названии продукта без разрешения; рабочее имя
-  `Herofolends-RS` — юридически проверить перед релизом.
+  `wc3rust` — юридически проверить перед релизом.

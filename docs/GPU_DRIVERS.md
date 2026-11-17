@@ -112,7 +112,7 @@ Evidence (`apps/driver-probe`, Rust adrenotools port):
 - test 6b: a **generated ICD JSON** + the Termux Khronos loader enumerates
   `Turnip Adreno (TM) 725` without any hook.
 
-Consequences for Herofolends-RS:
+Consequences for wc3rust:
 
 1. In a native app, load Turnip through a **bundled Khronos loader** (or any loader
    that uses the ICD interface) with a generated ICD JSON, or call

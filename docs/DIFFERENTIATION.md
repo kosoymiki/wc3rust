@@ -1,4 +1,4 @@
-# DIFFERENTIATION — как Herofolends-RS должен превзойти существующие реализации
+# DIFFERENTIATION — как wc3rust должен превзойти существующие реализации
 
 Дата: 2026-11-12. Это **целевая** матрица (target), не измеренный результат. Базовые
 измерения доноров — отдельный benchmark-этап; без цифр мы не заявляем победу.
@@ -7,7 +7,7 @@
 
 | реализация | стек | сильная сторона | потолок |
 |---|---|---|---|
-| **Herofolends** | C++/Urho3D + Lua/AngelScript | WC3-подобный UI, Android alpha | нет исходников, лаунчер, зашифрованные данные, GLES, заброшен |
+| **wc3rust** | C++/Urho3D + Lua/AngelScript | WC3-подобный UI, Android alpha | нет исходников, лаунчер, зашифрованные данные, GLES, заброшен |
 | **WarsmashModEngine** | Java/libGDX | самый полный JASS2/CASC/MPQ/UI | JVM/GC, GLES, не Android-first, нет Vulkan/Turnip |
 | **W3AndroidEngine** | Java/libGDX | Android touch/S Pen, CASC, Reforged, determinism | JVM/GC, GLES, Java heap, нет нативного Vulkan/Turnip |
 | **War3Net** | C#/.NET | форматный toolkit/JASS AST/replay | не runtime-движок, нет 3D-рендера |
@@ -17,7 +17,7 @@
 
 ## 2. Наш target-профиль
 
-**Herofolends-RS = Rust-native, Vulkan-first, touch-first, deterministic WC3-compatible RTS
+**wc3rust = Rust-native, Vulkan-first, touch-first, deterministic WC3-compatible RTS
 для Android/Windows/Linux, читающий user-owned MPQ/CASC, с Classic+HD/Reforged graphics sets,
 JASS2-совместимым runtime, modding API и asset recompilation pipeline.**
 
@@ -58,7 +58,7 @@ JASS2-совместимым runtime, modding API и asset recompilation pipelin
 
 ## 3. Feature matrix vs donors
 
-| feature | Herofolends | Warsmash | W3AndroidEngine | War3Net | OpenRA | **Herofolends-RS target** |
+| feature | wc3rust | Warsmash | W3AndroidEngine | War3Net | OpenRA | **wc3rust target** |
 |---|---|---|---|---|---|---|
 | Native Rust | no | no | no | no | no | **yes** |
 | Vulkan | no (GLES) | no (GLES) | no (GLES) | no | no (GL) | **yes (wgpu/Turnip optional)** |
@@ -81,7 +81,7 @@ JASS2-совместимым runtime, modding API и asset recompilation pipelin
 
 ## 4. Что именно «переплюнуть» (измеримые цели)
 
-| метрика | baseline (to measure) | target Herofolends-RS |
+| метрика | baseline (to measure) | target wc3rust |
 |---|---|---|
 | Cold start, Adreno 730, classic map | W3AndroidEngine / Warsmash | **< 4 s** (mid), **< 8 s** low-end |
 | FPS, 1080p, classic assets | W3AndroidEngine 30–120 target | **60 fps mid**, **120 fps high**, **30 fps low** |

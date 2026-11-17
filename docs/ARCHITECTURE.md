@@ -1,4 +1,4 @@
-# ARCHITECTURE — Herofolends-RS
+# ARCHITECTURE — wc3rust
 
 ## 1. Layering
 
@@ -74,7 +74,7 @@ user data folder
 ## 3. Rust workspace (target)
 
 ```
-herofolends-rs/
+wc3rust/
   Cargo.toml (workspace)
   crates/
     wc3-core        ids, math, time, errors, config

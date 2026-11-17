@@ -79,3 +79,17 @@ ae_trace_crash.log
 # Signing material never ships in a public tree; scripts/build-apk.sh
 # expects the file locally (`keytool ... -storepass android`).
 apps/android/debug.keystore
+
+# Development-stage material: lane audits, agent reports, device evidence and
+# working matrices stay on the operator's machine, not in the public tree.
+/docs/audit/
+/HUD_LAYOUT_QA.md
+
+# Donor/reverse-engineering research: kept on the operator's machine only.
+/docs/REVERSE_ENGINEERING.md
+/docs/RESEARCH.md
+/docs/DONORS.md
+/docs/DONORS_MATRIX.md
+/docs/WINLATOR_TURNIP_RESEARCH.md
+/docs/DONOR_MATRIX_20261112.md
+/docs/HORIZON_DONOR_MATRIX_20261112.md

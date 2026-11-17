@@ -1,9 +1,9 @@
-# ENGINE — Herofolends-RS architecture and coverage (2026-11-12)
+# ENGINE — wc3rust architecture and coverage (2026-11-12)
 
 This document is the map of the implemented engine. Every crate below compiles and
 has tests; the test runner is `scripts/safe-test.sh` because the shared phone
 already hit the kernel OOM killer twice when cargo was run uncapped in the
-interactive session (see `analysis/test-*.log`, dmesg evidence in captures 535/536).
+interactive session (see the operator's local test logs and dmesg captures 535/536).
 
 ## 1. Crates
 
@@ -109,7 +109,7 @@ gameplay reads only wc3-assetdb; no direct file I/O from sim/render
   `SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER`, builds a wgpu surface and presents a
   triangle. `scripts/build-apk.sh` builds a signed APK with aapt2/javac/d8/
   zipalign/apksigner. Verified on RMX3709: `P0_WINDOW_TRIANGLE_OK first_frame
-  surface=2414x1080`, Adreno 730, screenshot in `analysis/p0-apk-final.png`.
+  surface=2414x1080`, Adreno 730, screenshot kept on the operator's machine (`p0-apk-final.png`).
 - SDL3 is built for Android with `third_party/sdl3-android-build`; hook libs are
   Rust cdylibs. Turnip in a native APK needs a bionic Turnip build or a bundled
   Khronos loader + ICD JSON; the current APK uses the vendor driver. See
@@ -128,7 +128,7 @@ gameplay reads only wc3-assetdb; no direct file I/O from sim/render
 Device evidence:
 - `./scripts/p0-smoke.sh` — SDL3 3.5.0 + Turnip triangle.
 - `./target/debug/driver-probe` — 0 failures; Turnip ICD loads.
-- APK: `analysis/android-p0.log`, `analysis/p0-apk-final.png`.
+- APK: local build log and `p0-apk-final.png` (operator machine).
 - Bench: `./target/release/herofolends-bench`.
 
 ## 10. Known boundaries (explicit, not stubs)

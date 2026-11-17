@@ -1,6 +1,6 @@
-# PLAN — Herofolends-RS engineering plan
+# PLAN — wc3rust engineering plan
 
-Дата: 2026-11-12. Статус: Phase 0 (analysis/plan). План живой; каждая фаза заканчивается
+Дата: 2026-11-12. Статус: Phase 0 (рабочий план). План живой; каждая фаза заканчивается
 работающим вертикальным срезом, тестами и evidence. Никаких заглушек/TODO/placeholder.
 
 ## 0. Goal and invariants

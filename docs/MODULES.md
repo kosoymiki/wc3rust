@@ -1,4 +1,4 @@
-# MODULES — карта модулей Herofolends-RS
+# MODULES — карта модулей wc3rust
 
 Формат: **что → зачем → откуда (донор/спека) → входы/выходы → зависит от → фаза → тесты**.
 Границы модулей = границы владения; в H2 multi-agent у каждого `OWNER_PATHS` и evidence gate.
@@ -12,7 +12,7 @@
 | `wc3-assetdb` | content hash, deps, async cache | P1 | War3Net, mdx-m3-viewer |
 | `wc3-render` | wgpu/Vulkan pipelines | P0–P1 | wgpu, OpenRA separation |
 | `wc3-scene` | render scene, instancing, animation state | P1–P2 | mdx-m3-viewer, war3-model |
-| `wc3-ui` | wgpu UI/layout/themes | P1–P2 | Herofolends UI flow, W3AndroidEngine launcher |
+| `wc3-ui` | wgpu UI/layout/themes | P1–P2 | wc3rust UI flow, W3AndroidEngine launcher |
 | `wc3-sim` | ECS world/tick/orders/combat | P2 | Warsmash, OpenRA |
 | `wc3-path` | grid/flow-field/A*/collision | P2 | OpenRA, War3Net pathing |
 | `wc3-ai` | computer players | P2–P3 | OpenRA, Warsmash |
@@ -26,7 +26,7 @@
 | `wc3-android` | SDL3 Android shim/JNI/storage/Turnip | P0 | SDL3 Android, libadrenotools |
 | `wc3-gpu` | wgpu adapter/device/surface; optional SDL3 GPU | P0–P1 | wgpu, naga, SDL3 GPU |
 | `wc3-drivers` | Turnip driver manager/import/hash/rollback | P0–P1 | libadrenotools, Mesa |
-| `wc3-launcher` | data check/profiles/maps/campaign | P1–P4 | W3AndroidEngine, Herofolends |
+| `wc3-launcher` | data check/profiles/maps/campaign | P1–P4 | W3AndroidEngine, wc3rust |
 | `wc3-replay` | command log/hash/verify | P2–P5 | W3AndroidEngine determinism, War3Net.Replay |
 | `wc3-net` | lockstep/lobby/checksum | P6 | OpenRA, Gaffer |
 | `wc3-testkit` | fixtures/golden/fuzz/differential | P0+ | all donors |
@@ -93,7 +93,7 @@
 - **Что:** wgpu UI: layout, widgets, command card, minimap frame, tooltips, dialogs, themes,
   safe areas, DPI.
 - **Зачем:** touch-first HUD, Classic/Reforged skins, accessibility.
-- **Откуда:** Herofolends UI XML flow; W3AndroidEngine launcher; FDF concepts.
+- **Откуда:** wc3rust UI XML flow; W3AndroidEngine launcher; FDF concepts.
 - **Вход:** UI model + input; **выход:** draw + events.
 - **Зависит:** `wc3-render`, `wc3-input`.
 - **Фаза:** P1–P2.
@@ -237,7 +237,7 @@
 
 ### `wc3-launcher`
 - **Что:** first-run data folder, validate MPQ/CASC, profiles, campaign/map/custom/load/options/help.
-- **Зачем:** пользовательский вход; Herofolends/W3AndroidEngine flow.
+- **Зачем:** пользовательский вход; wc3rust/W3AndroidEngine flow.
 - **Фаза:** P1–P4.
 - **Тесты:** data check, missing files, path changes, profiles.
 

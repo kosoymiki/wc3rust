@@ -1,4 +1,4 @@
-# Herofolends device QA
+# wc3rust device QA
 
 Deterministic visual-regression and gameplay gate for the Android build
 (`org.herofolends.p0`, 2414x1080 landscape, Termux + KernelSU root).
@@ -26,14 +26,11 @@ scripts/qa-all.sh --gallery
 scripts/qa-all.sh --long 240
 ```
 
-Exit code is `0` only when every enabled hard gate passes. Evidence lands in:
+Exit code is `0` only when every enabled hard gate passes. Evidence lands in local,
+gitignored paths (`analysis/**`) on the operator's machine:
 
 | Path | Content |
 |---|---|
-| `analysis/agent-qa/latest/summary.json` | phase-by-phase PASS/FAIL |
-| `analysis/agent-qa/latest/visual.json` | every gate + metrics |
-| `analysis/agent-qa/latest/screen-start.png` | raw capture |
-| `analysis/agent-qa/latest/screen-start.annotated.png` | boxes/labels for every finding |
 | `analysis/agent-qa/latest/gameplay.json` | step-by-step log evidence |
 | `analysis/agent-qa/latest/gameplay/*.png` | screenshot + annotated + JSON per state |
 | `analysis/agent-qa/gallery/gates.json` | corpus gates |
