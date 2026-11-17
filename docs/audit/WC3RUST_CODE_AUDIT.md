@@ -21,6 +21,10 @@ the four area sections appended below, verbatim from the lanes that did the work
 | AUD-009 | P2 | FIXED | 2a7a392 | astc::tests 10/10 (u24 dims, overflow boundary, zero side, payload ±1, cap) |
 | AUD-010 | P2 | FIXED | 2a7a392 | avi::tests (strh 0..35, exact min 36, padded, malformed) |
 | AUD-011 | P2 | FIXED | 2a7a392 | avi::tests (depth 0/1/32/33/200k, empty nested, bad sizes, 10k siblings) |
+| AUD-014 | P2 | FIXED | 3966c3f | APK dumps: release `0661a7a9…` has no `debuggable`; debug `cd86414b…` has `debuggable=true`; `aapt2 --debug-mode` build type + link gate |
+| AUD-015 | P2 | FIXED | 3966c3f | `aud015_*` 7 tests + on-device permission map `r-x` → `r-x` (pre-fix `r-x` → `rwx`); `linker_symbols_resolve` passes |
+| AUD-026 | P3 | FIXED (SDL 3.5.0 contract proven; main-thread guard added) | 3966c3f | SDL source table in `status-android.md`; `SDL_IsMainThread` + `PENDING_CHECKPOINT`; `LIFECYCLE_LOG_CHECK_SELFTEST PASS`; device stress scenario |
+| AUD-029 | P4 | FIXED | 3966c3f | `dist/security-summary-{release,debug}.json` gate PASS; the same gate exits 1 on the pre-fix debuggable APK |
 | AUD-009-N1 | P3 | OPEN — next pass | — | `CompressedLevel::expected_bytes` still multiplies in u32 (`crates/wc3-render/src/texture.rs:460,444,412`); latent, `is_consistent` is public |
 
 ## Gates run for this registry
@@ -36,6 +40,15 @@ cargo test  -p wc3-render --lib astc::tests           10 passed
 The workspace-wide gate (§1.9: `test-all.sh` must not skip members) and the
 P3/P4 items are the next pass; this document does not claim the repository is
 defect-free (§0.3).
+
+## Android release + Adreno tooling (LEDGER 492)
+
+AUD-014 (build-type debuggable, proven from the APKs), AUD-015 (no RWX, bounded
+linker scan, fail-closed target validation), AUD-026 (SDL 3.5.0 watch contract +
+main-thread guard + lifecycle stress scenario) and AUD-029 (release security
+summary/gate) are **FIXED** in commit `3966c3f`. Full reproduction, commands,
+APK sha256s, permission-map before/after and limitations:
+`docs/audit/status-android.md`.
 
 ---
 
