@@ -7,7 +7,7 @@ fn game() -> Option<Game> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/(2)Ponds_v1.4.w3x");
-    let path = if path.is_file() { path } else { Path::new("/data/data/org.herofolends.p0/files/Melee.w3x").to_path_buf() };
+    let path = if path.is_file() { path } else { Path::new("/data/data/org.wc3rust.p0/files/Melee.w3x").to_path_buf() };
     if !path.is_file() { eprintln!("skip: melee map missing"); return None; }
     Some(Game::new(Assets::load(None, Some(&path)), 0x5EED))
 }

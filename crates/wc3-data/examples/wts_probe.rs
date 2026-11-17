@@ -17,7 +17,7 @@ use wc3_mpq::MpqArchive;
 
 fn main() {
     let root = PathBuf::from(
-        "/data/data/com.termux/files/home/src/herofolends-rs/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps",
+        "/data/data/com.termux/files/home/src/wc3rust/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps",
     );
     let mut maps = Vec::new();
     let mut stack = vec![root];

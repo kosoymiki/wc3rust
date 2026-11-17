@@ -42,11 +42,11 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 API = "https://api.figma.com"
-USER_AGENT = "herofolends-figma-pull/1.0 (Termux/Android; herofolends-rs)"
+USER_AGENT = "wc3rust-figma-pull/1.0 (Termux/Android; wc3rust)"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "analysis" / "figma"
 CANONICAL_PACK = (
-    REPO_ROOT / "analysis" / "hudskin" / "final" / "herofolends-hud-final"
+    REPO_ROOT / "analysis" / "hudskin" / "final" / "wc3rust-hud-final"
 )
 CANONICAL_MANIFEST = CANONICAL_PACK / "manifest.json"
 DESIGN_HEIGHT = 768.0
@@ -394,7 +394,7 @@ def extract(raw: dict, file_key: str, fetched_at: str | None = None) -> dict:
         walk(page, "", 1, document.get("id"), page.get("id", ""))
 
     return {
-        "schema": "herofolends.figma.nodes/1",
+        "schema": "wc3rust.figma.nodes/1",
         "file_key": file_key,
         "file_name": raw.get("name"),
         "last_modified": raw.get("lastModified"),
@@ -774,7 +774,7 @@ def build_manifest(
 
     manifest = {
         "schema_version": 1,
-        "project": "herofolends",
+        "project": "wc3rust",
         "kind": "figma-design",
         "reference_resolution": {
             "landscape": landscape,

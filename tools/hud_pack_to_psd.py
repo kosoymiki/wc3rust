@@ -2,8 +2,8 @@
 """Build layered PSDs from the HUD redraw pack (pytoshop).
 
 Outputs (next to the pack):
-  herofolends_hud_landscape.psd  - 1920x1080 composition with named groups/layers
-  herofolends_hud_components.psd - every manifest PNG as its own named layer (grid)
+  wc3rust_hud_landscape.psd  - 1920x1080 composition with named groups/layers
+  wc3rust_hud_components.psd - every manifest PNG as its own named layer (grid)
 """
 import json
 import os
@@ -13,7 +13,7 @@ from pytoshop import enums
 from pytoshop.user import nested_layers as nl
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PACK = os.path.join(ROOT, "analysis/agent-hud/redraw-v0.1/herofolends-hud-redraw")
+PACK = os.path.join(ROOT, "analysis/agent-hud/redraw-v0.1/wc3rust-hud-redraw")
 OUT = os.path.dirname(PACK)
 
 
@@ -98,7 +98,7 @@ def landscape():
     groups.append(nl.Group(name="90_menus_hidden", layers=menus, visible=False))
     psd = nl.nested_layers_to_psd(groups, color_mode=enums.ColorMode.rgb,
                                   compression=enums.Compression.raw, size=(H, W))
-    out = os.path.join(OUT, "herofolends_hud_landscape.psd")
+    out = os.path.join(OUT, "wc3rust_hud_landscape.psd")
     with open(out, "wb") as f:
         psd.write(f)
     return out
@@ -117,7 +117,7 @@ def components():
                                    a["w"], a["h"]))
     psd = nl.nested_layers_to_psd(layers, color_mode=enums.ColorMode.rgb,
                                   compression=enums.Compression.raw, size=(H, W))
-    out = os.path.join(OUT, "herofolends_hud_components.psd")
+    out = os.path.join(OUT, "wc3rust_hud_components.psd")
     with open(out, "wb") as f:
         psd.write(f)
     return out

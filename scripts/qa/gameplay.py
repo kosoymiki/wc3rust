@@ -503,7 +503,7 @@ def run(args) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--apk", type=Path, default=common.ROOT / "build" / "android-p0" / "herofolends-p0.apk")
+    parser.add_argument("--apk", type=Path, default=common.ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--shots", default=str(common.ANALYSIS / "screens"))
     parser.add_argument("--json-out", type=Path, default=common.ANALYSIS / "gameplay.json")

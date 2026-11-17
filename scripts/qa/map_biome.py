@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         "detail": f"box classification={box.get('box', {}).get('classification')} selected={box.get('box', {}).get('selected_before')}->{box.get('box', {}).get('selected_after')}",
     }
     report = {
-        "schema": "herofolends-r2-map-biome-v1",
+        "schema": "wc3rust-r2-map-biome-v1",
         "timestamp": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
         "maps_root": str(args.maps_root),
         "wc3re": str(args.wc3re),

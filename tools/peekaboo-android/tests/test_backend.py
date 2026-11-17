@@ -21,18 +21,18 @@ from peekaboo_android.backend import (
 
 UI_XML = b"""<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
-  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="org.herofolends.p0" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" long-clickable="false" selected="false" bounds="[0,0][1080,2414]">
-    <node index="0" text="Gold" resource-id="org.herofolends.p0:id/gold" class="android.widget.TextView" package="org.herofolends.p0" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" long-clickable="false" selected="false" bounds="[10,20][110,60]" />
-    <node index="1" text="" resource-id="org.herofolends.p0:id/hud_slot_1" class="android.widget.ImageButton" package="org.herofolends.p0" content-desc="Training slot" clickable="true" enabled="true" focused="false" scrollable="false" long-clickable="true" selected="false" bounds="[900,2200][1060,2380]" />
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="org.wc3rust.p0" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" long-clickable="false" selected="false" bounds="[0,0][1080,2414]">
+    <node index="0" text="Gold" resource-id="org.wc3rust.p0:id/gold" class="android.widget.TextView" package="org.wc3rust.p0" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" long-clickable="false" selected="false" bounds="[10,20][110,60]" />
+    <node index="1" text="" resource-id="org.wc3rust.p0:id/hud_slot_1" class="android.widget.ImageButton" package="org.wc3rust.p0" content-desc="Training slot" clickable="true" enabled="true" focused="false" scrollable="false" long-clickable="true" selected="false" bounds="[900,2200][1060,2380]" />
   </node>
 </hierarchy>
 """
 
 DUMPSYS = """
-  mCurrentFocus=Window{aa7f720 u0 org.herofolends.p0/org.libsdl.app.SDLActivity}
-  mFocusedApp=ActivityRecord{180737328 u0 org.herofolends.p0/.SDLActivity t1652}
+  mCurrentFocus=Window{aa7f720 u0 org.wc3rust.p0/org.libsdl.app.SDLActivity}
+  mFocusedApp=ActivityRecord{180737328 u0 org.wc3rust.p0/.SDLActivity t1652}
 
-  Window #0 Window{aa7f720 u0 org.herofolends.p0/org.libsdl.app.SDLActivity}:
+  Window #0 Window{aa7f720 u0 org.wc3rust.p0/org.libsdl.app.SDLActivity}:
     mDisplayId=0
     mBounds=[0,0][1080,2414]
     mHasSurface=true
@@ -46,10 +46,10 @@ DUMPSYS = """
     mAttrs={(0,0)(fillxfill) ty=APPLICATION}
 """
 
-AM_START = """Starting: Intent { cmp=org.herofolends.p0/org.libsdl.app.SDLActivity }
+AM_START = """Starting: Intent { cmp=org.wc3rust.p0/org.libsdl.app.SDLActivity }
 Status: ok
 LaunchState: WARM
-Activity: org.herofolends.p0/org.libsdl.app.SDLActivity
+Activity: org.wc3rust.p0/org.libsdl.app.SDLActivity
 ThisTime: 145
 TotalTime: 145
 WaitTime: 160
@@ -182,9 +182,9 @@ class BackendTests(unittest.TestCase):
             return RawRun(0, b"", "")
 
         backend, _ = self.backend(handler)
-        result = backend.ui_tree(package="org.herofolends.p0")
+        result = backend.ui_tree(package="org.wc3rust.p0")
         self.assertTrue(result["ok"])
-        self.assertEqual(result["tree"]["pkg"], "org.herofolends.p0")
+        self.assertEqual(result["tree"]["pkg"], "org.wc3rust.p0")
 
     def test_ui_tree_retries_once_on_transient_idle_failure(self):
         calls = {"dump": 0}
@@ -219,10 +219,10 @@ class BackendTests(unittest.TestCase):
     # ------------------------------------------------------------------ window
     def test_window_parse_focus_and_visibility(self):
         parsed = parse_dumpsys_window(DUMPSYS)
-        self.assertEqual(parsed["focus"]["component"], "org.herofolends.p0/org.libsdl.app.SDLActivity")
-        self.assertEqual(parsed["focus"]["package"], "org.herofolends.p0")
-        self.assertEqual(parsed["focused_app"]["package"], "org.herofolends.p0")
-        self.assertEqual(parsed["focused_app"]["activity"], "org.herofolends.p0.SDLActivity")
+        self.assertEqual(parsed["focus"]["component"], "org.wc3rust.p0/org.libsdl.app.SDLActivity")
+        self.assertEqual(parsed["focus"]["package"], "org.wc3rust.p0")
+        self.assertEqual(parsed["focused_app"]["package"], "org.wc3rust.p0")
+        self.assertEqual(parsed["focused_app"]["activity"], "org.wc3rust.p0.SDLActivity")
         self.assertEqual(len(parsed["visible_windows"]), 1)
         self.assertEqual(parsed["visible_windows"][0]["type"], "APPLICATION")
         self.assertEqual(parsed["visible_windows"][0]["bounds"], [0, 0, 1080, 2414])
@@ -232,7 +232,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(parsed["visible_windows"][0]["bounds"], [0, 0, 1080, 2414])
 
     def test_window_tool_uses_full_window_section(self):
-        focus_only = "mCurrentFocus=Window{aa7f720 u0 org.herofolends.p0/org.libsdl.app.SDLActivity}"
+        focus_only = "mCurrentFocus=Window{aa7f720 u0 org.wc3rust.p0/org.libsdl.app.SDLActivity}"
 
         def handler(argv):
             if argv == ["dumpsys", "window", "displays"]:
@@ -245,7 +245,7 @@ class BackendTests(unittest.TestCase):
             runner.calls,
             [["dumpsys", "window", "displays"], ["dumpsys", "window", "windows"]],
         )
-        self.assertEqual(parsed["focus"]["package"], "org.herofolends.p0")
+        self.assertEqual(parsed["focus"]["package"], "org.wc3rust.p0")
         self.assertEqual(parsed["focus"]["activity"], "org.libsdl.app.SDLActivity")
 
     def test_window_focus_dump_failure_is_reported(self):
@@ -263,30 +263,30 @@ class BackendTests(unittest.TestCase):
         parsed = parse_am_start(AM_START)
         self.assertEqual(parsed["status"], "ok")
         self.assertEqual(parsed["total_time"], 145)
-        self.assertEqual(parsed["activity"], "org.herofolends.p0/org.libsdl.app.SDLActivity")
+        self.assertEqual(parsed["activity"], "org.wc3rust.p0/org.libsdl.app.SDLActivity")
 
     def test_start_resolves_package_then_launches(self):
         def handler(argv):
             if argv[:3] == ["cmd", "package", "resolve-activity"]:
-                return RawRun(0, b"priority=0\norg.herofolends.p0/org.libsdl.app.SDLActivity\n", "")
+                return RawRun(0, b"priority=0\norg.wc3rust.p0/org.libsdl.app.SDLActivity\n", "")
             if argv[:2] == ["am", "start"]:
                 return RawRun(0, AM_START.encode(), "")
             return RawRun(0, b"", "")
 
         backend, runner = self.backend(handler)
-        result = backend.start("org.herofolends.p0")
-        self.assertEqual(result["component"], "org.herofolends.p0/org.libsdl.app.SDLActivity")
+        result = backend.start("org.wc3rust.p0")
+        self.assertEqual(result["component"], "org.wc3rust.p0/org.libsdl.app.SDLActivity")
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["dispatched"])
         self.assertEqual(runner.calls[-1][:2], ["am", "start"])
 
     # ---------------------------------------------------------------- apps
     def test_apps_filters_packages(self):
-        payload = b"package:com.termux\npackage:org.herofolends.p0\npackage:com.android.settings\n"
+        payload = b"package:com.termux\npackage:org.wc3rust.p0\npackage:com.android.settings\n"
 
         backend, _ = self.backend(lambda argv: RawRun(0, payload, ""))
         result = backend.apps(filter_text="hero")
-        self.assertEqual(result["packages"], ["org.herofolends.p0"])
+        self.assertEqual(result["packages"], ["org.wc3rust.p0"])
         self.assertEqual(result["total"], 3)
         self.assertEqual(result["matched"], 1)
 

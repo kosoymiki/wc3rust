@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Visual regression analyzer for Herofolends screenshots.
+"""Visual regression analyzer for wc3rust screenshots.
 
 Gate classes (every one is a hard FAIL unless marked WARN):
   system_bar_overlap      HUD chrome/text under the status bar, cutout or nav bar

@@ -107,7 +107,7 @@ unsafe fn enumerate_devices(api: &VkApi, label: &str) -> Result<Vec<String>, Str
     let create: CreateInstance = unsafe { mem::transmute(create_ptr) };
 
     let app_name = c"wc3-driver-probe";
-    let engine_name = c"herofolends-rs";
+    let engine_name = c"wc3rust";
     let app = VkApplicationInfo {
         s_type: VK_STRUCTURE_TYPE_APPLICATION_INFO,
         p_next: ptr::null(),

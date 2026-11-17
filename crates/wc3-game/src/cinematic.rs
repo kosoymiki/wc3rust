@@ -55,7 +55,7 @@ pub use wc3_formats::media::KNOWN_MOVIES;
 pub const DEFAULT_MOVIE_ROOTS: [&str; 3] = [
     "/storage/emulated/0/Download/wr3/iso/movies/Movies",
     "/storage/emulated/0/Download/wr3/iso/trailers/trailers",
-    "/data/data/org.herofolends.p0/files/Movies",
+    "/data/data/org.wc3rust.p0/files/Movies",
 ];
 
 /// Errors the movie layer reports.
@@ -359,11 +359,11 @@ impl MovieLibrary {
         }
     }
 
-    /// Scan roots from `HEROFOLENDS_MOVIES` (colon-separated) followed by
+    /// Scan roots from `WC3RUST_MOVIES` (colon-separated) followed by
     /// [`DEFAULT_MOVIE_ROOTS`].
     pub fn installed() -> Self {
         let mut roots: Vec<PathBuf> = Vec::new();
-        if let Some(list) = std::env::var_os("HEROFOLENDS_MOVIES") {
+        if let Some(list) = std::env::var_os("WC3RUST_MOVIES") {
             for part in std::env::split_paths(&list) {
                 roots.push(part);
             }
@@ -873,7 +873,7 @@ impl crate::Game {
     /// Starts the named movie: one of the nine
     /// [`KNOWN_MOVIES`] (`"HumanEd"`, `"Ghost"`, …).
     ///
-    /// The file is resolved from `HEROFOLENDS_MOVIES` (colon-separated roots)
+    /// The file is resolved from `WC3RUST_MOVIES` (colon-separated roots)
     /// and the standard install paths. A clean install without the movie files
     /// returns `Err(MovieError::Missing(name))`, whose `Display` is
     /// `MOVIE_MISSING <name>` — there is no fake playback.

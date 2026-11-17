@@ -5,7 +5,7 @@ use wc3_game::assets::Assets;
 use wc3_game::game::Game;
 
 fn main() {
-    let root = Path::new("/data/data/org.herofolends.p0/files");
+    let root = Path::new("/data/data/org.wc3rust.p0/files");
     let map = root.join("Melee.w3x");
     if !map.is_file() {
         println!("skip: {map:?} missing");

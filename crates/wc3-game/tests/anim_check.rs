@@ -10,7 +10,7 @@ use wc3_game::{Assets, Game};
 
 fn fixture() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let mpq = [
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq",
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
     ]
     .into_iter()
@@ -18,7 +18,7 @@ fn fixture() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     .find(|path| path.is_file())?
     .to_path_buf();
     let map = Path::new(
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Campaign/Human04.w3m",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Campaign/Human04.w3m",
     )
     .to_path_buf();
     map.is_file().then_some((mpq, map))

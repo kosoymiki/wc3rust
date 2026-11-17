@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PARITY = ROOT / "analysis" / "agent-qa" / "parity"
 OUT = ROOT / "analysis" / "agent-qa" / "final"
-APK = ROOT / "build" / "android-p0" / "herofolends-p0.apk"
+APK = ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk"
 
 TOP6 = ["models.per_def", "economy.lumber", "creeps.camps", "map.units.spawn", "jass.frame_loop"]
 EXTRA_QA = ["models.budget", "hud.resources", "hero.stats"]
@@ -234,7 +234,7 @@ def main() -> int:
             f"APK built from current tree and installed: {str(apk_sha)[:12]}",
             {"sha256": str(apk_sha), "size": str(APK.stat().st_size if APK.is_file() else 0)},
             [],
-            ["build/android-p0/herofolends-p0.apk"],
+            ["build/android-p0/release/wc3rust-p0.apk"],
             "JAVA_TOOL_OPTIONS='-Xmx512m' bash scripts/build-apk.sh",
             0 if apk_sha else 1,
             "build",
@@ -266,7 +266,7 @@ def main() -> int:
                     "analysis/agent-qa/parity/p0-device/DEVICE-NOT-RUN.md",
                     "analysis/agent-qa/parity/p0-device/cycle-attempt2.json",
                 ],
-                "python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/herofolends-p0.apk",
+                "python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/release/wc3rust-p0.apk",
                 1,
                 "device",
             )
@@ -289,7 +289,7 @@ def main() -> int:
                     "analysis/agent-qa/parity/device-cycle/STATUS-ROUND7.md",
                     "analysis/agent-qa/parity/device-cycle/cycle-blocked-shade.json",
                 ],
-                "python3 scripts/qa/device_cycle.py --apk build/android-p0/herofolends-p0.apk",
+                "python3 scripts/qa/device_cycle.py --apk build/android-p0/release/wc3rust-p0.apk",
                 1,
                 "device",
             )
@@ -320,11 +320,11 @@ def main() -> int:
         "summary": {"PASS": 42, "FAIL": 0, "WARN": 4},
         "status": "not re-verified on the current APK; device blocked by secure keyguard",
     }
-    if previous.get("schema") == "herofolends-qa-final-report-v2":
+    if previous.get("schema") == "wc3rust-qa-final-report-v2":
         inherited["summary"] = previous.get("summary", inherited["summary"])
 
     payload = {
-        "schema": "herofolends-qa-final-report-v3",
+        "schema": "wc3rust-qa-final-report-v3",
         "run_id": args.run_id,
         "timestamp": now(),
         "tree": {
@@ -334,7 +334,7 @@ def main() -> int:
             "probe": parity.get("probe"),
         },
         "apk": {
-            "path": "build/android-p0/herofolends-p0.apk",
+            "path": "build/android-p0/release/wc3rust-p0.apk",
             "sha256": apk_sha,
             "installed": (
                 ((p0_not_run.get("current_apk") or {}).get("installed"))
@@ -344,7 +344,7 @@ def main() -> int:
         },
         "commands": [
             {"cmd": "cargo check --offline -p wc3-sim", "rc": 0},
-            {"cmd": "cargo build --release --offline -p herofolends-android; cargo build --release --offline -p wc3-re --bin wc3re", "rc": 0},
+            {"cmd": "cargo build --release --offline -p wc3rust-android; cargo build --release --offline -p wc3-re --bin wc3re", "rc": 0},
             {"cmd": "JAVA_TOOL_OPTIONS='-Xmx512m' bash scripts/build-apk.sh", "rc": 0},
             {"cmd": "python3 scripts/qa/parity.py --skip-build", "rc": 1 if parity.get("status") != "PASS" else 0},
             {"cmd": "cargo test --offline -p wc3-data", "rc": 0},

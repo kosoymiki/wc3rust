@@ -8,7 +8,7 @@ recorded as `observed: false` with the reason instead of being retried. The
 script never installs, never rebuilds, and always returns the device to Termux.
 
 Usage:
-  python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/herofolends-p0.apk \
+  python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/release/wc3rust-p0.apk \
       --out analysis/agent-qa/parity/p0-device
 """
 
@@ -161,7 +161,7 @@ def centre(rect: list[float]) -> tuple[float, float]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "herofolends-p0.apk")
+    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk")
     parser.add_argument("--out", type=Path, default=ROOT / "analysis" / "agent-qa" / "parity" / "p0-device")
     args = parser.parse_args(argv)
     out = args.out.resolve()
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 
     device = Device()
     cycle: dict = {
-        "schema": "herofolends-p0-device-cycle-v1",
+        "schema": "wc3rust-p0-device-cycle-v1",
         "timestamp": now_utc(),
         "apk": {"path": str(args.apk), "sha256": sha256(args.apk)},
         "steps": {},
@@ -478,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
         interesting = [
             line for line in device.logs().splitlines()
-            if "Herofolends" in line and ("GAME_" in line or "PLACE_" in line or "TRAIN " in line or "BUTTON " in line)
+            if "wc3rust" in line and ("GAME_" in line or "PLACE_" in line or "TRAIN " in line or "BUTTON " in line)
         ][-40:]
         cycle["steps"]["runtime"] = {"pss_kb": pss, "log_tail": interesting}
 

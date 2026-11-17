@@ -19,14 +19,14 @@ const TERRAIN_TILE_SIZE: f32 = 128.0;
 fn main() {
     let mpq = [
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-        "/data/data/org.herofolends.p0/files/War3.mpq",
+        "/data/data/org.wc3rust.p0/files/War3.mpq",
     ]
     .iter()
     .map(PathBuf::from)
     .find(|path| path.exists())
     .expect("War3.mpq");
     let map = PathBuf::from(
-        "/data/data/com.termux/files/home/src/herofolends-rs/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/26/Warcraft 3 TFT-TFT multi-TFT 1.31.0.12071 multi-(2)Justice.w3x",
+        "/data/data/com.termux/files/home/src/wc3rust/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/26/Warcraft 3 TFT-TFT multi-TFT 1.31.0.12071 multi-(2)Justice.w3x",
     );
     let tag = std::env::var("H2_TERRAIN_TAG").unwrap_or_else(|_| "after".to_string());
     let mut game = Game::new(Assets::load(Some(&mpq), Some(&map)), 0x5EED);
@@ -132,7 +132,7 @@ fn main() {
         }
     }
 
-    let dir = PathBuf::from("/data/data/com.termux/files/home/src/herofolends-rs/analysis/agent-qa/terrain");
+    let dir = PathBuf::from("/data/data/com.termux/files/home/src/wc3rust/analysis/agent-qa/terrain");
     std::fs::create_dir_all(&dir).expect("terrain dir");
     let options = wc3_game::render::RenderOptions {
         skip_ui: true,

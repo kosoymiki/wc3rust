@@ -47,13 +47,13 @@ fn analyze(rgba: &[u8], width: u32, height: u32) -> (f64, f64, f64, f64, usize) 
 
 #[test]
 fn real_map_renders_terrain_units_and_no_giant_artifacts() {
-    let mpq = Path::new("/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq");
+    let mpq = Path::new("/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq");
     let mpq = if mpq.exists() {
         mpq.to_path_buf()
     } else {
         Path::new("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq").to_path_buf()
     };
-    let map = Path::new("/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Campaign/Human04.w3m");
+    let map = Path::new("/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Campaign/Human04.w3m");
     if !mpq.exists() || !map.exists() {
         eprintln!("SKIP visual: user War3.mpq/map not present");
         return;

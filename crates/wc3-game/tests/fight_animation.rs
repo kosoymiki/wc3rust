@@ -26,7 +26,7 @@ fn justice() -> Option<Game> {
     // without it the sim still runs but every visual is absent, so the test
     // would pass/fail on the wrong reason.
     let candidates = [
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq",
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
         "/data/data/com.termux/files/usr/tmp/War3.mpq",
     ];

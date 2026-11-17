@@ -1618,7 +1618,7 @@ pub(crate) fn install_root(assets: &Assets) -> Option<std::path::PathBuf> {
         }
     }
     for root in [
-        "/data/data/org.herofolends.p0/files",
+        "/data/data/org.wc3rust.p0/files",
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso",
     ] {
         let root = Path::new(root);
@@ -3049,7 +3049,7 @@ mod tests {
     fn data() -> Option<(PathBuf, PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -4804,7 +4804,7 @@ mod tests {
     fn melee_fixtures() -> Option<(PathBuf, PathBuf, PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -5032,7 +5032,7 @@ mod tests {
     fn melee_map() -> Option<(PathBuf, PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -5507,7 +5507,7 @@ mod tests {
     fn terrain_ground_detail_justice() {
         let Some(mpq) = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)

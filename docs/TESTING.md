@@ -1,7 +1,7 @@
 # wc3rust device QA
 
 Deterministic visual-regression and gameplay gate for the Android build
-(`org.herofolends.p0`, 2414x1080 landscape, Termux + KernelSU root).
+(`org.wc3rust.p0`, 2414x1080 landscape, Termux + KernelSU root).
 
 Everything here is device-driven: the real APK is built, installed, launched,
 screenshotted, tapped, and read back through `logcat`. No mocks, no hand-made

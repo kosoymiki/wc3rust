@@ -445,52 +445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "herofolends-android"
-version = "0.1.0"
-dependencies = [
- "glam",
- "libc",
- "pollster",
- "raw-window-handle",
- "wc3-game",
- "wc3-input",
- "wc3-render",
- "wc3-sim",
- "wgpu",
-]
-
-[[package]]
-name = "herofolends-bench"
-version = "0.1.0"
-dependencies = [
- "glam",
- "pollster",
- "wc3-formats",
- "wc3-game",
- "wc3-mpq",
- "wc3-path",
- "wc3-re",
- "wc3-render",
- "wc3-sim",
- "wgpu",
-]
-
-[[package]]
-name = "herofolends-headless"
-version = "0.1.0"
-dependencies = [
- "glam",
- "wc3-assetdb",
- "wc3-formats",
- "wc3-jass",
- "wc3-mpq",
- "wc3-path",
- "wc3-re",
- "wc3-replay",
- "wc3-sim",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1419,6 +1373,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc3-guest"
+version = "0.1.0"
+
+[[package]]
 name = "wc3-input"
 version = "0.1.0"
 dependencies = [
@@ -1516,6 +1474,52 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "wc3-adrenotools",
+]
+
+[[package]]
+name = "wc3rust-android"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "libc",
+ "pollster",
+ "raw-window-handle",
+ "wc3-game",
+ "wc3-input",
+ "wc3-render",
+ "wc3-sim",
+ "wgpu",
+]
+
+[[package]]
+name = "wc3rust-bench"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "pollster",
+ "wc3-formats",
+ "wc3-game",
+ "wc3-mpq",
+ "wc3-path",
+ "wc3-re",
+ "wc3-render",
+ "wc3-sim",
+ "wgpu",
+]
+
+[[package]]
+name = "wc3rust-headless"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "wc3-assetdb",
+ "wc3-formats",
+ "wc3-jass",
+ "wc3-mpq",
+ "wc3-path",
+ "wc3-re",
+ "wc3-replay",
+ "wc3-sim",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! Herofolends-RS playable game layer.
+//! wc3rust playable game layer.
 //!
 //! `Assets` loads the user's Warcraft III data, `Game` runs the deterministic
 //! simulation with real commands, AI, economy and win/lose conditions, and

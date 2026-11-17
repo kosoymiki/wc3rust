@@ -29,7 +29,7 @@ fn tap(game: &mut Game, world: Vec2) {
 fn main() {
     let mpq = [
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-        "/data/data/org.herofolends.p0/files/War3.mpq",
+        "/data/data/org.wc3rust.p0/files/War3.mpq",
     ]
     .iter()
     .map(Path::new)

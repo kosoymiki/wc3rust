@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PKG="org.herofolends.p0"
+PKG="org.wc3rust.p0"
 APP_DIR="/data/data/$PKG/files"
 TURNIP_DIR="$APP_DIR/turnip"
 MESA="${MESA_SOURCE:-$HOME/aeBuilDer cpp/mesa-source}"

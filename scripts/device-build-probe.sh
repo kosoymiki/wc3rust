@@ -18,7 +18,7 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-PKG=org.herofolends.p0
+PKG=org.wc3rust.p0
 OUT="$ROOT/analysis"
 LOG="$OUT/device-build-probe.log"
 mkdir -p "$OUT"

@@ -1,7 +1,7 @@
 //! Warcraft III reverse-engineering port (`wc3-re`).
 //!
 //! This crate is the canonical resource-access and script-execution layer for
-//! the HeroFolends Rust port. It is built from the operator's own local
+//! the wc3rust Rust port. It is built from the operator's own local
 //! Warcraft III installation (RoC + TFT) and the disassembly of the shipped
 //! binaries. Every format statement in the modules below is anchored either to
 //! a byte offset in a real local file or to a donor implementation (file:line

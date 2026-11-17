@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ANALYSIS = ROOT / "analysis" / "agent-qa"
-PKG = "org.herofolends.p0"
+PKG = "org.wc3rust.p0"
 ACTIVITY = "org.libsdl.app.SDLActivity"
 COMPONENT = f"{PKG}/{ACTIVITY}"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Herofolends-RS Android P0 APK.
+# Build the wc3rust Android P0 APK.
 #
 # Native:  libSDL3.so (Android/arm64, built by CMake) + libmain.so (Rust cdylib,
 #          SDL_main -> wgpu Vulkan surface) + libiconv/libc++_shared (SDL deps).
@@ -65,13 +65,13 @@ for tool in aapt2 javac d8 zipalign apksigner zip keytool; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
 done
 [[ -f "$SDL_LIB" ]] || { echo "missing $SDL_LIB (build SDL3 for Android first)" >&2; exit 2; }
-[[ -f "$MAIN_LIB" ]] || { echo "missing $MAIN_LIB (cargo build -p herofolends-android --release)" >&2; exit 2; }
+[[ -f "$MAIN_LIB" ]] || { echo "missing $MAIN_LIB (cargo build -p wc3rust-android --release)" >&2; exit 2; }
 # Never package a stale native library: a failed `cargo build` used to leave the
 # previous libmain.so in place and the APK shipped old code.
 stale_rs="$(find crates apps -name '*.rs' -newer "$MAIN_LIB" -print -quit 2>/dev/null || true)"
 stale_toml="$(find . -maxdepth 3 -name 'Cargo.toml' -newer "$MAIN_LIB" -print -quit 2>/dev/null || true)"
 if [[ -n "$stale_rs" || -n "$stale_toml" ]]; then
-  echo "libmain.so is older than the Rust sources ($stale_rs $stale_toml); rebuild with cargo build -p herofolends-android --release" >&2
+  echo "libmain.so is older than the Rust sources ($stale_rs $stale_toml); rebuild with cargo build -p wc3rust-android --release" >&2
   exit 2
 fi
 
@@ -150,16 +150,16 @@ if [[ ! -f "$KEYSTORE" ]]; then
     -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
 fi
 apksigner sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
-  --ks-key-alias androiddebugkey --out "$BUILD/herofolends-p0.apk" "$BUILD/aligned.apk"
-apksigner verify --verbose "$BUILD/herofolends-p0.apk" | head -6
+  --ks-key-alias androiddebugkey --out "$BUILD/wc3rust-p0.apk" "$BUILD/aligned.apk"
+apksigner verify --verbose "$BUILD/wc3rust-p0.apk" | head -6
 
-echo "APK: $BUILD/herofolends-p0.apk"
-ls -lh "$BUILD/herofolends-p0.apk"
+echo "APK: $BUILD/wc3rust-p0.apk"
+ls -lh "$BUILD/wc3rust-p0.apk"
 
 # AUD-029: the release security summary is generated from the signed APK and
 # printed to stdout (CI log) as well as written under dist/.
 echo "== release security summary ($BUILD_TYPE)"
 python3 "$ROOT/scripts/release_security_summary.py" \
-  --apk "$BUILD/herofolends-p0.apk" \
+  --apk "$BUILD/wc3rust-p0.apk" \
   --build-type "$BUILD_TYPE" \
   --dist "$ROOT/dist"

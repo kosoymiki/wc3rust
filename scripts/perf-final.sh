@@ -14,7 +14,7 @@ LOG="$OUT/final-run.log"
 attempt=0
 while [ "$attempt" -lt 25 ]; do
     attempt=$((attempt + 1))
-    if cargo build -p herofolends-bench --bin herofolends-gpu-bench > "$OUT/final-build.log" 2>&1; then
+    if cargo build -p wc3rust-bench --bin wc3rust-gpu-bench > "$OUT/final-build.log" 2>&1; then
         echo "FINAL build ok attempt=$attempt" >> "$LOG"
         break
     fi
@@ -33,7 +33,7 @@ fi
 export H2_BENCH_LOADAVG="$(su -c 'cat /proc/loadavg' 2>/dev/null || true)"
 echo "FINAL loadavg=$H2_BENCH_LOADAVG" >> "$LOG"
 
-BIN=target/debug/herofolends-gpu-bench
+BIN=target/debug/wc3rust-gpu-bench
 for skin in gpu cpu; do
     echo "FINAL run skin=$skin start=$(date +%H:%M:%S) loadavg=$(su -c 'cat /proc/loadavg' 2>/dev/null)" >> "$LOG"
     $PIN "$BIN" --frames 60 --units 120 --width 2414 --height 1080 --skin "$skin" \

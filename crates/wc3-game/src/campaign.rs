@@ -298,13 +298,13 @@ pub fn chapter_group(id: &str) -> usize {
 
 /// Directory the archive maps are extracted to (one file per chapter, reused).
 ///
-/// `HEROFOLENDS_MAP_CACHE` overrides it; the default is the platform temp dir
+/// `WC3RUST_MAP_CACHE` overrides it; the default is the platform temp dir
 /// (`$PREFIX/tmp` on Termux/Android), never a hardcoded `/tmp`.
 pub fn campaign_cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HEROFOLENDS_MAP_CACHE") {
+    if let Some(dir) = std::env::var_os("WC3RUST_MAP_CACHE") {
         return PathBuf::from(dir);
     }
-    std::env::temp_dir().join("herofolends-maps")
+    std::env::temp_dir().join("wc3rust-maps")
 }
 
 /// Mounted archives that can carry `Maps\Campaign`, in mount priority
@@ -321,7 +321,7 @@ pub fn campaign_archives() -> Vec<PathBuf> {
             push(PathBuf::from(dir));
         }
     }
-    push(PathBuf::from("/data/data/org.herofolends.p0/files"));
+    push(PathBuf::from("/data/data/org.wc3rust.p0/files"));
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     push(manifest.join("../../analysis/war3_full3"));
     push(manifest.join("../../analysis/agent-assets/wc3-install"));
@@ -1018,11 +1018,11 @@ pub fn beat_totals(mission: &Mission) -> BTreeMap<&'static str, usize> {
 // ===========================================================================
 
 /// Campaign map directory override (`.../Maps/Campaign` or a flat `.w3m` dir).
-pub const CAMPAIGN_DIR_ENV: &str = "HEROFOLENDS_CAMPAIGN";
+pub const CAMPAIGN_DIR_ENV: &str = "WC3RUST_CAMPAIGN";
 /// Install root override (`War3.mpq` + `Maps/`); the maps are `Maps/Campaign`.
-pub const DATA_ROOT_ENV: &str = "HEROFOLENDS_DATA";
+pub const DATA_ROOT_ENV: &str = "WC3RUST_DATA";
 /// Campaign progress file override (tests and portable installs).
-pub const SAVE_PATH_ENV: &str = "HEROFOLENDS_CAMPAIGN_SAVE";
+pub const SAVE_PATH_ENV: &str = "WC3RUST_CAMPAIGN_SAVE";
 
 /// Progress container magic. The layout is the `W3SV` save layout from
 /// `wc3-sim/src/save.rs` (magic, version, flags, payload length, FNV-1a
@@ -1242,7 +1242,7 @@ impl CampaignProgress {
         }
     }
 
-    /// `$HEROFOLENDS_CAMPAIGN_SAVE`, else `<data dir>/campaign.sav`.
+    /// `$WC3RUST_CAMPAIGN_SAVE`, else `<data dir>/campaign.sav`.
     pub fn default_path() -> PathBuf {
         if let Some(path) = std::env::var_os(SAVE_PATH_ENV) {
             return PathBuf::from(path);
@@ -1250,8 +1250,8 @@ impl CampaignProgress {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-            .unwrap_or_else(|| PathBuf::from("/data/data/org.herofolends.p0/files"));
-        base.join("herofolends").join(CAMPAIGN_SAVE_FILE)
+            .unwrap_or_else(|| PathBuf::from("/data/data/org.wc3rust.p0/files"));
+        base.join("wc3rust").join(CAMPAIGN_SAVE_FILE)
     }
 }
 
@@ -1552,7 +1552,7 @@ pub fn campaign_roots() -> Vec<PathBuf> {
     if let Some(dir) = std::env::var_os("H2_WC3_INSTALL") {
         push(PathBuf::from(dir));
     }
-    push(PathBuf::from("/data/data/org.herofolends.p0/files"));
+    push(PathBuf::from("/data/data/org.wc3rust.p0/files"));
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     push(manifest.join("../../analysis/war3_full3"));
     push(manifest.join("../../analysis/agent-assets/wc3-install"));
@@ -2889,7 +2889,7 @@ impl crate::Game {
     /// `RunInitializationTriggers`) and its quest panel.
     pub fn start_campaign_mission(&mut self, index: usize) -> Result<usize, String> {
         let registry = campaign_registry()
-            .ok_or_else(|| "campaign maps not found (set HEROFOLENDS_DATA)".to_string())?;
+            .ok_or_else(|| "campaign maps not found (set WC3RUST_DATA)".to_string())?;
         if !registry.is_unlocked(index) {
             return Err(format!("chapter {index} is locked"));
         }
@@ -2973,7 +2973,7 @@ impl crate::Game {
     /// Loads a chapter by its map id (`Human01`).
     pub fn start_campaign_mission_by_id(&mut self, id: &str) -> Result<usize, String> {
         let registry = campaign_registry()
-            .ok_or_else(|| "campaign maps not found (set HEROFOLENDS_DATA)".to_string())?;
+            .ok_or_else(|| "campaign maps not found (set WC3RUST_DATA)".to_string())?;
         let index = registry
             .index_of(id)
             .ok_or_else(|| format!("campaign has no chapter {id}"))?;

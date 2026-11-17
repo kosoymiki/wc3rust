@@ -28,7 +28,7 @@ The slot guard matches `scripts/game-selftest.sh:4` / `scripts/qa/device_evidenc
 
 ```bash
 # MCP stdio server (what opencode launches)
-python3 /data/data/com.termux/files/home/src/herofolends-rs/tools/peekaboo-android/server.py
+python3 /data/data/com.termux/files/home/src/wc3rust/tools/peekaboo-android/server.py
 
 # Manual smoke through the real stdio protocol
 python3 mcp_call.py tools/list
@@ -50,7 +50,7 @@ cd tools/peekaboo-android && python3 -m unittest discover -s tests -t .
 "peekaboo-android": {
   "type": "local",
   "command": ["/data/data/com.termux/files/usr/bin/python3",
-              "/data/data/com.termux/files/home/src/herofolends-rs/tools/peekaboo-android/server.py"],
+              "/data/data/com.termux/files/home/src/wc3rust/tools/peekaboo-android/server.py"],
   "enabled": true,
   "codemode": true,
   "timeout": 180000

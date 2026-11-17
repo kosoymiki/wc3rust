@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Root device runner for Herofolends QA (Termux/Android, no adb required).
+"""Root device runner for wc3rust QA (Termux/Android, no adb required).
 
 Why `su -c` instead of adb: adb is not attached to this device; KernelSU root
 can drive the local Android shell directly. Every privileged action is quoted
@@ -36,7 +36,7 @@ from pathlib import Path
 from . import common
 from .common import COMPONENT, PKG, QaError, rel, su, su_ok
 
-DEFAULT_APK = common.ROOT / "build" / "android-p0" / "herofolends-p0.apk"
+DEFAULT_APK = common.ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk"
 TMP_PINCH = "/data/local/tmp/h2qa-pinch.sh"
 
 

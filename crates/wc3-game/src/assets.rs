@@ -1848,7 +1848,7 @@ impl Assets {
             .and_then(|map| map.localized_info())
             .map(|info| info.name)
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Herofolends".to_string());
+            .unwrap_or_else(|| "wc3rust".to_string());
         if map_name.starts_with("TRIGSTR_") {
             map_name = map_path
                 .and_then(|path| path.file_stem())
@@ -3783,7 +3783,7 @@ mod geoaset_tests {
     fn data() -> Option<(PathBuf, PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -4456,7 +4456,7 @@ mod tft_archives {
                 return Some(dir);
             }
         }
-        let app = PathBuf::from("/data/data/org.herofolends.p0/files");
+        let app = PathBuf::from("/data/data/org.wc3rust.p0/files");
         if archive_named(&app, "War3.mpq").is_some() {
             return Some(app);
         }

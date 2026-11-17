@@ -133,7 +133,7 @@ def find_button(device: Device, lay: dict, w: int, h: int, label: str) -> tuple[
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "herofolends-p0.apk")
+    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk")
     parser.add_argument("--out", type=Path, default=OUT)
     args = parser.parse_args(argv)
     if args.out.resolve() != OUT:
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
 
     device = Device()
     run: dict = {
-        "schema": "herofolends-operator-scenarios-v1",
+        "schema": "wc3rust-operator-scenarios-v1",
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "apk": {"path": str(args.apk), "sha256": sha256(args.apk)},
         "steps": {},

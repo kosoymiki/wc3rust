@@ -1758,7 +1758,7 @@ mod tests {
     fn fixtures() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(std::path::PathBuf::from)

@@ -3317,15 +3317,15 @@ mod world_art {
     fn install() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
-            "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
+            "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq",
         ]
         .iter()
         .map(std::path::PathBuf::from)
         .find(|path| path.is_file())?;
         let map = [
-            "/data/data/com.termux/files/home/src/herofolends-rs/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/26/Warcraft 3 TFT-TFT multi-TFT 1.31.0.12071 multi-(2)Justice.w3x",
-            "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Melee.w3x",
+            "/data/data/com.termux/files/home/src/wc3rust/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/26/Warcraft 3 TFT-TFT multi-TFT 1.31.0.12071 multi-(2)Justice.w3x",
+            "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Melee.w3x",
         ]
         .iter()
         .map(std::path::PathBuf::from)

@@ -34,7 +34,7 @@ standard C1/C2 constants): `dssim` was rejected for licensing/build weight.
 
 Usage:
     python3 tools/hud_pack_check.py \
-      --manifest analysis/hudskin/final/herofolends-hud-final/manifest.json \
+      --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
       --layout analysis/hudskin/pack-layout-2414x1080.json \
       --layout analysis/hudskin/pack-layout-1080x2414.json \
       --png analysis/hudskin/pack-2414x1080.png \

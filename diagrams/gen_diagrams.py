@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate simple deterministic SVG infographics for Herofolends-RS."""
+"""Generate simple deterministic SVG infographics for wc3rust."""
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -39,7 +39,7 @@ def doc(title, body):
 </defs>
 <rect width="100%" height="100%" fill="{BG}"/>
 {text(40, 52, title, 30, TXT, "700")}
-{text(40, 82, "Herofolends-RS — clean-room Rust/Vulkan WC3-compatible RTS · plan 2026-11-12", 15, MUTED)}
+{text(40, 82, "wc3rust — clean-room Rust/Vulkan WC3-compatible RTS · plan 2026-11-12", 15, MUTED)}
 {body}
 </svg>
 '''

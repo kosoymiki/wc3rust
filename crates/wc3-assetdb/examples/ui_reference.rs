@@ -88,7 +88,7 @@ fn main() {
     let archive_path = args
         .get(1)
         .cloned()
-        .unwrap_or_else(|| "/data/data/org.herofolends.p0/files/War3.mpq".to_string());
+        .unwrap_or_else(|| "/data/data/org.wc3rust.p0/files/War3.mpq".to_string());
     let race = args.get(2).cloned().unwrap_or_else(|| "Human".to_string());
     let archive = match MpqArchive::open(&archive_path) {
         Ok(archive) => archive,

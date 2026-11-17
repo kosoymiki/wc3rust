@@ -215,7 +215,7 @@ impl<'a> Exporter<'a> {
         );
 
         let mut json = String::new();
-        json.push_str("{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"herofolends mdx2gltf\"},\n");
+        json.push_str("{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"wc3rust mdx2gltf\"},\n");
         let _ = writeln!(json, "  \"scene\": 0,");
         json.push_str("  \"scenes\": [{\"nodes\": [0]}],\n");
         let name = escape_json(&self.model.name);

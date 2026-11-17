@@ -2,7 +2,7 @@
 //!
 //! A `Surface::configure` validation failure is fatal unless it is raised inside
 //! an error scope: wgpu's default uncaptured-error handler panics, which is the
-//! `SIGABRT` in tombstone `org.herofolends.p0`
+//! `SIGABRT` in tombstone `org.wc3rust.p0`
 //! (`Surface does not support the adapter's queue family`). `configure_guarded`
 //! uses exactly the scope exercised here; these tests prove the mechanism turns a
 //! validation error into a returned value on the real device instead of aborting.

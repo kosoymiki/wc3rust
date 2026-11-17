@@ -57,7 +57,7 @@ fn main() {
     // device path, or the CI copy under $PREFIX/tmp).
     let install = std::env::var_os("H2_MEM_INSTALL")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new("/data/data/org.herofolends.p0/files").to_path_buf());
+        .unwrap_or_else(|| Path::new("/data/data/org.wc3rust.p0/files").to_path_buf());
     let root = install.as_path();
     // `H2_MEM_MAP` lets a host pair an archive copy with the repo's map (the CI
     // mirror keeps only the archives).
@@ -487,8 +487,8 @@ fn check_budget(
 /// change what is drawn": one frame, the same band `tests/visual.rs` measures,
 /// and the top colours so a HUD panel covering the world is obvious.
 fn frame_report() {
-    let repo = Path::new("/data/data/com.termux/files/home/src/herofolends-rs");
-    let mpq = [repo.join("analysis/war3_iso/War3.mpq"), Path::new("/data/data/org.herofolends.p0/files/War3.mpq").to_path_buf()]
+    let repo = Path::new("/data/data/com.termux/files/home/src/wc3rust");
+    let mpq = [repo.join("analysis/war3_iso/War3.mpq"), Path::new("/data/data/org.wc3rust.p0/files/War3.mpq").to_path_buf()]
         .into_iter()
         .find(|path| path.is_file());
     let map = [repo.join("analysis/war3_map/Maps/Campaign/Human04.w3m"), repo.join("analysis/war3_map/Maps/Melee.w3x")]
@@ -651,7 +651,7 @@ fn frame_report() {
 fn scope_report() {
     let install = std::env::var_os("H2_MEM_INSTALL")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new("/data/data/org.herofolends.p0/files").to_path_buf());
+        .unwrap_or_else(|| Path::new("/data/data/org.wc3rust.p0/files").to_path_buf());
     let map = std::env::var_os("H2_MEM_MAP")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| install.join("Melee.w3x"));
@@ -743,7 +743,7 @@ fn scope_report() {
 fn breakdown() {
     let install = std::env::var_os("H2_MEM_INSTALL")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new("/data/data/org.herofolends.p0/files").to_path_buf());
+        .unwrap_or_else(|| Path::new("/data/data/org.wc3rust.p0/files").to_path_buf());
     let map = std::env::var_os("H2_MEM_MAP")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| install.join("Melee.w3x"));

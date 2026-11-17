@@ -7,12 +7,12 @@ use wc3_sim::UnitKind;
 fn data() -> Option<(PathBuf, PathBuf)> {
     let mpq = [
         PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq"),
-        PathBuf::from("/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq"),
+        PathBuf::from("/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq"),
     ]
     .into_iter()
     .find(|p| p.exists())?;
     let map = Path::new(
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Campaign/Human04.w3m",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Campaign/Human04.w3m",
     );
     if !map.exists() {
         return None;

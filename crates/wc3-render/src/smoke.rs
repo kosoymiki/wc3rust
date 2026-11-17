@@ -47,7 +47,7 @@ impl GpuContext {
         .map_err(|e| GpuError(format!("request_adapter: {e}")))?;
         let adapter_info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("herofolends-p0-device"),
+            label: Some("wc3rust-p0-device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::Performance,

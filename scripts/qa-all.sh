@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministic QA gate for Herofolends (Termux/Android, root).
+# Deterministic QA gate for wc3rust (Termux/Android, root).
 #
 #   scripts/qa-all.sh                 # build + install + launch + visual + gameplay
 #   scripts/qa-all.sh --fast          # visual only (no gameplay)

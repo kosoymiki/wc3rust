@@ -13,7 +13,7 @@ fn save_ppm(path: &str, width: u32, height: u32, rgba: &[u8]) {
 
 fn main() {
     let mpq = "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq";
-    let map = "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Campaign/Human04.w3m";
+    let map = "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Campaign/Human04.w3m";
     let assets = Assets::load(Some(Path::new(mpq)), Some(Path::new(map)));
     println!("SOURCE {} map={} textures={} atlas={}", assets.source, assets.map_name, assets.textures.len(), assets.terrain_atlas.is_some());
     for line in &assets.debug {

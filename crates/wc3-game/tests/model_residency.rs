@@ -20,9 +20,9 @@ use wc3_game::game::Game;
 
 fn mpq() -> Option<PathBuf> {
     [
-        "/data/data/org.herofolends.p0/files/War3.mpq",
+        "/data/data/org.wc3rust.p0/files/War3.mpq",
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq",
     ]
     .iter()
     .map(PathBuf::from)
@@ -39,7 +39,7 @@ fn justice() -> Option<PathBuf> {
 fn campaign() -> Option<PathBuf> {
     [
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../analysis/war3_map/Maps/Campaign/Human04.w3m"),
-        PathBuf::from("/data/data/org.herofolends.p0/files/Human04.w3m"),
+        PathBuf::from("/data/data/org.wc3rust.p0/files/Human04.w3m"),
     ]
     .into_iter()
     .find(|path| path.is_file())

@@ -1,1 +1,1 @@
-"""Herofolends device QA toolkit (Termux/Android, root via su)."""
+"""wc3rust device QA toolkit (Termux/Android, root via su)."""

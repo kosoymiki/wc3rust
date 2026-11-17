@@ -10,8 +10,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-APK="$ROOT/build/android-p0/herofolends-p0.apk"
-PKG="org.herofolends.p0"
+APK="$ROOT/build/android-p0/release/wc3rust-p0.apk"
+PKG="org.wc3rust.p0"
 ACT="$PKG/org.libsdl.app.SDLActivity"
 OUT="$ROOT/analysis"
 LOG="$OUT/device-selftest.log"

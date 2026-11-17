@@ -17,6 +17,7 @@ members = [
     "crates/wc3-render",
     "crates/wc3-game",
     "crates/wc3-re",
+    "crates/wc3-guest",
     "crates/wc3-platform",
     "crates/wc3-gpu",
     "crates/wc3-adrenotools",
@@ -53,5 +54,5 @@ codegen-units = 1
 panic = "abort"
 
 [patch.crates-io]
-# Android acquire timeout cap (see third_party/wgpu-hal README-herofolends).
+# Android acquire timeout cap (see third_party/wgpu-hal/README.md).
 wgpu-hal = { path = "third_party/wgpu-hal" }

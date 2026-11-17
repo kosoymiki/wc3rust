@@ -1,6 +1,6 @@
 //! Headless vertical-slice runner: map -> simulation -> replay -> JASS.
 //!
-//! Usage: `herofolends-headless [map.w3m|w3x] [ticks]`
+//! Usage: `wc3rust-headless [map.w3m|w3x] [ticks]`
 
 use std::path::PathBuf;
 use std::time::Instant;

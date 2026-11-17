@@ -7,7 +7,7 @@ the box-select boundary with a real `getevent` capture. No retries: every step
 records its observed result, and a failed step is evidence, not a rerun.
 
 Usage:
-  python3 scripts/qa/device_cycle.py --apk build/android-p0/herofolends-p0.apk \
+  python3 scripts/qa/device_cycle.py --apk build/android-p0/release/wc3rust-p0.apk \
       --out analysis/agent-qa/parity/device-cycle
 """
 
@@ -103,7 +103,7 @@ def blue_boxes(image: np.ndarray, lay: dict, w: int, h: int) -> list[list[int]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "herofolends-p0.apk")
+    parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk")
     parser.add_argument("--out", type=Path, default=ROOT / "analysis" / "agent-qa" / "parity" / "device-cycle")
     args = parser.parse_args(argv)
     out = args.out.resolve()
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     device = Device()
     cycle: dict = {
-        "schema": "herofolends-device-cycle-v1",
+        "schema": "wc3rust-device-cycle-v1",
         "timestamp": now_utc(),
         "apk": {"path": str(args.apk), "sha256": sha256(args.apk)},
         "phase": "top-6-one-cycle",

@@ -1,4 +1,4 @@
-//! Herofolends-RS Android entry point.
+//! wc3rust Android entry point.
 //!
 //! Loaded by SDL3's `SDLActivity` as `libmain.so`; SDL3 calls the exported
 //! `SDL_main` on its dedicated thread. The app creates the SDL3 Vulkan window,
@@ -335,7 +335,7 @@ fn log(message: &str) {
             return;
         };
         // SAFETY: tag/fmt are static NUL-terminated strings; text lives for the call.
-        unsafe { print(4, c"Herofolends".as_ptr(), c"%s".as_ptr(), text.as_ptr()) };
+        unsafe { print(4, c"wc3rust".as_ptr(), c"%s".as_ptr(), text.as_ptr()) };
     }
 }
 
@@ -671,12 +671,12 @@ mod haptics {
 /// The app ships a Khronos loader that honours this variable; the AOSP loader
 /// ignores it and keeps using the vendor Adreno driver.
 fn configure_turnip() {
-    let json = "/data/data/org.herofolends.p0/files/turnip/freedreno_icd.aarch64.json";
+    let json = "/data/data/org.wc3rust.p0/files/turnip/freedreno_icd.aarch64.json";
     if std::path::Path::new(json).is_file() {
         // Preload our Khronos loader (SONAME libvulkan.so) before SDL opens
         // Vulkan, so `dlopen("libvulkan.so")` reuses it instead of the AOSP
         // loader, which ignores VK_ICD_FILENAMES.
-        let loader = "/data/data/org.herofolends.p0/files/turnip/libvulkan.so";
+        let loader = "/data/data/org.wc3rust.p0/files/turnip/libvulkan.so";
         // SAFETY: called on SDL's main thread before any Vulkan object exists.
         unsafe {
             std::env::set_var("VK_ICD_FILENAMES", json);
@@ -686,11 +686,11 @@ fn configure_turnip() {
             // point SDL at the app's Khronos loader instead.
             SDL_SetHint(
                 c"SDL_VULKAN_LIBRARY".as_ptr(),
-                c"/data/data/org.herofolends.p0/files/turnip/libvulkan.so".as_ptr(),
+                c"/data/data/org.wc3rust.p0/files/turnip/libvulkan.so".as_ptr(),
             );
             // Capture stderr from the Vulkan loader for diagnostics.
             let fd = libc::open(
-                c"/data/data/org.herofolends.p0/files/loader.log".as_ptr(),
+                c"/data/data/org.wc3rust.p0/files/loader.log".as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
                 0o600,
             );
@@ -707,7 +707,7 @@ fn configure_turnip() {
             ));
             // Direct probe with SDL's own loader calls: prove the loader this
             // process will use exposes VK_KHR_surface and the Android WSI.
-            let handle = SDL_LoadObject(c"/data/data/org.herofolends.p0/files/turnip/libvulkan.so".as_ptr());
+            let handle = SDL_LoadObject(c"/data/data/org.wc3rust.p0/files/turnip/libvulkan.so".as_ptr());
             if handle.is_null() {
                 log(&format!("GAME_VULKAN probe_load_failed={}", sdl_error("SDL_LoadObject")));
             } else {
@@ -763,27 +763,44 @@ fn data_dir() -> PathBuf {
     // by scoped storage (observed: GAME_CHECKPOINT_FAILED ... Permission denied
     // os error 13), so the app's internal files dir is the writable home. The
     // external dir stays reachable for `adb push` during setup.
-    let internal = PathBuf::from("/data/data/org.herofolends.p0/files");
+    let internal = PathBuf::from("/data/data/org.wc3rust.p0/files");
     if internal.is_dir() {
         internal
     } else {
-        PathBuf::from("/sdcard/Android/data/org.herofolends.p0/files")
+        PathBuf::from("/sdcard/Android/data/org.wc3rust.p0/files")
     }
 }
 
-/// Checkpoint path that is actually writable on this device.
+/// Checkpoint paths that are actually writable on this device.
 fn checkpoint_paths() -> [PathBuf; 2] {
     [
         checkpoint_path(),
-        PathBuf::from("/sdcard/Android/data/org.herofolends.p0/files/herofolends-resume.sav"),
+        PathBuf::from("/sdcard/Android/data/org.wc3rust.p0/files/wc3rust-resume.sav"),
     ]
+}
+
+/// Every checkpoint a launch may resume from: the writable pair first, then the
+/// file a pre-rename install (`org.herofolends.p0`) left in the app files dir,
+/// so migrated game data resumes the operator's run instead of starting over.
+fn resume_candidates() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = checkpoint_paths().into_iter().collect();
+    if let Some(previous) = pre_rename_checkpoint() {
+        candidates.push(previous);
+    }
+    candidates
+}
+
+/// The checkpoint file name this app used before the move to `org.wc3rust.p0`.
+fn pre_rename_checkpoint() -> Option<PathBuf> {
+    let path = data_dir().join("herofolends-resume.sav");
+    path.is_file().then_some(path)
 }
 
 fn find_file(names: &[&str]) -> Option<PathBuf> {
     let bases = vec![
-        PathBuf::from("/data/data/org.herofolends.p0/files"),
+        PathBuf::from("/data/data/org.wc3rust.p0/files"),
         data_dir(),
-        PathBuf::from("/storage/emulated/0/Android/data/org.herofolends.p0/files"),
+        PathBuf::from("/storage/emulated/0/Android/data/org.wc3rust.p0/files"),
         PathBuf::from("/sdcard"),
     ];
     for base in bases {
@@ -824,10 +841,10 @@ fn find_file(names: &[&str]) -> Option<PathBuf> {
 // anything a previous build or another map wrote.
 
 fn checkpoint_path() -> PathBuf {
-    data_dir().join("herofolends-resume.sav")
+    data_dir().join("wc3rust-resume.sav")
 }
 
-/// `herofolends-resume.sav` -> `herofolends-resume.sav.meta`.
+/// `wc3rust-resume.sav` -> `wc3rust-resume.sav.meta`.
 fn meta_path(save: &std::path::Path) -> PathBuf {
     let mut name = save.as_os_str().to_owned();
     name.push(".meta");
@@ -945,7 +962,7 @@ fn restore_checkpoint(game: &mut Game) {
     // metadata (written by an older build) is reported, never guessed at.
     let mut found: Option<(PathBuf, CheckpointMeta)> = None;
     let mut legacy: Option<PathBuf> = None;
-    for candidate in checkpoint_paths() {
+    for candidate in resume_candidates() {
         if !candidate.is_file() {
             continue;
         }
@@ -1023,7 +1040,7 @@ fn restore_checkpoint(game: &mut Game) {
 }
 
 fn clear_checkpoint() {
-    for path in checkpoint_paths() {
+    for path in resume_candidates() {
         for file in [path.clone(), meta_path(&path)] {
             match std::fs::remove_file(&file) {
                 Ok(()) => log(&format!("GAME_CHECKPOINT_CLEARED path={}", file.display())),
@@ -1262,7 +1279,7 @@ fn run() -> Result<(), String> {
     // SAFETY: title is static and NUL terminated.
     let window = unsafe {
         SDL_CreateWindow(
-            c"Herofolends".as_ptr(),
+            c"wc3rust".as_ptr(),
             1280,
             720,
             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
@@ -1938,7 +1955,7 @@ pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn herofolends_quit_sdl() {
+pub extern "C" fn wc3rust_quit_sdl() {
     // SAFETY: paired with SDL_Init in run(); safe to call once.
     unsafe { SDL_Quit() };
 }

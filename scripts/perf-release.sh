@@ -17,7 +17,7 @@ LOG="$OUT/release-build.log"
 attempt=0
 while [ "$attempt" -lt 20 ]; do
     attempt=$((attempt + 1))
-    if cargo build --release -p herofolends-bench --bin herofolends-gpu-bench >> "$LOG" 2>&1; then
+    if cargo build --release -p wc3rust-bench --bin wc3rust-gpu-bench >> "$LOG" 2>&1; then
         echo "RELEASE build ok attempt=$attempt" | tee -a "$LOG"
         break
     fi
@@ -29,7 +29,7 @@ if [ "$attempt" -ge 20 ]; then
     exit 2
 fi
 
-BIN=target/release/herofolends-gpu-bench
+BIN=target/release/wc3rust-gpu-bench
 PIN=""
 if command -v taskset >/dev/null 2>&1 && taskset -c 4-7 true 2>/dev/null; then
     PIN="taskset -c 4-7"

@@ -1,11 +1,11 @@
 [package]
-name = "herofolends-headless"
+name = "wc3rust-headless"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "herofolends-headless"
+name = "wc3rust-headless"
 path = "src/main.rs"
 
 [dependencies]

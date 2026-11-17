@@ -2,7 +2,7 @@
 //!
 //! `wgpu` reports a `Surface::configure` validation failure through the default
 //! uncaptured-error handler, which panics → `SIGABRT` on Android (tombstone
-//! `org.herofolends.p0`, `Surface does not support the adapter's queue family`).
+//! `org.wc3rust.p0`, `Surface does not support the adapter's queue family`).
 //! The failure is real: after Android detaches/recreates the `ANativeWindow`
 //! (orientation change, background→resume, fullscreen transition), the wgpu
 //! `Surface` still points at the old window handle, `vkGetPhysicalDeviceSurfaceSupportKHR`
@@ -190,7 +190,7 @@ pub fn configure_surface(
         };
         let (device, queue) =
             match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("herofolends-surface-device"),
+                label: Some("wc3rust-surface-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,

@@ -2,7 +2,7 @@
 //!
 //! `cargo run -p wc3-formats --example movie_inventory -- [DIR...]`
 //!
-//! Default roots are the operator's extracted ISO tree; `HEROFOLENDS_MOVIES`
+//! Default roots are the operator's extracted ISO tree; `WC3RUST_MOVIES`
 //! (colon-separated) is honoured first. The table lists name, presence, bytes
 //! and path, plus `MOVIE_MISSING <name>` lines for absent titles — the exact
 //! contract the runtime resolver uses.
@@ -18,7 +18,7 @@ const DEFAULT_ROOTS: [&str; 2] = [
 
 fn main() {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(list) = std::env::var_os("HEROFOLENDS_MOVIES") {
+    if let Some(list) = std::env::var_os("WC3RUST_MOVIES") {
         roots.extend(std::env::split_paths(&list));
     }
     let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();

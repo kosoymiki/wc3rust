@@ -24,7 +24,7 @@ fn main() {
                 found += 1;
                 let head = &bytes[..4.min(bytes.len())];
                 println!("FOUND {base} len={} head={:02x?}", bytes.len(), head);
-                let out = format!("/data/data/com.termux/files/home/src/herofolends-rs/analysis/mpq-{}", base.replace('\\', "_"));
+                let out = format!("/data/data/com.termux/files/home/src/wc3rust/analysis/mpq-{}", base.replace('\\', "_"));
                 std::fs::write(&out, &bytes).ok();
                 println!("  wrote {out}");
             }

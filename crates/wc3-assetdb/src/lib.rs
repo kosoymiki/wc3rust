@@ -351,7 +351,7 @@ impl AssetDb {
         self.source.listfile()
     }
 
-    /// Label of the active source (`"War3.mpq"`, `"herofolends"`, ...).
+    /// Label of the active source (`"War3.mpq"`, `"wc3rust"`, ...).
     pub fn source_label(&self) -> &str {
         self.source.label()
     }

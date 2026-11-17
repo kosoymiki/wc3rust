@@ -2,7 +2,7 @@
 # Robustness lane (ledger 419) verification sequence.
 # One cargo at a time through scripts/h2-cargo; every step's rc is recorded.
 set -u
-cd /data/data/com.termux/files/home/src/herofolends-rs || exit 1
+cd /data/data/com.termux/files/home/src/wc3rust || exit 1
 LOG=/data/data/com.termux/files/usr/tmp/opencode/robustness-verify.log
 : > "$LOG"
 say() { echo "$*" | tee -a "$LOG"; }

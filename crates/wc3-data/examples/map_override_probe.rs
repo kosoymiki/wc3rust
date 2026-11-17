@@ -19,7 +19,7 @@ use wc3_formats::map::map_mpq_base;
 use wc3_mpq::MpqArchive;
 
 fn main() {
-    let root = Path::new("/data/data/com.termux/files/home/src/herofolends-rs");
+    let root = Path::new("/data/data/com.termux/files/home/src/wc3rust");
     let mut data = GameDatabase::load(&DirSource::new(root.join("analysis/war3x_data"))).expect("load");
     let map = root.join(
         "donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/DotF_v1.4.w3x",

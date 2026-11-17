@@ -167,7 +167,7 @@ for Turnip.
 ## 7. Reproduce
 
 ```bash
-cd ~/src/herofolends-rs
+cd ~/src/wc3rust
 cargo test -p wc3-adrenotools
 cargo build -p wc3-adrenotools-main-hook -p wc3-adrenotools-fopen-hook -p wc3-adrenotools-gsl-hook
 ./target/debug/driver-probe            # $PREFIX/lib Turnip

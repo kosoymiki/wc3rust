@@ -904,7 +904,7 @@ fn gallery_terrain(root: &Path, out: &Path, db: &mut AssetDb, limit: usize) {
 fn mpq_path() -> Option<PathBuf> {
     for candidate in [
         "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_iso/War3.mpq",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_iso/War3.mpq",
     ] {
         if Path::new(candidate).exists() {
             return Some(PathBuf::from(candidate));

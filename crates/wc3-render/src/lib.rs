@@ -1,4 +1,4 @@
-//! Canonical wgpu/Vulkan renderer for the Herofolends base.
+//! Canonical wgpu/Vulkan renderer for the wc3rust base.
 //!
 //! One renderer, one vertex layout, one pipeline family. It draws **models**
 //! (skinned or static), **static batches** (terrain mesh, merged doodads) and the

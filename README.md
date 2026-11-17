@@ -1,81 +1,210 @@
-# wc3rust — clean-room WC3-compatible RTS engine for Android
+# wc3rust
 
-Проект: **wc3rust**. Статус: **Phase 0 — P0 core + Rust-порт libadrenotools**:
-Rust workspace + **SDL3 3.5.0** + **wgpu 30.0.1/Vulkan** triangle на **Turnip** (Mesa 26.2.6),
-StormLib открывает `War3.mpq` (10 525 файлов), извлечены и протестированы MDX/BLP/SLK фикстуры;
-8 тестов, clippy/fmt clean. `crates/wc3-adrenotools` — полный Rust-порт
-libadrenotools (namespace loader, hooks, KGSL, BCn), 27 тестов, on-device probe
-0 failures; Turnip грузится через hook/ICD (Adreno 725). P0 remaining: SDL3
-window/surface в Android APK (NDK), baseline W3AndroidEngine, legal sign-off.
-Полный план/доки готовы.
-Это не форк и не перепаковка чужого кода: это новая Rust/Vulkan-реализация RTS-движка,
-совместимого с пользовательскими данными Warcraft III (RoC/TFT), с touch-first управлением
-и опциональным рендером через Turnip.
+wc3rust is a clean-room Rust/Vulkan real-time-strategy engine that runs on the operator's own
+Warcraft III: Reign of Chaos / The Frozen Throne data. It is not a fork, a repack or a wrapper of
+another engine: the simulation, renderer, formats, HUD and touch layer are written here, in Rust,
+against the user's legally owned game files that the app reads from its private data directory at
+runtime. Android (Termux, aarch64, SDL3 + wgpu/Vulkan) is the shipping target; a host build runs the
+same crates for tests, tools and headless proofs.
 
-> **Правовая рамка:** в репозитории нет и не будет кода Blizzard, моделей, текстур, карт,
-> звуков или иных игровых ассетов. Пользователь подключает свою легальную копию данных.
-> Это не аффилированный с Blizzard проект; Warcraft — торговая марка Blizzard Entertainment.
-> Подробно: `docs/LEGAL.md`.
+The repository contains no Blizzard code, models, textures, maps or sounds. Warcraft is a trademark
+of Blizzard Entertainment; this project is not affiliated with Blizzard. See `docs/LEGAL.md`.
 
-## Что это значит для проекта
+## Requirements and toolchain
 
-1. Чужой порт полезен как **архитектурный и UX-референс**, но не как кодовая база:
-   Urho3D + Lua/AngelScript + StormLib + BLPConverter + самописный RTS-слой.
-2. Наш стек: **Rust + SDL3 + wgpu/Vulkan + Turnip (через libadrenotools)**, touch-first,
-   deterministic simulation, clean-room asset pipeline. SDL3 — обязательный platform layer
-   (window/input/touch/pen/gamepad/audio/Android); wgpu — основной renderer; SDL3 GPU API —
-   optional secondary backend; Turnip — free Mesa driver, user-selectable с fallback.
-3. `data*.bin` — **зашифрованные FreeArc** (AES-256/CTR). Пароль/ключ не в APK; installer
-   не passworded, но архивный ключ встроен в скрипт/выдаётся `ISDone`. Мы **не ломаем**
-   шифрование: нужен пользовательский пароль/запуск оригинального installer на Windows
-   или легально извлечённые данные. Это Phase 0 gate, не «потом».
+| Item | Value |
+| --- | --- |
+| Language | Rust 1.99.1, edition 2024 |
+| Workspace | 30 members (`crates/`, `apps/`, `tools/`) |
+| Platform | Termux/Android aarch64 (primary), host Linux for tests/tools |
+| Graphics | SDL3 + wgpu 30 / Vulkan; Turnip through `crates/wc3-adrenotools` |
+| Android SDK | `aapt2`, `javac`, `d8`, `zipalign`, `apksigner`, `keytool`, `android.jar` (auto-detected at `$PREFIX/tmp/opencode/android-sdk/android-36/android.jar`) |
+| Root | `su` (KernelSU) for install, data migration and logcat |
+| SDL3 native | prebuilt at `third_party/sdl3-android-build/libSDL3.so` |
 
-## Технологический baseline
+`scripts/h2-cargo` is the only cargo entry point on this device. It serialises every cargo
+invocation through one global flock slot, waits for a memory floor before starting, sets
+`CARGO_BUILD_JOBS=2` and caps test runs with `RUST_TEST_THREADS=2`; the log is
+`$PREFIX/tmp/h2-cargo.log`. Two concurrent heavy test binaries exhaust the 11 GB phone and the
+kernel kills a process mid-run, so bare `cargo` is not used.
 
-- **SDL3** (zlib) — обязательный platform layer: window/input/touch/pen/gamepad/haptics/audio,
-  Android `SDLActivity`; SDL3 GPU API — optional secondary backend.
-- **wgpu + naga** (Vulkan/WGSL) — основной renderer; **Turnip** (Mesa MIT) через
-  **libadrenotools** (BSD-2) — optional rootless driver с system Vulkan fallback.
-- **bevy_ecs**, **glam**, **parry**, **kira**, **symphonia**, **gltf**, **image**, **ktx2**,
-  **basis-universal**, **serde/rkyv/postcard**, **tracing**, **tokio/quinn**.
-- Quality: `cargo-deny`, `cargo-audit`, `nextest`, `proptest`, `criterion`, `cargo-fuzz`,
-  Miri/sanitizers, reproducible builds, SBOM.
+## Build, install, run
 
-## Документы
+Host tests (the two gates that cover the renderer and the terrain path):
 
-| файл | зачем |
-|---|---|
-| `docs/PLAN.md` | полный инженерный план P0–P6, критерии, риски, тесты, H2-гейты |
-| `docs/ARCHITECTURE.md` | слои, потоки данных, renderer/sim/audio/input, Android/Turnip, determinism |
-| `docs/MODULES.md` | карта модулей: что, зачем, входы/выходы, зависимости, фаза, нарратив |
-| `docs/TOUCH.md` | touch-first UX: экраны, жесты, command card, камера, доступность |
-| `docs/ASSETS.md` | MPQ/CASC, MDX/BLP/SLK, glTF/KTX2, shader/texture recompilation, Xbox 360 track |
-| `docs/GPU_DRIVERS.md` | Turnip/libadrenotools driver manager, fallback, compatibility matrix |
-| `docs/DIFFERENTIATION.md` | feature/performance matrix и цель «переплюнуть всех» |
-| `docs/LEGAL.md` | clean-room, IP, лицензии, запрет на ассеты Blizzard |
-| `diagrams/*.svg` | архитектура, модули, asset pipeline, roadmap |
-| `docs/ADRENOTOOLS_RUST_PORT.md` | Rust-порт libadrenotools: матрица, дельты, тесты, probe |
-| `docs/ENGINE.md` | карта всех крейтов, покрытие и явные границы |
-| `scripts/safe-test.sh` | одномодульный memory-capped тест-раннер (OOM guard) |
-| `docs/TESTING.md` | все уровни тестов: unit, asset, gameplay, visual, device |
-| `scripts/game-selftest.sh` | on-device tap self-test + скриншоты + Turnip gate |
+```sh
+scripts/h2-cargo test -p wc3-render --lib --offline
+scripts/h2-cargo test -p wc3-game --lib --offline terrain_render::
+```
 
-## Принципы (non-negotiable)
+Workspace-wide gate (derives its member list from `cargo metadata`, one job at a time):
 
-1. **Clean-room:** новый Rust-код; чужие бинарники/ассеты не коммитятся и не распространяются.
-2. **User-owned data:** движок читает данные из папки, которую указал пользователь.
-3. **Touch-first:** каждое действие доступно пальцем; мышь/клавиатура — enhancement.
-4. **Deterministic sim:** фиксированный tick, replay, lockstep-ready.
-5. **Vulkan-first:** wgpu (Vulkan backend) + опциональный Turnip через AdrenoTools; fallback
-   на системный Adreno Vulkan.
-6. **No stubs/placeholders/TODO:** каждая фаза заканчивается работающим срезом и тестами.
-7. **Performance budget:** 60 fps на среднем Android, 30 fps low-end; память/термика под контролем.
-8. **H2:** corpus gates, capture/experience/monitor, evidence before claims.
+```sh
+scripts/test-all.sh --check-only     # cargo check --workspace
+scripts/test-all.sh                  # check + Android target checks + per-member tests
+```
 
-## Текущий следующий шаг (Phase 0 gate)
+Android APK — two steps, release APK lands in `build/android-p0/release/`:
 
-- [ ] Получить легальный доступ к распакованным WC3-данным (пользовательский пароль/Windows-installer
-      либо уже извлечённая папка). Без этого нельзя проверить MDX/BLP/MPQ-парсеры на реальных данных.
-- [ ] Собрать `cargo` workspace и первый triangle на Android (wgpu + Vulkan + AdrenoTools/Turnip).
-- [ ] Подтвердить формат данных: MPQ (RoC/TFT) vs CASC (Reforged) и набор файлов пользователя.
-- [ ] Зафиксировать touch-макет для 6" телефона и 10" планшета.
+```sh
+scripts/h2-cargo build --release -p wc3rust-android
+scripts/build-apk.sh --release
+# -> build/android-p0/release/wc3rust-p0.apk
+```
+
+Install and launch on the device:
+
+```sh
+su -c 'pm install -r -d build/android-p0/release/wc3rust-p0.apk'
+su -c 'am start -n org.wc3rust.p0/org.libsdl.app.SDLActivity'
+su -c 'logcat -d -v brief | grep wc3rust'
+```
+
+### Application ID and data migration
+
+The application ID is **`org.wc3rust.p0`** (`apps/android/app/src/main/AndroidManifest.xml`). It is
+the only package the build produces; every runtime path in the engine points at
+`/data/data/org.wc3rust.p0/files`.
+
+An install that predates the package rename (`org.herofolends.p0`) is migrated by copying its data
+directory into the new package, never by moving or deleting it. The old package and its data stay
+untouched, and the old APK keeps working:
+
+```sh
+su -c 'pm install -r -d build/android-p0/release/wc3rust-p0.apk'
+su -c 'mkdir -p /data/data/org.wc3rust.p0/files'
+su -c 'cp -a /data/data/org.herofolends.p0/files/. /data/data/org.wc3rust.p0/files/'
+su -c 'chown -R u0_a360:u0_a360 /data/data/org.wc3rust.p0/files'   # uid of org.wc3rust.p0
+su -c 'restorecon -R /data/data/org.wc3rust.p0/files'
+```
+
+Take the uid from `su -c 'stat -c %u /data/data/org.wc3rust.p0'` — it is allocated per install. The
+first launch then finds `War3.mpq`, `War3x.mpq`, the melee map and the HUD pack in the new
+directory. A checkpoint written before the rename (`herofolends-resume.sav`) is still read when the
+new `wc3rust-resume.sav` is absent, and the next save writes the new name
+(`apps/android-native/src/lib.rs`, `pre_rename_checkpoint`).
+
+### Data files in the app directory
+
+`/data/data/org.wc3rust.p0/files` is the operator's data root:
+
+```
+/data/data/org.wc3rust.p0/files/
+  War3.mpq  War3x.mpq  War3xlocal.mpq      the user's own game archives
+  Melee.w3x  Orc01.w3m  Human04.w3m  Maps/ maps
+  hud_pack/                               the installed HUD asset pack (see below)
+  turnip/                                 the Turnip ICD drop (scripts/setup-turnip.sh)
+  ui_atlas.json  ui_atlas.png  ui_atlas_insets.json
+  wc3rust-resume.sav  wc3rust-resume.sav.meta
+```
+
+The Turnip ICD is shipped disabled (it sits in that directory as `freedreno_icd.disabled`), so the
+default path is the vendor Vulkan driver. The resume checkpoint is written when the app is
+backgrounded.
+
+## Repository contents
+
+### Engine crates
+
+| Crate | Role |
+| --- | --- |
+| `crates/wc3-core` | Deterministic core types and fixed-point math |
+| `crates/wc3-mpq` | MPQ archive reader (StormLib-compatible core) |
+| `crates/wc3-formats` | MDX, BLP, SLK, W3E/W3I, object data, map containers |
+| `crates/wc3-data` | Typed game-data database (units, abilities, items, upgrades) |
+| `crates/wc3-path` | Terrain grid pathfinding: A*, flow fields, collision |
+| `crates/wc3-sim` | Fixed-tick simulation: ECS, orders, combat, economy, abilities |
+| `crates/wc3-jass` | JASS2 lexer, parser, interpreter, triggers, native registry |
+| `crates/wc3-anim` | MDX animation sampling, geoset animation, particles, ribbons |
+| `crates/wc3-input` | Touch router, gestures, RTS camera math, minimap mapping |
+| `crates/wc3-audio` | WAV/MP3 decoding, spatial mixer, music and 3D pan |
+| `crates/wc3-bink` | Bink 1 video / BinkAudio decoder for the campaign movies |
+| `crates/wc3-replay` | Replay format, command log, checksums, lockstep session |
+| `crates/wc3-assetdb` | Bounded caches, asset providers, catalogs, dependency graph |
+| `crates/wc3-render` | wgpu/Vulkan renderer: static geometry, GPU skinning, state-sorted draws, UI |
+| `crates/wc3-game` | Playable slice: commands, AI, HUD, menus, campaign, touch front end |
+| `crates/wc3-adrenotools` | Clean-room Rust port of libadrenotools: namespace driver loading |
+| `crates/wc3-adrenotools-main-hook` | `dlopen` interposer (libmain_hook.so) |
+| `crates/wc3-adrenotools-fopen-hook` | `fopen` redirect interposer (libfile_redirect_hook.so) |
+| `crates/wc3-adrenotools-gsl-hook` | GSL allocator interposer (libgsl_alloc_hook.so) |
+| `crates/wc3-vulkan-loader` | Loader shim: AOSP loader plus a Turnip ICD through the driver loader |
+| `crates/wc3-turnip-vendor` | Vendor-driver shim exposing a full Vulkan API over the Turnip ICD |
+| `crates/wc3-gpu` | GPU feature probing and adapter selection |
+| `crates/wc3-platform` | Platform services shared by Android and host |
+| `crates/wc3-re` | Resource/VM/object-data layer used by the reverse-engineering tools |
+
+`crates/wc3-guest` (x86-32 guest model for the static-recompilation research path) is on disk but not
+a workspace member.
+
+### Apps and tools
+
+| Target | Role |
+| --- | --- |
+| `apps/android-native` | Android entry point (libmain.so): SDL3 window, wgpu surface, checkpointing |
+| `apps/android` | Java SDLActivity shell, manifest, resources and the APK packaging tree |
+| `apps/bench` | `wc3rust-bench` and `wc3rust-gpu-bench` host benchmarks |
+| `apps/headless` | `wc3rust-headless` — run a map for N ticks without a window |
+| `apps/smoke` | `p0-smoke` boot smoke test |
+| `apps/driver-probe` | Vulkan/Turnip driver probe |
+| `tools/mdx-gltf` | `mdx-gltf` MDX -> glTF 2.0 exporter for visual verification |
+
+### HUD asset pack
+
+The HUD is manifest-driven; no pixel offset is hand-tuned. The pack layout is:
+
+```
+manifest.json          # 92 assets: w/h/insets/states, atlas, safe areas, design height, fonts
+atlas/  commandcard/  console/  controlgroups/  cursor/  fonts/  icons/  menus/
+minimap/  portrait/  resources/  selection/  tooltip/  topbar/  docs/  source/  build/
+SHA256SUMS.txt
+```
+
+The source of truth is `analysis/hudskin/final/wc3rust-hud-final/manifest.json`; the installed copy
+is the flat `hud_pack` directory in the app's files dir. `crates/wc3-game/src/hudskin/pack.rs`
+searches the app dir, the operator's Download drop and the analysis tree, and fails loudly
+(`HUD_PACK missing=…`) instead of substituting art. The mobile relayout spec, device metrics and
+measurements live in `HUD_LAYOUT_QA.md`.
+
+### Audit, testing and device evidence
+
+- `docs/audit/WC3RUST_CODE_AUDIT.md` — the single audit registry: every item carries `FIXED`,
+  `REPRODUCED_NOT_A_BUG` or `BLOCKED`, with a regression test and the commit that closed it.
+- `docs/TESTING.md` — device test procedure and the log contract (`GAME_FIRST_FRAME`, `GAME_DATA`,
+  `GAME_RESUME`, `GAME_CHECKPOINT`).
+- `scripts/qa/device_evidence.sh` and `scripts/qa/device_p0_cycle.py` — install, launch, screenshot
+  and log capture with one JSON report per run.
+- `scripts/game-selftest.sh` — launch, wait for the first frame, collect logcat into one log.
+
+### Backups
+
+`~/bin/full-backup.sh` and `~/bin/full-restore.sh` snapshot and restore the whole working set (repo,
+`~/.config/opencode`, H2 state, databases); the plan and retention rules are in `~/BACKUP_PLAN.md`.
+
+### Device automation (CN kit)
+
+The DeepTesting/CN device automation lives outside the repo: `~/deeptesting_proxy` with the
+`~/bin/deeptest-cn` launcher (`~/bin/deeptest-stop`, `~/bin/deeptest-unblock` for control).
+
+## Controls on a phone
+
+Touch-first, no mouse required: tap selects, drag pans the camera, pinch zooms, a two-finger tap is
+the right-click (smart order), long-press shows tooltips and confirms destructive orders. The
+keyboard is replaced by on-screen controls: a console band with menu/idle-worker/control-group
+buttons, a 3×3 command card, the minimap (tap to jump, drag to pan) and an army chip. Targets stay
+at 44–48 dp minimum. The full gesture contract and layout zones are in `docs/TOUCH.md`.
+
+## Known limits and reporting a defect
+
+- The Android UI thread can abort when the activity is backgrounded (`FATAL … SIGABRT … hwuiTask0`)
+  while the native surface is being torn down. The surface guard is covered by
+  `crates/wc3-render/tests/surface_guard.rs`; the acquire-freeze fix is the next device build — see
+  `HUD_LAYOUT_QA.md`.
+- Turnip ships disabled (`freedreno_icd.disabled`): the default is the vendor Vulkan driver.
+  `docs/GPU_DRIVERS.md` describes enabling the ICD.
+- Campaign movies and some campaign maps need the operator's extra archives; the engine skips them
+  with a log line instead of inventing data.
+
+To report a defect, attach: the logcat slice (`su -c 'logcat -d -v brief | grep wc3rust'`), a
+screenshot from `scripts/qa/device_evidence.sh`, the output of `su -c 'pm dump org.wc3rust.p0'` and
+the exact commit (`git rev-parse HEAD`). `docs/TESTING.md` lists the lines that make a report
+actionable.

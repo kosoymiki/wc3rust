@@ -1871,12 +1871,12 @@ impl Font {
     /// (headless proofs only; the TTF is never bundled with the app).
     pub fn nimrod_candidates() -> Vec<std::path::PathBuf> {
         let mut paths = Vec::new();
-        if let Some(path) = std::env::var_os("HEROFOLENDS_WAR3_MPQ") {
+        if let Some(path) = std::env::var_os("WC3RUST_WAR3_MPQ") {
             paths.push(std::path::PathBuf::from(path));
         }
         for path in [
-            "/data/data/org.herofolends.p0/files/War3.mpq",
-            "/storage/emulated/0/Android/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
+            "/storage/emulated/0/Android/data/org.wc3rust.p0/files/War3.mpq",
             "/storage/emulated/0/Download/War3.mpq",
             "/storage/emulated/0/Download/Warcraft III/War3.mpq",
         ] {

@@ -746,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     matrix = matrix_state(gates)
     summary = {key: sum(1 for gate in gates if gate["status"] == key) for key in ("PASS", "FAIL", "GAP", "SKIP")}
     payload = {
-        "schema": "herofolends-parity-report-v1",
+        "schema": "wc3rust-parity-report-v1",
         "timestamp": iso_now(),
         "generated_unix": raw.get("generated_unix"),
         "assets": raw.get("assets"),

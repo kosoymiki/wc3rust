@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let Some(dir) = campaign_map_dir() else {
-        eprintln!("campaign maps not found: set HEROFOLENDS_DATA or HEROFOLENDS_CAMPAIGN");
+        eprintln!("campaign maps not found: set WC3RUST_DATA or WC3RUST_CAMPAIGN");
         return Ok(());
     };
     let registry =

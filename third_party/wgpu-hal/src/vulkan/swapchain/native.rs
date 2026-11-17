@@ -424,7 +424,7 @@ impl Swapchain for NativeSwapchain {
             Some(duration) => duration.as_nanos() as u64,
             None => u64::MAX,
         };
-        // herofolends: Android's buffer queue never returns an image when the
+        // wc3rust: Android's buffer queue never returns an image when the
         // consumer stopped (activity backgrounded, window rebuilt, SurfaceView
         // detached), so an infinite wait freezes the render thread and the game
         // permanently (device 2026-11-17: tick=0 fps=0, debuggerd in

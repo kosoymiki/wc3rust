@@ -2216,7 +2216,7 @@ fn main() {
         .unwrap_or(0);
 
     let mut json = String::from("{");
-    json.push_str("\"schema\":\"herofolends-parity-v1\",\"generated_unix\":");
+    json.push_str("\"schema\":\"wc3rust-parity-v1\",\"generated_unix\":");
     json.push_str(&generated.to_string());
     json.push_str(",\"status\":");
     push_json_string(&mut json, status);

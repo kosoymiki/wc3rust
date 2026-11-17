@@ -9,7 +9,7 @@ int main(void) {
     VkApplicationInfo app;
     memset(&app, 0, sizeof(app));
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app.pApplicationName = "herofolends-vk-probe";
+    app.pApplicationName = "wc3rust-vk-probe";
     app.applicationVersion = 1;
     app.apiVersion = VK_API_VERSION_1_4;
 

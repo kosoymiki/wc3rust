@@ -413,7 +413,7 @@ fn campaign_progress_persists() {
 /// `MOVIE_MISSING <name>` without blocking the mission.
 #[test]
 #[cfg(feature = "movie_decoder")]
-#[ignore = "needs the extracted movie pack (HEROFOLENDS_MOVIES or the installer roots)"]
+#[ignore = "needs the extracted movie pack (WC3RUST_MOVIES or the installer roots)"]
 fn campaign_cutscene_decodable() {
     let mut game = campaign_game("Human01.w3m").expect("Human01");
     let library = wc3_game::cinematic::movies();

@@ -1037,7 +1037,7 @@ pub struct AtlasFiles {
 
 /// Environment override: `<dir>` containing `ui_atlas.png`, `ui_atlas.json`,
 /// `ui_atlas_insets.json`.
-pub const ATLAS_ENV: &str = "HEROFOLENDS_UI_ATLAS";
+pub const ATLAS_ENV: &str = "WC3RUST_UI_ATLAS";
 
 /// Directories searched for an installed atlas, most specific first.
 ///
@@ -1048,9 +1048,9 @@ pub fn atlas_search_dirs() -> Vec<PathBuf> {
     if let Some(dir) = std::env::var_os(ATLAS_ENV) {
         dirs.push(PathBuf::from(dir));
     }
-    dirs.push(PathBuf::from("/data/data/org.herofolends.p0/files"));
+    dirs.push(PathBuf::from("/data/data/org.wc3rust.p0/files"));
     dirs.push(PathBuf::from(
-        "/storage/emulated/0/Android/data/org.herofolends.p0/files",
+        "/storage/emulated/0/Android/data/org.wc3rust.p0/files",
     ));
     dirs.push(PathBuf::from("/storage/emulated/0/Download"));
     dirs

@@ -1,9 +1,9 @@
 [package]
-name = "herofolends-android"
+name = "wc3rust-android"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Herofolends-RS Android P0 entry point: SDL3 window + wgpu/Vulkan surface"
+description = "wc3rust Android P0 entry point: SDL3 window + wgpu/Vulkan surface"
 
 [lib]
 name = "main"

@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 type Gipa = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
 
-const ICD: &CStr = c"/data/data/org.herofolends.p0/files/turnip/libvulkan_freedreno_termux.so";
+const ICD: &CStr = c"/data/data/org.wc3rust.p0/files/turnip/libvulkan_freedreno_termux.so";
 const ANDROID_SURFACE: &[u8] = b"VK_KHR_android_surface\0";
 
 #[repr(C)]

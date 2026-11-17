@@ -47,9 +47,9 @@ def main() -> int:
     shots = OUT / "screens"
     shots.mkdir(parents=True, exist_ok=True)
     dev = Device()
-    payload: dict = {"schema": "herofolends-box-probe-v1", "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    payload: dict = {"schema": "wc3rust-box-probe-v1", "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     try:
-        launch = dev.launch(apk=ROOT / "build" / "android-p0" / "herofolends-p0.apk", install=False)
+        launch = dev.launch(apk=ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk", install=False)
         display = launch["display"]
         w, h = display["w"], display["h"]
         safe = launch.get("safe_insets") or launch["insets"]

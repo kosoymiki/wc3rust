@@ -1865,8 +1865,8 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("h2-resume-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let save = dir.join("herofolends-resume.sav");
-        let meta_path = dir.join("herofolends-resume.sav.meta");
+        let save = dir.join("wc3rust-resume.sav");
+        let meta_path = dir.join("wc3rust-resume.sav.meta");
         sim.save_to_path(&save).expect("save");
         let meta = CheckpointMeta::new(
             stamp.clone(),

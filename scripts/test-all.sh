@@ -7,7 +7,7 @@
 #      to the gate automatically.
 #   2. `cargo check --workspace` runs for the host target.
 #   3. Every installed Android target that has a linker gets a
-#      `cargo check -p herofolends-android --target <triple>`. A target without
+#      `cargo check -p wc3rust-android --target <triple>`. A target without
 #      a linker is recorded as SKIP with the missing tool, never as PASS
 #      (host here is already aarch64-linux-android, so the shipping ABI is still
 #      checked by phase 2).
@@ -50,7 +50,7 @@ ULIMIT_KB="${H2_TEST_ULIMIT_KB:-4500000}"
 # filesystem is out of space: a full disk corrupts cargo freshness state and
 # makes every later job look like a code failure (observed 2026-11-17).
 MIN_FREE_KB="${H2_TEST_ALL_MIN_FREE_KB:-1500000}"
-ANDROID_APP="herofolends-android"
+ANDROID_APP="wc3rust-android"
 
 # Per-member address-space caps. The default (4.5 GB, the historical
 # `safe-test.sh` value) is enough for one test binary, but `wc3-game --lib` runs

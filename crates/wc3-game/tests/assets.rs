@@ -9,16 +9,16 @@ use wc3_sim::UnitKind;
 fn data() -> Option<(PathBuf, PathBuf)> {
     let candidates = [
         PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq"),
-        PathBuf::from("/data/data/org.herofolends.p0/files/War3.mpq"),
+        PathBuf::from("/data/data/org.wc3rust.p0/files/War3.mpq"),
     ];
     let mpq = candidates.into_iter().find(|p| p.exists())?;
     let map = Path::new(
-        "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_map/Maps/Campaign/Human04.w3m",
+        "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_map/Maps/Campaign/Human04.w3m",
     );
     let map = if map.exists() {
         map.to_path_buf()
     } else {
-        PathBuf::from("/data/data/org.herofolends.p0/files/Human04.w3m")
+        PathBuf::from("/data/data/org.wc3rust.p0/files/Human04.w3m")
     };
     if !map.exists() { None } else { Some((mpq, map)) }
 }

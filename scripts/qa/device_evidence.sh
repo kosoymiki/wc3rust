@@ -7,8 +7,8 @@
 # a successful device run.
 #
 # With the slot it:
-#   1. installs build/android-p0/herofolends-p0.apk (pm install -r),
-#   2. launches org.herofolends.p0 and waits for GAME_FIRST_FRAME,
+#   1. installs build/android-p0/release/wc3rust-p0.apk (pm install -r),
+#   2. launches org.wc3rust.p0 and waits for GAME_FIRST_FRAME,
 #   3. collects GAME_SCENARIO / GAME_READY / GAME_STATE / GAME_AUDIO_STATS,
 #   4. records the newest screenshot path if one exists in
 #      /storage/emulated/0/Pictures/Screenshots,
@@ -20,7 +20,7 @@
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 
-APK=build/android-p0/herofolends-p0.apk
+APK=build/android-p0/release/wc3rust-p0.apk
 SECONDS_TO_COLLECT=12
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,7 +34,7 @@ done
 OUT_DIR=analysis/tech-lead
 AUDIO_LOG="$OUT_DIR/device_audio.log"
 RUN_JSON="$OUT_DIR/device_run.json"
-PKG=org.herofolends.p0
+PKG=org.wc3rust.p0
 COMPONENT="$PKG/org.libsdl.app.SDLActivity"
 
 if [ "${H2_DEVICE_SLOT:-}" != "1" ]; then
@@ -70,13 +70,13 @@ launch_rc=$?
 first_frame=""
 deadline=$(( $(date +%s) + 40 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    first_frame=$(su_ "logcat -d -s Herofolends" 2>/dev/null | grep -m1 'GAME_FIRST_FRAME' || true)
+    first_frame=$(su_ "logcat -d -s wc3rust" 2>/dev/null | grep -m1 'GAME_FIRST_FRAME' || true)
     [ -n "$first_frame" ] && break
     sleep 1
 done
 
 sleep "$SECONDS_TO_COLLECT"
-log_dump=$(su_ "logcat -d -s Herofolends" 2>/dev/null || true)
+log_dump=$(su_ "logcat -d -s wc3rust" 2>/dev/null || true)
 printf '%s\n' "$log_dump" | grep -E 'GAME_SCENARIO|GAME_READY|GAME_STATE|GAME_AUDIO_STATS|GAME_FIRST_FRAME|GAME_UI_FDF' > "$AUDIO_LOG"
 
 screenshot=""
@@ -109,7 +109,7 @@ payload = {
     "started_at": started,
     "apk": apk,
     "apk_sha256": sha,
-    "package": "org.herofolends.p0",
+    "package": "org.wc3rust.p0",
     "install_rc": int(install_rc),
     "launch_rc": int(launch_rc),
     "first_frame": first_frame or None,

@@ -129,7 +129,7 @@ Device evidence:
 - `./scripts/p0-smoke.sh` — SDL3 3.5.0 + Turnip triangle.
 - `./target/debug/driver-probe` — 0 failures; Turnip ICD loads.
 - APK: local build log and `p0-apk-final.png` (operator machine).
-- Bench: `./target/release/herofolends-bench`.
+- Bench: `./target/release/wc3rust-bench`.
 
 ## 10. Known boundaries (explicit, not stubs)
 

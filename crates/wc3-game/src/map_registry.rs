@@ -499,7 +499,7 @@ pub fn build(map_dir: &Path, repo_root: &Path, generated: &str) -> Registry {
     files.sort();
     let mut registry = Registry {
         generated: generated.to_string(),
-        source: "herofolends-rs map acquisition (ledger 449): EpicWar mirror + War3Net test data".to_string(),
+        source: "wc3rust map acquisition (ledger 449): EpicWar mirror + War3Net test data".to_string(),
         native_index: Vec::new(),
         maps: Vec::new(),
         rejected: Vec::new(),

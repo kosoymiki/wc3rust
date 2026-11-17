@@ -24,7 +24,7 @@ build() {
     local attempts=3
     local attempt=1
     while [ "$attempt" -le "$attempts" ]; do
-        if cargo build -p herofolends-bench --bin herofolends-gpu-bench 2>&1 | tee "$OUT_DIR/build.log" | tail -5; then
+        if cargo build -p wc3rust-bench --bin wc3rust-gpu-bench 2>&1 | tee "$OUT_DIR/build.log" | tail -5; then
             if ! grep -q '^error' "$OUT_DIR/build.log"; then
                 echo "perf-gpu: build ok (attempt $attempt)"
                 return 0
@@ -42,7 +42,7 @@ if ! build; then
     exit 2
 fi
 
-BIN="target/debug/herofolends-gpu-bench"
+BIN="target/debug/wc3rust-gpu-bench"
 # /proc/loadavg is root-only on this device; record it with the run so the report
 # can state the contention the numbers were taken under.
 LOADAVG="$(su -c 'cat /proc/loadavg' 2>/dev/null || true)"

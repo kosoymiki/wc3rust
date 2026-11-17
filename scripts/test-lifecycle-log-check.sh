@@ -8,7 +8,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECK="$ROOT/scripts/check-lifecycle-stress-log.sh"
-TMP="${TMPDIR:-/tmp}/herofolends-lifecycle-check.$$"
+TMP="${TMPDIR:-/tmp}/wc3rust-lifecycle-check.$$"
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -16,13 +16,13 @@ cycles=3
 terminations=1
 ok="$TMP/ok.log"
 {
-  echo "I/Herofolends: GAME_LIFECYCLE watch=1 main_thread=true block_on_pause=1 low_latency_audio=1 recreate_activity=0"
+  echo "I/wc3rust: GAME_LIFECYCLE watch=1 main_thread=true block_on_pause=1 low_latency_audio=1 recreate_activity=0"
   for cycle in $(seq 1 "$cycles"); do
-    echo "I/Herofolends: GAME_CHECKPOINT path=/data/user/0/org.herofolends.p0/files/herofolends-resume.sav digest=000000000000000$cycle units=4 tick=$((cycle * 100)) map=map phase=playing"
-    echo "I/Herofolends: GAME_LIFECYCLE background phase=Background focused=false"
-    echo "I/Herofolends: GAME_LIFECYCLE foreground phase=Foreground focused=true"
+    echo "I/wc3rust: GAME_CHECKPOINT path=/data/user/0/org.wc3rust.p0/files/wc3rust-resume.sav digest=000000000000000$cycle units=4 tick=$((cycle * 100)) map=map phase=playing"
+    echo "I/wc3rust: GAME_LIFECYCLE background phase=Background focused=false"
+    echo "I/wc3rust: GAME_LIFECYCLE foreground phase=Foreground focused=true"
   done
-  echo "I/Herofolends: GAME_RESUME path=/data/user/0/org.herofolends.p0/files/herofolends-resume.sav units=4 tick=300 digest=0000000000000003 map=map phase=playing"
+  echo "I/wc3rust: GAME_RESUME path=/data/user/0/org.wc3rust.p0/files/wc3rust-resume.sav units=4 tick=300 digest=0000000000000003 map=map phase=playing"
 } > "$ok"
 
 "$CHECK" --cycles "$cycles" --terminations "$terminations" "$ok" > "$TMP/ok.out" 2>&1

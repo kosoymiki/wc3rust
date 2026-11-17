@@ -1,4 +1,4 @@
-//! Core deterministic types and fixed-point math for Herofolends-RS.
+//! Core deterministic types and fixed-point math for wc3rust.
 //!
 //! Simulation code uses `Fixed` (Q16.16) instead of raw `f32`; render code may use
 //! `glam` floats. The conversion boundary is explicit (`Fixed::to_f32`).

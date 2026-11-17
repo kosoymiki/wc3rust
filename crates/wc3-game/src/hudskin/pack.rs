@@ -1,7 +1,7 @@
 //! The operator's FINAL HUD asset pack: manifest-driven loader and 9-slice
 //! primitives.
 //!
-//! Source of truth is `analysis/hudskin/final/herofolends-hud-final/manifest.json`
+//! Source of truth is `analysis/hudskin/final/wc3rust-hud-final/manifest.json`
 //! (92 assets, per-asset `w`/`h`/`insets`/`states`, the 2048x2048
 //! `commandbuttons` atlas, command-card 4x3 of 64 px cells with a 4 px gap,
 //! ten 44 px control groups, the 1080p safe areas, the 768 design height and
@@ -35,9 +35,9 @@ use crate::assets::TextureImage;
 use crate::hud::{Rect, UiBatch};
 
 /// Environment override: a directory containing `manifest.json`.
-pub const PACK_ENV: &str = "HEROFOLENDS_HUD_PACK";
+pub const PACK_ENV: &str = "WC3RUST_HUD_PACK";
 /// Directory name used by the operator's drop and the repo's analysis tree.
-pub const PACK_DIR_NAME: &str = "herofolends-hud-final";
+pub const PACK_DIR_NAME: &str = "wc3rust-hud-final";
 
 /// One manifest asset (one PNG = one texture).
 #[derive(Clone, Debug, PartialEq)]
@@ -194,12 +194,12 @@ pub fn pack_search_dirs() -> Vec<PathBuf> {
     if let Some(dir) = std::env::var_os(PACK_ENV) {
         dirs.push(PathBuf::from(dir));
     }
-    dirs.push(PathBuf::from("/data/data/org.herofolends.p0/files/hud_pack"));
+    dirs.push(PathBuf::from("/data/data/org.wc3rust.p0/files/hud_pack"));
     dirs.push(PathBuf::from(format!(
-        "/data/data/org.herofolends.p0/files/{PACK_DIR_NAME}"
+        "/data/data/org.wc3rust.p0/files/{PACK_DIR_NAME}"
     )));
     dirs.push(PathBuf::from(
-        "/storage/emulated/0/Android/data/org.herofolends.p0/files/hud_pack",
+        "/storage/emulated/0/Android/data/org.wc3rust.p0/files/hud_pack",
     ));
     dirs.push(PathBuf::from(format!(
         "/storage/emulated/0/Download/{PACK_DIR_NAME}"

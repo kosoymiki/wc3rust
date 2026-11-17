@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic QA gate for Herofolends: build -> install -> visual -> gameplay.
+"""Deterministic QA gate for wc3rust: build -> install -> visual -> gameplay.
 
 Every phase is bounded and writes JSON evidence under `analysis/agent-qa/latest/`.
 Exit code 0 only when every enabled hard gate passes.
@@ -57,7 +57,7 @@ def run(args) -> dict:
     if args.build:
         print("[qa] build: cargo release + APK")
         rc1, tail1 = _run(
-            ["cargo", "build", "--release", "-p", "herofolends-android"],
+            ["cargo", "build", "--release", "-p", "wc3rust-android"],
             LATEST / "build-cargo.log",
             timeout=1800,
         )

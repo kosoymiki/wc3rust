@@ -1254,7 +1254,7 @@ mod tests {
         let root = world_root();
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -2501,7 +2501,7 @@ mod tests {
     fn dump_texture_ppm() {
         let Some(mpq) = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -2542,7 +2542,7 @@ mod tests {
     fn justice_assets() -> Option<(crate::assets::Assets, std::path::PathBuf)> {
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)
@@ -2824,7 +2824,7 @@ mod tests {
         );
         let Some(mpq) = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(PathBuf::from)

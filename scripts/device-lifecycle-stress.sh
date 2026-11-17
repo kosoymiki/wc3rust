@@ -16,9 +16,9 @@ set -euo pipefail
 
 CYCLES=10
 SERIAL=""
-PACKAGE="org.herofolends.p0"
+PACKAGE="org.wc3rust.p0"
 WAIT=4
-OUT="${TMPDIR:-/tmp}/herofolends-lifecycle-stress.log"
+OUT="${TMPDIR:-/tmp}/wc3rust-lifecycle-stress.log"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -68,7 +68,7 @@ done
 
 echo "== collecting logs -> $OUT"
 {
-  "${ADB[@]}" logcat -d -v brief -s Herofolends:I
+  "${ADB[@]}" logcat -d -v brief -s wc3rust:I
   echo "== crash buffer"
   "${ADB[@]}" logcat -d -b crash || true
 } > "$OUT"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated screenshot checker for Herofolends-RS.
+"""Automated screenshot checker for wc3rust.
 
 Rejects the exact failures the first playable builds showed: a black texture
 field, a giant white model plane, a missing HUD, and an empty 3D view. Run on
