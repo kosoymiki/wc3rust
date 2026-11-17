@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 
 type Gipa = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
 
-const TURNIP_DIR: &CStr = c"/data/data/org.herofolends.p0/files/turnip";
+const TURNIP_DIR: &CStr = c"/data/data/org.wc3rust.p0/files/turnip";
 const DRIVER_NAME: &CStr = c"libvulkan_freedreno.so";
 
 static GIPA: OnceLock<Option<Gipa>> = OnceLock::new();
@@ -66,7 +66,7 @@ fn gipa() -> Option<Gipa> {
         // namespace; then the stock AOSP loader already enumerates Turnip and
         // no adrenotools redirection is needed.
         let system_mode = std::path::Path::new(
-            "/data/data/org.herofolends.p0/files/turnip/system_loader",
+            "/data/data/org.wc3rust.p0/files/turnip/system_loader",
         )
         .exists();
         // SAFETY: both loaders are safe to attempt once per process.
