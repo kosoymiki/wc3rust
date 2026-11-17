@@ -15,21 +15,25 @@ use wc3_sim::jass::vm::Instr;
 use wc3_sim::jass::{ScriptBundle, Value};
 use wc3_sim::{Order, Sim};
 
-/// Attaches `source` to a fresh sandbox. `with_headers` loads `common.j` /
-/// `Blizzard.j`: a script compiled with them resolves a declared native to
-/// `Instr::Native`, a script compiled without them reaches the same handler
-/// through the runtime name dispatch (`Instr::Unknown`) — the indirect path
-/// AUD-017 is about.
-fn attach(seed: u64, source: &str, with_headers: bool) -> Sim {
+/// Attaches `source` to a fresh sandbox, or `None` when `with_headers` is asked
+/// for and the game scripts are not installed (the `common.j`/`Blizzard.j`
+/// copies live under the untracked `analysis/` and `donors/` trees, so a clean
+/// clone has none — the rest of the JASS-native suite skips the same way).
+///
+/// `with_headers` matters for what the compiler resolves: with the headers a
+/// declared native compiles to `Instr::Native`; without them the same name is
+/// reached through the runtime name dispatch (`Instr::Unknown`), which is the
+/// indirect path AUD-017 is about.
+fn attach(seed: u64, source: &str, with_headers: bool) -> Option<Sim> {
     let mut sim = sandbox(seed);
     let mut bundle = ScriptBundle::new();
     if with_headers {
-        let dir = wc3_sim::jass::find_game_scripts().expect("game headers (common.j)");
+        let dir = wc3_sim::jass::find_game_scripts()?;
         bundle.add_game_scripts(&dir).expect("headers");
     }
     bundle.add_source("audit_sim2.j", source).expect("parse");
     sim.attach_script(&bundle, seed).expect("compile");
-    sim
+    Some(sim)
 }
 
 fn run(sim: &mut Sim, name: &str) -> Value {
@@ -61,7 +65,7 @@ fn global_real(sim: &Sim, name: &str) -> f32 {
 /// at the world origin.
 #[test]
 fn aud012_invalid_location_handles_are_diagnostics_not_the_world_origin() {
-    let mut sim = attach(
+    let Some(mut sim) = attach(
         0xA0D0_0120,
         r#"
         globals
@@ -104,7 +108,10 @@ fn aud012_invalid_location_handles_are_diagnostics_not_the_world_origin() {
         endfunction
         "#,
         true,
-    );
+    ) else {
+        eprintln!("skip: game headers (common.j/Blizzard.j) are not installed");
+        return;
+    };
 
     let units_before = sim.units.len();
     for function in [
@@ -173,7 +180,7 @@ fn aud012_invalid_location_handles_are_diagnostics_not_the_world_origin() {
 /// count filter, and it survives a save/load round trip.
 #[test]
 fn aud013_unit_add_and_remove_type_change_the_runtime_classification() {
-    let mut sim = attach(
+    let Some(mut sim) = attach(
         0xA0D0_0130,
         r#"
         globals
@@ -232,7 +239,10 @@ fn aud013_unit_add_and_remove_type_change_the_runtime_classification() {
         endfunction
         "#,
         true,
-    );
+    ) else {
+        eprintln!("skip: game headers (common.j/Blizzard.j) are not installed");
+        return;
+    };
     run(&mut sim, "setup");
 
     assert!(!global_bool(&sim, "u_hero_before"), "a footman is not a hero");
@@ -312,7 +322,7 @@ fn aud013_unit_add_and_remove_type_change_the_runtime_classification() {
 #[test]
 fn aud017_indirect_trigger_sleep_action_parks_the_thread() {
     // (1) The ordinary JASS call compiles to `Instr::Wait`.
-    let mut ordinary = attach(
+    let Some(mut ordinary) = attach(
         0xA0D0_0171,
         r#"
         globals
@@ -326,7 +336,10 @@ fn aud017_indirect_trigger_sleep_action_parks_the_thread() {
         endfunction
         "#,
         true,
-    );
+    ) else {
+        eprintln!("skip: game headers (common.j/Blizzard.j) are not installed");
+        return;
+    };
     run(&mut ordinary, "delayed");
     assert_eq!(
         global_int(&ordinary, "phase"),
@@ -364,7 +377,8 @@ fn aud017_indirect_trigger_sleep_action_parks_the_thread() {
         endfunction
         "#,
         false,
-    );
+    )
+    .expect("headerless bundle compiles");
     let (func, phase_global, half_global, negative_global, zero_global) = {
         let code = &indirect.script().expect("script").code;
         (
@@ -465,7 +479,8 @@ fn indirect_trial(seed: u64) -> u64 {
         endfunction
         "#,
         false,
-    );
+    )
+    .expect("headerless bundle compiles");
     let (func, phase_global, half_global, negative_global, zero_global) = {
         let code = &sim.script().expect("script").code;
         (
