@@ -335,6 +335,14 @@ pub struct JassVm {
     pub region_occupancy: BTreeMap<u32, std::collections::BTreeSet<u32>>,
     /// Units inside a `TriggerRegisterUnitInRange` radius, per (trigger, watched).
     pub unit_range_occupancy: BTreeMap<(u32, u32), std::collections::BTreeSet<u32>>,
+    /// Sleep requested by the native running on this thread, consumed by the
+    /// executor right after the dispatch returns.
+    ///
+    /// `Instr::Wait` handles the direct `TriggerSleepAction` call; a call that
+    /// reaches the handler through the runtime name dispatch asks the executor
+    /// to park the thread instead of returning to the script. The thread index
+    /// travels with the request so a nested thread can never park its parent.
+    pending_sleep: Option<(usize, f32)>,
 }
 
 impl JassVm {
@@ -372,6 +380,7 @@ impl JassVm {
             enum_item: None,
             region_occupancy: BTreeMap::new(),
             unit_range_occupancy: BTreeMap::new(),
+            pending_sleep: None,
         };
         vm.event_ids = super::scheduler::EventIds::from_vm(&vm);
         vm.bind_map_units();
@@ -415,6 +424,7 @@ impl JassVm {
             enum_item: None,
             region_occupancy: BTreeMap::new(),
             unit_range_occupancy: BTreeMap::new(),
+            pending_sleep: None,
         }
     }
 
@@ -597,6 +607,61 @@ impl JassVm {
             .get(self.current_thread)
             .and_then(|thread| thread.event.clone())
             .unwrap_or_default()
+    }
+
+    /// Asks the executor to park the running thread for `seconds`, the way the
+    /// `Wait` instruction does for a direct `TriggerSleepAction` call.
+    ///
+    /// This is the native-side half of the engine sleep: a handler reached
+    /// through the runtime name dispatch (a name the compiler could not resolve
+    /// statically) has no instruction of its own, so it records the request and
+    /// the executor suspends the thread after the dispatch returns. On resume
+    /// the scheduler pushes the elapsed seconds, which is this call's value.
+    ///
+    /// Returns `false` when no script thread is running (a Rust caller with an
+    /// idle machine); the handler records a diagnostic in that case instead of
+    /// pretending to have slept.
+    pub fn request_sleep(&mut self, seconds: f32) -> bool {
+        if self.current_thread >= self.threads.len() {
+            return false;
+        }
+        self.pending_sleep = Some((self.current_thread, seconds.max(0.0)));
+        true
+    }
+
+    /// Parks `thread` for `seconds` of simulation time.
+    ///
+    /// The deadline is quantized to the tick grid (`ceil`, at least one tick)
+    /// exactly like the engine's frame-driven wait, so the resume tick is
+    /// deterministic across builds; `resume_threads` pushes the elapsed time,
+    /// which is the `Wait`/`TriggerSleepAction` return value.
+    fn park_thread(&mut self, thread: usize, seconds: f32) {
+        let seconds = seconds.max(0.0);
+        let ticks = (seconds * crate::TICKS_PER_SECOND as f32).ceil().max(1.0) as u64;
+        let state = &mut self.threads[thread];
+        state.wake_at = Some(self.time + seconds as f64);
+        state.wake_tick = Some(self.tick + ticks);
+        state.wait_started = Some(self.time);
+    }
+
+    /// Consumes a sleep the native running on `thread` requested and parks it.
+    /// `false` when nothing was requested, so the caller keeps the normal
+    /// "push the handler's value" path.
+    fn take_requested_sleep(&mut self, thread: usize) -> bool {
+        match self.pending_sleep.take() {
+            Some((requested_by, seconds)) if requested_by == thread => {
+                self.park_thread(thread, seconds);
+                true
+            }
+            Some((requested_by, _seconds)) => {
+                self.errors.push(format!(
+                    "TriggerSleepAction: thread {requested_by} requested a sleep while thread \
+                     {thread} was running"
+                ));
+                false
+            }
+            None => false,
+        }
     }
 
     pub(crate) fn drive_thread(&mut self, thread: usize) -> Result<RunOutcome, Trap> {
@@ -804,6 +869,9 @@ impl JassVm {
                             def.return_default()
                         }
                     };
+                    if self.take_requested_sleep(thread) {
+                        return Ok(RunOutcome::Suspended);
+                    }
                     self.push(thread, value);
                 }
                 Instr::Unknown { pool, argc } => {
@@ -813,7 +881,12 @@ impl JassVm {
                     let args = self.pop_args(thread, argc as usize)?;
                     let name = self.code.strings[pool as usize].clone();
                     match super::natives::dispatch(self, &name, &args) {
-                        Some(value) => self.push(thread, value),
+                        Some(value) => {
+                            if self.take_requested_sleep(thread) {
+                                return Ok(RunOutcome::Suspended);
+                            }
+                            self.push(thread, value);
+                        }
                         None => {
                             *self.unresolved.entry(name.clone()).or_insert(0) += 1;
                             self.errors.push(format!("unknown function {name}"));
@@ -842,12 +915,7 @@ impl JassVm {
                 }
                 Instr::Wait => {
                     let seconds = self.pop(thread)?.real().max(0.0);
-                    // Quantize to the tick grid: the engine's wait is frame
-                    // driven too, and this keeps determinism exact.
-                    let ticks = (seconds * crate::TICKS_PER_SECOND as f32).ceil().max(1.0) as u64;
-                    self.threads[thread].wake_at = Some(self.time + seconds as f64);
-                    self.threads[thread].wake_tick = Some(self.tick + ticks);
-                    self.threads[thread].wait_started = Some(self.time);
+                    self.park_thread(thread, seconds);
                     return Ok(RunOutcome::Suspended);
                 }
                 Instr::Bin(tag) => {

@@ -19,7 +19,6 @@ use crate::jass::host::{CameraSetup, CinematicEvent, Object, QuestFlags};
 use crate::jass::value::{HandleKind, Value};
 use crate::jass::vm::JassVm;
 
-use super::trigger::location_pos;
 use super::unit::unit_arg;
 use super::{b, hd, i, r, s};
 
@@ -615,7 +614,9 @@ pub(super) fn issue_point_order_by_id(vm: &mut JassVm, a: &[Value]) -> Value {
 /// `IssuePointOrderByIdLoc(whichUnit, order, whichLocation)`.
 pub(super) fn issue_point_order_by_id_loc(vm: &mut JassVm, a: &[Value]) -> Value {
     let order = order_string_from_rawcode(i(a, 1));
-    let point = location_pos(vm, a.get(2));
+    let Some(point) = super::unit::location_arg(vm, a, 2, "IssuePointOrderByIdLoc") else {
+        return Value::Bool(false);
+    };
     super::unit::issue_point_order_impl(vm, a, &order, point)
 }
 

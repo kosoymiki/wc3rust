@@ -155,17 +155,179 @@ pub struct SpellNumbers {
     pub duration_ticks: u32,
 }
 
-static INSTALLED: std::sync::OnceLock<Vec<SpellDef>> = std::sync::OnceLock::new();
+static GLOBAL: SpellNumberTable = SpellNumberTable::new();
 
-/// Install sheet-derived numbers. Returns `false` when already installed (the
-/// first install wins so a second `Assets` load cannot change live gameplay).
-pub fn install_spell_numbers(numbers: &[SpellNumbers]) -> bool {
-    if INSTALLED.get().is_some() {
-        return false;
+/// Identity of an installed spell-number dataset.
+///
+/// The process keeps exactly one installed table (the numbers a live `Sim`
+/// reads through [`Spell::def`]), so a second, *different* dataset is a
+/// configuration error: the identity makes that error visible instead of
+/// dropping it as a silent `false`. The id is an FNV-1a hash over the rows
+/// that actually define gameplay (known ability ids, sorted), using exact bit
+/// patterns, so it is stable across platforms and across runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpellDatasetId(u64);
+
+impl SpellDatasetId {
+    /// Dataset id of `numbers` (the rows whose id is a typed spell).
+    pub fn of(numbers: &[SpellNumbers]) -> Self {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for (id, entry) in canonical_numbers(numbers) {
+            feed(id.as_bytes());
+            feed(&entry.mana.to_le_bytes());
+            feed(&entry.cooldown_ticks.to_le_bytes());
+            feed(&entry.range.to_bits().to_le_bytes());
+            feed(&entry.radius.to_bits().to_le_bytes());
+            feed(&entry.duration_ticks.to_le_bytes());
+        }
+        Self(hash)
     }
-    let mut table = SPELL_DEFS;
+
+    pub fn hex(self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+/// Result of a successful install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpellInstall {
+    /// First install: this dataset now drives the process-wide table.
+    Installed(SpellDatasetId),
+    /// The same dataset was already installed; the table did not change.
+    AlreadyInstalled(SpellDatasetId),
+}
+
+impl std::fmt::Display for SpellInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Installed(id) => write!(f, "installed dataset={}", id.hex()),
+            Self::AlreadyInstalled(id) => write!(f, "reinstalled dataset={}", id.hex()),
+        }
+    }
+}
+
+/// A second, different dataset was offered to a table that already has one.
+///
+/// Live gameplay keeps the installed numbers; the caller must surface this
+/// instead of pretending the install succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpellDatasetMismatch {
+    pub installed: SpellDatasetId,
+    pub incoming: SpellDatasetId,
+}
+
+impl std::fmt::Display for SpellDatasetMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "spell dataset mismatch: installed={} incoming={} (first install wins)",
+            self.installed.hex(),
+            self.incoming.hex()
+        )
+    }
+}
+
+impl std::error::Error for SpellDatasetMismatch {}
+
+struct InstalledNumbers {
+    id: SpellDatasetId,
+    defs: Vec<SpellDef>,
+}
+
+/// One spell-number table.
+///
+/// The process owns a single static instance ([`spell_defs`]); tests and tools
+/// can own their own instance to prove that two datasets never leak into each
+/// other. The table is immutable once installed and the install is idempotent
+/// for an identical dataset.
+pub struct SpellNumberTable {
+    installed: std::sync::OnceLock<InstalledNumbers>,
+}
+
+impl SpellNumberTable {
+    pub const fn new() -> Self {
+        Self {
+            installed: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Installs `numbers` unless the table already holds a dataset; an
+    /// identical dataset is an idempotent success, a different one is an
+    /// error that names both ids.
+    pub fn install(
+        &self,
+        numbers: &[SpellNumbers],
+    ) -> Result<SpellInstall, SpellDatasetMismatch> {
+        let id = SpellDatasetId::of(numbers);
+        if let Some(existing) = self.installed.get() {
+            return Self::outcome(existing.id, id);
+        }
+        let candidate = InstalledNumbers {
+            id,
+            defs: merged_numbers(numbers),
+        };
+        match self.installed.set(candidate) {
+            Ok(()) => Ok(SpellInstall::Installed(id)),
+            // Lost a race: the winner's identity decides.
+            Err(existing) => Self::outcome(existing.id, id),
+        }
+    }
+
+    fn outcome(
+        installed: SpellDatasetId,
+        incoming: SpellDatasetId,
+    ) -> Result<SpellInstall, SpellDatasetMismatch> {
+        if installed == incoming {
+            Ok(SpellInstall::AlreadyInstalled(installed))
+        } else {
+            Err(SpellDatasetMismatch { installed, incoming })
+        }
+    }
+
+    /// The dataset this table holds, `None` before the first install.
+    pub fn dataset(&self) -> Option<SpellDatasetId> {
+        self.installed.get().map(|table| table.id)
+    }
+
+    /// Active table: the installed numbers, the hand-written fallback before.
+    pub fn defs(&self) -> &[SpellDef] {
+        match self.installed.get() {
+            Some(table) => table.defs.as_slice(),
+            None => &SPELL_DEFS,
+        }
+    }
+}
+
+impl Default for SpellNumberTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Known rows of `numbers`, sorted by id, last row per id wins (the same
+/// precedence [`merged_numbers`] applies), so the identity describes the table
+/// that would be installed.
+fn canonical_numbers(numbers: &[SpellNumbers]) -> Vec<(&'static str, SpellNumbers)> {
+    let mut rows: std::collections::BTreeMap<&'static str, SpellNumbers> = Default::default();
     for entry in numbers {
-        if let Some(def) = table.iter_mut().find(|def| def.id == entry.id) {
+        if SPELL_DEFS.iter().any(|def| def.id == entry.id) {
+            rows.insert(entry.id, *entry);
+        }
+    }
+    rows.into_iter().collect()
+}
+
+/// Copy of the hand-written table with the known rows of `numbers` applied.
+fn merged_numbers(numbers: &[SpellNumbers]) -> Vec<SpellDef> {
+    let mut table = SPELL_DEFS.to_vec();
+    for (id, entry) in canonical_numbers(numbers) {
+        if let Some(def) = table.iter_mut().find(|def| def.id == id) {
             def.mana = entry.mana;
             def.cooldown_ticks = entry.cooldown_ticks;
             def.range = entry.range;
@@ -173,16 +335,30 @@ pub fn install_spell_numbers(numbers: &[SpellNumbers]) -> bool {
             def.duration_ticks = entry.duration_ticks;
         }
     }
-    let _ = INSTALLED.set(table.to_vec());
-    true
+    table
+}
+
+/// Install sheet-derived numbers into the process table.
+///
+/// Returns [`SpellInstall::Installed`] on the first load and
+/// [`SpellInstall::AlreadyInstalled`] when the same dataset is loaded again.
+/// A *different* dataset on the same process is [`SpellDatasetMismatch`]: the
+/// caller must report it, because the process can only honour one balance
+/// table for the whole lifetime of a `Sim`.
+pub fn install_spell_numbers(
+    numbers: &[SpellNumbers],
+) -> Result<SpellInstall, SpellDatasetMismatch> {
+    GLOBAL.install(numbers)
+}
+
+/// Dataset the process table holds, `None` while the fallback is active.
+pub fn installed_spell_dataset() -> Option<SpellDatasetId> {
+    GLOBAL.dataset()
 }
 
 /// Active spell table: installed data when present, the fallback otherwise.
 pub fn spell_defs() -> &'static [SpellDef] {
-    match INSTALLED.get() {
-        Some(table) => table.as_slice(),
-        None => &SPELL_DEFS,
-    }
+    GLOBAL.defs()
 }
 
 impl Spell {

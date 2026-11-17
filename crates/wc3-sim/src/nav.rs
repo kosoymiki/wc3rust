@@ -209,12 +209,22 @@ pub fn nearest_walkable(grid: &Grid, cell: (u32, u32), max_ring: u32) -> Option<
 }
 
 /// Follows a distance field downhill, producing a short cell path.
+///
+/// The field is a derived buffer and must hold exactly one value per grid cell:
+/// a short field would be indexed past its end while descending, and a longer
+/// one means the caller mixed two grids. Both are refused before any indexing
+/// (`width * height` is checked, not wrapping). `None` is also the answer for a
+/// start cell outside the grid or on a non-walkable cell.
 pub fn trace_flow(
     grid: &Grid,
     field: &[u32],
     start: (u32, u32),
     max_steps: usize,
 ) -> Option<Vec<(u32, u32)>> {
+    let cells = (grid.width as usize).checked_mul(grid.height as usize)?;
+    if field.len() != cells {
+        return None;
+    }
     if !grid.walkable(start.0, start.1) {
         return None;
     }

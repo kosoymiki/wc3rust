@@ -10,7 +10,7 @@
 use glam::Vec2;
 
 use crate::data::AttackType;
-use crate::jass::host::{Object, SoundState};
+use crate::jass::host::{Object, SoundState, UnitTypes, unit_type};
 use crate::jass::value::{Handle, HandleKind, Value, real_to_int};
 use crate::jass::vm::JassVm;
 use crate::{OrderSpec, UnitId};
@@ -149,15 +149,51 @@ pub(super) fn create_unit_native(vm: &mut JassVm, a: &[Value]) -> Value {
     create_unit(vm, a)
 }
 
+/// Position of the `location` argument at `index`, or a recorded diagnostic.
+///
+/// A missing argument, `null`, a destroyed handle and a handle of another
+/// family all answer `None`: the caller must refuse the call instead of falling
+/// back to the world origin, which would turn a script bug into a real unit
+/// action at `(0, 0)`.
+pub(super) fn location_arg(
+    vm: &mut JassVm,
+    args: &[Value],
+    index: usize,
+    native: &str,
+) -> Option<Vec2> {
+    let Some(value) = args.get(index) else {
+        vm.errors.push(format!("{native}: missing location argument"));
+        return None;
+    };
+    let Some(handle) = value.handle() else {
+        let what = if value.is_null() {
+            "null"
+        } else {
+            "a non-handle value"
+        };
+        vm.errors
+            .push(format!("{native}: expected a location handle, got {what}"));
+        return None;
+    };
+    match vm.host.location(handle) {
+        Some(pos) => Some(pos),
+        None => {
+            vm.errors.push(format!(
+                "{native}: handle {} is not a live location",
+                handle.id
+            ));
+            None
+        }
+    }
+}
+
 pub(super) fn create_unit_at_loc(vm: &mut JassVm, a: &[Value]) -> Value {
     let Some(owner) = super::core::player_index(a, 0) else {
         return Value::Null;
     };
-    let pos = a
-        .get(2)
-        .and_then(Value::handle)
-        .and_then(|handle| vm.host.location(handle))
-        .unwrap_or(Vec2::ZERO);
+    let Some(pos) = location_arg(vm, a, 2, "CreateUnitAtLoc") else {
+        return Value::Null;
+    };
     let rawcode = i(a, 1);
     let Some(def_id) = resolve_def_id(vm, rawcode) else {
         vm.errors
@@ -189,11 +225,9 @@ pub(super) fn create_unit_at_loc_by_name(vm: &mut JassVm, a: &[Value]) -> Value 
             .push(format!("CreateUnitAtLocByName: unknown unit type {}", s(a, 1)));
         return Value::Null;
     };
-    let pos = a
-        .get(2)
-        .and_then(Value::handle)
-        .and_then(|handle| vm.host.location(handle))
-        .unwrap_or(Vec2::ZERO);
+    let Some(pos) = location_arg(vm, a, 2, "CreateUnitAtLocByName") else {
+        return Value::Null;
+    };
     create_unit_impl(vm, owner, &def_id, pos, r(a, 3))
 }
 
@@ -276,11 +310,9 @@ pub(super) fn set_unit_position_loc(vm: &mut JassVm, a: &[Value]) -> Value {
     let Some(handle) = unit_arg(a, 0) else {
         return Value::Null;
     };
-    let pos = a
-        .get(1)
-        .and_then(Value::handle)
-        .and_then(|location| vm.host.location(location))
-        .unwrap_or(Vec2::ZERO);
+    let Some(pos) = location_arg(vm, a, 1, "SetUnitPositionLoc") else {
+        return Value::Null;
+    };
     match vm.sim.jass_set_unit_position(&vm.host.units, handle.id, pos) {
         Ok(()) => Value::Null,
         Err(reason) => {
@@ -1057,11 +1089,21 @@ pub(super) fn unit_damage_point(vm: &mut JassVm, a: &[Value]) -> Value {
 /// `IsUnitType(unit, UNIT_TYPE_*)`.
 ///
 /// The constants are the engine's own (`common.j`): 0 hero, 1 dead, 2 structure,
-/// 3 flying, 4 ground, 5 attacks flying, 6 attacks ground, 7 ranged, … The
-/// simulation knows the ones that change gameplay (hero, dead, structure, ranged)
-/// and answers `false` for the rest instead of inventing a value.
+/// 3 flying, 4 ground, 5 attacks flying, 6 attacks ground, 7 melee attacker,
+/// 8 ranged attacker, … The simulation knows the ones that change gameplay
+/// (hero, dead, structure, melee/ranged) and answers `false` for the rest
+/// instead of inventing a value.
+///
+/// The answer is `<per-instance delta>.classify(derived)`: `UnitAddType` /
+/// `UnitRemoveType` are runtime state on this one instance
+/// ([`crate::jass::host::UnitTypes`]) while the definition is shared by every
+/// instance of the same id, and both go through [`derived_unit_type`] +
+/// [`UnitTypes::classify`] so a getter and a filter cannot disagree.
 pub(super) fn is_unit_type(vm: &mut JassVm, a: &[Value]) -> Value {
-    let Some(unit) = sim_unit(vm, a, 0) else {
+    let Some(handle) = unit_arg(a, 0) else {
+        return Value::Bool(false);
+    };
+    let Some(unit) = vm.host.sim_unit(handle) else {
         return Value::Bool(false);
     };
     let kind = i(a, 1);
@@ -1069,16 +1111,56 @@ pub(super) fn is_unit_type(vm: &mut JassVm, a: &[Value]) -> Value {
         return Value::Bool(false);
     };
     let def = vm.sim.unit(unit).map(|unit| unit.def());
-    let value = match kind {
-        0 => def.is_some_and(|def| def.hero),
-        1 => !snapshot.alive,
-        2 => def.is_some_and(|def| def.is_building()),
-        3 => false,
-        4 => true,
-        7 => def.is_some_and(|def| def.stats.range > 100.0),
+    let derived = derived_unit_type(def, snapshot.alive, kind);
+    let types = vm
+        .host
+        .unit_meta(handle)
+        .map_or(UnitTypes::default(), |meta| meta.types);
+    Value::Bool(types.classify(kind, derived))
+}
+
+/// Attack range at or below which the simulation classifies a unit as a melee
+/// attacker (`UNIT_TYPE_MELEE_ATTACKER`); the footman's 90 and the rifleman's
+/// 400 sit on either side of it.
+const MELEE_RANGE: f32 = 100.0;
+
+/// Classification from the unit definition alone, before any per-instance
+/// `UnitAddType`/`UnitRemoveType` delta. `alive` is passed in because callers
+/// hold the snapshot or the unit borrow already.
+pub(super) fn derived_unit_type(def: Option<&crate::UnitDef>, alive: bool, type_id: i32) -> bool {
+    match type_id {
+        unit_type::HERO => def.is_some_and(|def| def.hero),
+        unit_type::DEAD => !alive,
+        unit_type::STRUCTURE => def.is_some_and(|def| def.is_building()),
+        unit_type::FLYING => false,
+        unit_type::GROUND => true,
+        unit_type::MELEE_ATTACKER => def.is_some_and(|def| def.stats.range <= MELEE_RANGE),
+        unit_type::RANGED_ATTACKER => def.is_some_and(|def| def.stats.range > MELEE_RANGE),
         _ => false,
-    };
-    Value::Bool(value)
+    }
+}
+
+/// Per-unit `UNIT_TYPE_*` deltas the map set, keyed by simulation unit.
+///
+/// A native filter that walks the unit table collects them once: the metadata
+/// map only holds units a script touched, so one handle lookup per touched unit
+/// replaces one per simulation unit. [`derived_unit_type`] plus
+/// [`crate::jass::host::UnitTypes::classify`] is the same rule `IsUnitType`
+/// answers with.
+pub(super) fn unit_type_deltas(
+    vm: &JassVm,
+) -> std::collections::BTreeMap<UnitId, UnitTypes> {
+    vm.host
+        .unit_meta
+        .iter()
+        .filter(|(_, meta)| !meta.types.is_empty())
+        .filter_map(|(handle, meta)| {
+            vm.host
+                .units
+                .unit_of(*handle)
+                .map(|unit| (unit, meta.types))
+        })
+        .collect()
 }
 
 /// `IsUnitAlly(unit, player)` — same team and no `SetPlayerAlliance` override.
@@ -1201,11 +1283,9 @@ pub(super) fn issue_point_order(vm: &mut JassVm, a: &[Value]) -> Value {
 
 pub(super) fn issue_point_order_loc(vm: &mut JassVm, a: &[Value]) -> Value {
     let order = s(a, 1).to_ascii_lowercase();
-    let point = a
-        .get(2)
-        .and_then(Value::handle)
-        .and_then(|location| vm.host.location(location))
-        .unwrap_or(Vec2::ZERO);
+    let Some(point) = location_arg(vm, a, 2, "IssuePointOrderLoc") else {
+        return Value::Bool(false);
+    };
     issue_point_order_impl(vm, a, &order, point)
 }
 
@@ -1692,8 +1772,11 @@ pub(super) fn create_sound_filename_with_label(vm: &mut JassVm, a: &[Value]) -> 
 // Display / text
 // ---------------------------------------------------------------------------
 
+/// `DisplayTextToPlayer(toPlayer, x, y, message)` — three coordinates before
+/// the text (`common.j:1448`), so the message is argument 3. Reading index 2
+/// logged the `y` coordinate instead (found by the AUD-018 display test).
 pub(super) fn display_text_to_player(vm: &mut JassVm, a: &[Value]) -> Value {
-    let text = s(a, 2);
+    let text = s(a, 3);
     let player = super::core::player_index(a, 0);
     vm.host.display_log.push((player, text.clone()));
     vm.emit_text(text);
@@ -1709,7 +1792,16 @@ pub(super) fn display_timed_text_to_player(vm: &mut JassVm, a: &[Value]) -> Valu
     Value::Null
 }
 
-pub(super) fn clear_text_messages(_vm: &mut JassVm, _a: &[Value]) -> Value {
+/// `ClearTextMessages()` — clears the local client's message area.
+///
+/// The engine native takes no player: `Blizzard.j`'s `ClearTextMessagesBJ`
+/// gates the call per force so only the clients in it clear their own screen,
+/// so the host clears what the local player can see (broadcasts plus messages
+/// addressed to that slot). The transcript (`JassVm::text_log`/`output`) keeps
+/// every message: clearing a screen is not deleting the game's chat log.
+pub(super) fn clear_text_messages(vm: &mut JassVm, _a: &[Value]) -> Value {
+    let viewer = vm.host.local_player;
+    vm.host.clear_display_messages(viewer);
     Value::Null
 }
 

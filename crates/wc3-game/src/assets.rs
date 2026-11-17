@@ -1754,11 +1754,16 @@ fn open_object_database(
         });
     }
     if !spell_numbers.is_empty() {
-        let installed = wc3_sim::abilities::install_spell_numbers(&spell_numbers);
-        debug.push(format!(
-            "spell_numbers={} installed={installed}",
-            spell_numbers.len()
-        ));
+        match wc3_sim::abilities::install_spell_numbers(&spell_numbers) {
+            Ok(status) => debug.push(format!("spell_numbers={} {status}", spell_numbers.len())),
+            // Two different datasets in one process: live gameplay keeps the
+            // first one, and the conflict is reported instead of being
+            // dropped as a silent `false`.
+            Err(error) => debug.push(format!(
+                "spell_numbers={} dataset_conflict: {error}",
+                spell_numbers.len()
+            )),
+        }
     }
 
     debug.push(format!(

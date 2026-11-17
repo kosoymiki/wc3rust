@@ -10,7 +10,7 @@ use glam::Vec2;
 
 use crate::jass::host::{
     CameraSetup, CinematicEvent, EVENT_GAME_STATE_LIMIT, GameEventSupport, Object, RegEvent,
-    SoundState, StartLocation, game_event_support,
+    SoundState, StartLocation, game_event_support, unit_type,
 };
 use crate::jass::value::{Handle, HandleKind, Value, real_to_int};
 use crate::jass::vm::JassVm;
@@ -1555,15 +1555,58 @@ pub(super) fn blz_set_unit_name(vm: &mut JassVm, a: &[Value]) -> Value {
     Value::Null
 }
 
-/// `SetUnitFacingTimed` etc. already live in `unit.rs`; this keeps
-/// `UnitAddType`-style calls from silently doing nothing.
-pub(super) fn unit_add_type(_vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Null
+/// `UnitAddType(unit, unittype)` — the engine's per-instance unit
+/// classification delta.
+///
+/// The bit lives in the unit's [`crate::jass::host::UnitMeta`], never in the
+/// shared [`crate::UnitDef`]: one footman can be a "hero" or a "structure" for
+/// the script while every other footman of the same id is unchanged.
+/// `IsUnitType` and the classification filters read the same
+/// [`crate::jass::host::UnitTypes::classify`] rule.
+///
+/// Returns `true` when the call applied (an idempotent re-add included) and
+/// `false` with a recorded diagnostic for a wrong unit handle or a `unittype`
+/// outside the enum the shipped `common.j` defines.
+pub(super) fn unit_add_type(vm: &mut JassVm, a: &[Value]) -> Value {
+    set_unit_type(vm, a, true, "UnitAddType")
 }
 
-/// `UnitRemoveType`.
-pub(super) fn unit_remove_type(_vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Null
+/// `UnitRemoveType` — see [`unit_add_type`].
+pub(super) fn unit_remove_type(vm: &mut JassVm, a: &[Value]) -> Value {
+    set_unit_type(vm, a, false, "UnitRemoveType")
+}
+
+/// Shared body of `UnitAddType` / `UnitRemoveType`: one classification change
+/// and one return rule (`true` means the call was applied).
+fn set_unit_type(vm: &mut JassVm, a: &[Value], add: bool, native: &str) -> Value {
+    let Some(handle) = unit_arg(a, 0) else {
+        vm.errors.push(format!("{native}: invalid unit handle"));
+        return Value::Bool(false);
+    };
+    if vm.host.sim_unit(handle).is_none() {
+        vm.errors.push(format!(
+            "{native}: handle {} is not a live unit",
+            handle.id
+        ));
+        return Value::Bool(false);
+    }
+    let type_id = i(a, 1);
+    if !(0..unit_type::COUNT).contains(&type_id) {
+        vm.errors.push(format!(
+            "{native}: {type_id} is not a UNIT_TYPE_* constant (0..{})",
+            unit_type::COUNT
+        ));
+        return Value::Bool(false);
+    }
+    let Some(meta) = vm.host.unit_meta_mut(handle) else {
+        return Value::Bool(false);
+    };
+    if add {
+        meta.types.add(type_id);
+    } else {
+        meta.types.remove(type_id);
+    }
+    Value::Bool(true)
 }
 
 

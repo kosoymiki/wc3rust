@@ -29,6 +29,7 @@
 pub mod bundle;
 pub mod host;
 pub mod locale;
+pub mod native_status;
 pub mod natives;
 pub mod registry;
 mod registry_gen;
@@ -39,7 +40,8 @@ pub mod vm;
 pub use bundle::{ScriptBundle, find_game_scripts};
 pub use host::{Host, Object, RegEvent, TimerState, TriggerState};
 pub use locale::{LocalizedStrings, MAP_FLAG_BITS, map_flag_name, map_flags_from_w3i};
-pub use registry::{NativeDef, RegistryStats, lookup as native_def};
+pub use native_status::{NativeStatus, StatusCounts, StatusEntry, report_json, report_rows};
+pub use registry::{NativeDef, RegistryStats, is_implemented, lookup as native_def};
 pub use value::{Handle, HandleKind, Signature, Type, Value};
 pub use vm::{
     Code, CompileError, DEFAULT_STEP_BUDGET, EntryReport, EventContext, JassVm, MAX_CALL_DEPTH,

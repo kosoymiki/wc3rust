@@ -49,14 +49,18 @@ impl SpatialHash {
     /// Append indices of units within `radius` of `pos` to `out` (cleared
     /// first).  `limit` caps the number of neighbours collected so a packed
     /// crowd cannot make a single unit's update unbounded.
+    ///
+    /// A `limit` of zero asks for no neighbours at all and returns before any
+    /// bucket is visited; a non-positive or non-finite `radius` is not a query
+    /// circle and returns nothing. Only the buckets that overlap the circle are
+    /// visited, and callers filter by true distance with their own radii.
     pub fn query(&self, pos: Vec2, radius: f32, limit: usize, out: &mut Vec<u32>) {
         out.clear();
-        if radius <= 0.0 {
+        if limit == 0 || !radius.is_finite() || radius <= 0.0 {
             return;
         }
         let min = self.cell_of(pos - Vec2::splat(radius));
         let max = self.cell_of(pos + Vec2::splat(radius));
-        let r2 = radius * radius;
         'outer: for cy in min.1..=max.1 {
             for cx in min.0..=max.0 {
                 let bucket = &self.buckets[cy as usize * self.cols as usize + cx as usize];
@@ -68,9 +72,6 @@ impl SpatialHash {
                 }
             }
         }
-        // The circle radius is only used to select buckets; callers filter by
-        // true distance with their own per-unit radii.
-        let _ = r2;
     }
 
     pub fn cell_size(&self) -> f32 {

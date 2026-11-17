@@ -83,7 +83,7 @@ handler_table! {
     "SetAllItemTypeSlots" => core::set_all_item_type_slots,
     "SetAllUnitTypeSlots" => core::set_all_unit_type_slots,
     "IsFogEnabled" => core::is_fog_enabled,
-    "IsFogMaskEnabled" => core::is_fog_enabled,
+    "IsFogMaskEnabled" => core::is_fog_mask_enabled,
     "ForceEnumPlayers" => core::force_enum_players,
 
     // --- players --------------------------------------------------------
@@ -146,11 +146,14 @@ handler_table! {
     "HaveSavedString" => core::have_saved_str,
     "HaveSavedBoolean" => core::have_saved_boolean,
     "HaveSavedHandle" => core::have_saved_handle,
-    "RemoveSavedInteger" => core::remove_saved_integer,
-    "RemoveSavedHandle" => core::remove_saved_handle,
-    "RemoveSavedBoolean" => core::remove_saved_integer,
-    "RemoveSavedReal" => core::remove_saved_integer,
-    "RemoveSavedString" => core::remove_saved_integer,
+    // The five typed removes share one handler: the engine deletes by
+    // (parent, child) key without reading the stored type (AUD-028, parity
+    // pinned by tests/aud028_saved_cells.rs).
+    "RemoveSavedInteger" => core::remove_saved_cell,
+    "RemoveSavedBoolean" => core::remove_saved_cell,
+    "RemoveSavedReal" => core::remove_saved_cell,
+    "RemoveSavedString" => core::remove_saved_cell,
+    "RemoveSavedHandle" => core::remove_saved_cell,
     "SaveUnitHandle" => core::save_handle,
     "LoadUnitHandle" => core::load_handle,
     "SaveItemHandle" => core::save_handle,
@@ -617,7 +620,7 @@ handler_table! {
     "CreateTextTag" => world::create_text_tag,
     "SetTextTagText" => world::set_text_tag_text,
     "SetTextTagPos" => world::set_text_tag_pos,
-    "SetTextTagLifeSpan" => world::set_text_tag_life_span,
+    "SetTextTagLifespan" => world::set_text_tag_life_span,
     "DestroyTextTag" => world::destroy_text_tag,
     "CreateTrackable" => world::create_trackable,
     "CreateItemPool" => world::create_item_pool,
@@ -780,20 +783,35 @@ mod tests {
 
     #[test]
     fn every_handler_name_is_a_registry_native_or_a_known_header_gap() {
+        // The dispatch index is keyed by the exact name (a script call is
+        // resolved to the registry's spelling first), so a handler whose
+        // capitalisation differs from the registry row is unreachable. AUD-027
+        // found one: `SetTextTagLifeSpan` vs the engine-registered
+        // `SetTextTagLifespan`. Compare case-sensitively on purpose.
         let mut missing = Vec::new();
+        let mut misnamed = Vec::new();
         for (name, _) in HANDLERS {
-            if registry::lookup(name).is_none()
-                && !HEADER_ABSENT_NATIVES
-                    .iter()
-                    .any(|known| known.eq_ignore_ascii_case(name))
-            {
-                missing.push(*name);
+            match registry::lookup(name) {
+                Some(def) if def.name != *name => misnamed.push((*name, def.name)),
+                Some(_) => {}
+                None => {
+                    if !HEADER_ABSENT_NATIVES
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(name))
+                    {
+                        missing.push(*name);
+                    }
+                }
             }
         }
         assert!(
             missing.is_empty(),
             "handlers registered for names that are neither natives nor documented \
              header gaps: {missing:?}"
+        );
+        assert!(
+            misnamed.is_empty(),
+            "handlers whose name differs from the registry spelling are unreachable: {misnamed:?}"
         );
     }
 

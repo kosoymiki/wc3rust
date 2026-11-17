@@ -12,7 +12,7 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic            b"W3SV"
-//! 4       2     format version   u16 LE (1..=5)
+//! 4       2     format version   u16 LE (1..=7)
 //! 6       2     flags            u16 LE (must be 0)
 //! 8       4     payload length   u32 LE
 //! 12      N     payload          sections below, in this exact order
@@ -108,7 +108,7 @@ use crate::ai::{AiConfig, AiMode, AiState};
 use crate::data;
 use crate::jass::host::{
     CameraSetup, CineFilter, Object, PlayerState, RegEvent, SoundState, TimerState, TriggerState,
-    UnitMeta,
+    UnitMeta, UnitTypes,
 };
 use crate::jass::value::{Handle, HandleKind, Value};
 use crate::jass::vm::{
@@ -134,10 +134,12 @@ pub const SAVE_MAGIC: [u8; 4] = *b"W3SV";
 /// headless UI state of `dialog`/`button`/`timerdialog` objects (message,
 /// display target, quit flag, timer-dialog speed/colours/remaining override) and
 /// the two trigger registrations that used to be discarded
-/// (`TriggerRegisterGameStateEvent`, `TriggerRegisterGameEvent`).  Older files
-/// are still readable through their decode arms; those versions never stored the
-/// newer state, so it restores to its neutral value.
-pub const SAVE_FORMAT_VERSION: u16 = 6;
+/// (`TriggerRegisterGameStateEvent`, `TriggerRegisterGameEvent`); version 7
+/// appends the per-unit runtime `UNIT_TYPE_*` delta of
+/// `UnitAddType`/`UnitRemoveType`.  Older files are still readable through their
+/// decode arms; those versions never stored the newer state, so it restores to
+/// its neutral value.
+pub const SAVE_FORMAT_VERSION: u16 = 7;
 
 /// Hard ceiling for every ID space a save can carry (`next_id`, `next_item_id`,
 /// `next_destructable_id`, `next_camp_id`, `next_projectile_id` and the script
@@ -3234,7 +3236,7 @@ fn read_object(r: &mut R<'_>, code_function_count: usize, version: u16) -> SaveR
     })
 }
 
-fn write_unit_meta(w: &mut W, meta: &UnitMeta) {
+fn write_unit_meta(w: &mut W, meta: &UnitMeta, version: u16) {
     w.f32(meta.acquire_range);
     w.bool(meta.hidden);
     w.i32(meta.color);
@@ -3290,9 +3292,14 @@ fn write_unit_meta(w: &mut W, meta: &UnitMeta) {
         w.u64(*ability as u64);
     }
     w.bool(meta.xp_suspended);
+    if version >= 7 {
+        let (added, removed) = meta.types.bits();
+        w.u32(added);
+        w.u32(removed);
+    }
 }
 
-fn read_unit_meta(r: &mut R<'_>) -> SaveResult<UnitMeta> {
+fn read_unit_meta(r: &mut R<'_>, version: u16) -> SaveResult<UnitMeta> {
     let acquire_range = r.f32()?;
     let hidden = r.bool("script.unit_meta.hidden")?;
     let color = r.i32()?;
@@ -3357,6 +3364,13 @@ fn read_unit_meta(r: &mut R<'_>) -> SaveResult<UnitMeta> {
         abilities.push(r.u64()? as i64);
     }
     let xp_suspended = r.bool("script.unit_meta.xp_suspended")?;
+    // Version 7 appends the runtime `UNIT_TYPE_*` delta; older files never
+    // stored it, so the classification is the definition's own.
+    let types = if version >= 7 {
+        UnitTypes::from_bits(r.u32()?, r.u32()?)
+    } else {
+        UnitTypes::default()
+    };
     Ok(UnitMeta {
         acquire_range,
         hidden,
@@ -3382,6 +3396,7 @@ fn read_unit_meta(r: &mut R<'_>) -> SaveResult<UnitMeta> {
         summoned,
         abilities,
         xp_suspended,
+        types,
     })
 }
 
@@ -3558,7 +3573,7 @@ fn write_script_section(w: &mut W, vm: Option<&JassVm>, version: u16) {
             w.len(vm.host.unit_meta.len());
             for (handle, meta) in &vm.host.unit_meta {
                 w.u32(*handle);
-                write_unit_meta(w, meta);
+                write_unit_meta(w, meta, version);
             }
             w.len(vm.host.item_binding.len());
             for (handle, item) in &vm.host.item_binding {
@@ -3918,7 +3933,7 @@ fn read_script_section(
     let meta_count = r.len()?;
     let mut unit_meta = BTreeMap::new();
     for _ in 0..meta_count {
-        unit_meta.insert(r.u32()?, read_unit_meta(r)?);
+        unit_meta.insert(r.u32()?, read_unit_meta(r, version)?);
     }
     host.unit_meta = unit_meta;
 
@@ -5382,6 +5397,13 @@ fn decode_v6(payload: &[u8]) -> SaveResult<Sim> {
     decode_payload(payload, 6)
 }
 
+/// Decodes the current version-7 payload: the per-unit runtime
+/// `UnitAddType`/`UnitRemoveType` classification delta appended to each
+/// `UnitMeta` record.
+fn decode_v7(payload: &[u8]) -> SaveResult<Sim> {
+    decode_payload(payload, 7)
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -5410,6 +5432,7 @@ impl Sim {
             4 => decode_v4(payload),
             5 => decode_v5(payload),
             6 => decode_v6(payload),
+            7 => decode_v7(payload),
             other => Err(SaveError::UnknownVersion(other)),
         }
     }
@@ -5727,6 +5750,84 @@ mod tests {
             ),
             "v6 keeps the dialog message and display target"
         );
+    }
+
+    /// A version-6 file (written before `UnitAddType`/`UnitRemoveType` had
+    /// per-instance state) still loads: the runtime `UNIT_TYPE_*` delta it never
+    /// stored restores to "definition only", so `IsUnitType` answers from the
+    /// shared `UnitDef` exactly as it did before the format extension
+    /// (AUD-013).
+    #[test]
+    fn version_6_file_loads_with_neutral_unit_types() {
+        let mut sim = Sim::new(0x66, 32, 32);
+        let mut bundle = crate::jass::ScriptBundle::new();
+        bundle
+            .add_source(
+                "unit_types_v6.j",
+                r#"
+                globals
+                    unit probe = null
+                    boolean hero_after_add = false
+                    boolean hero_after_load = true
+                endglobals
+                function setup takes nothing returns nothing
+                    set probe = CreateUnit(Player(0), 'hfoo', 400.0, 400.0, 0.0)
+                    call UnitAddType(probe, 0)
+                    set hero_after_add = IsUnitType(probe, 0)
+                endfunction
+                function probe_after_load takes nothing returns nothing
+                    set hero_after_load = IsUnitType(probe, 0)
+                endfunction
+                "#,
+            )
+            .expect("parse");
+        sim.attach_script(&bundle, 0x66).expect("compile");
+        sim.with_script(|vm| vm.run_function("setup"))
+            .expect("script attached")
+            .expect("setup runs");
+        let live = sim
+            .with_script(|vm| {
+                let index = vm.code.global_by_name["hero_after_add"] as usize;
+                vm.globals[index].truthy()
+            })
+            .expect("script");
+        assert!(live, "the runtime add is visible before the save");
+
+        // A genuine v6 payload: same layout, no type words in the meta record.
+        let v6 = seal_version(&encode_payload_version(&sim, 6), 6);
+        assert_eq!(u16::from_le_bytes([v6[4], v6[5]]), 6);
+        let mut restored = Sim::from_save(&v6).expect("v6 file still loads");
+        assert_eq!(restored.state_hash(), sim.state_hash());
+        restored
+            .with_script(|vm| vm.run_function("probe_after_load"))
+            .expect("script attached")
+            .expect("probe runs");
+        let after: bool = restored
+            .with_script(|vm| {
+                let index = vm.code.global_by_name["hero_after_load"] as usize;
+                vm.globals[index].truthy()
+            })
+            .expect("script");
+        assert!(
+            !after,
+            "a v6 file never stored the delta: the footman is not a hero again"
+        );
+
+        // The version this build writes keeps the full state.
+        let v7 = sim.to_save_bytes();
+        assert_eq!(u16::from_le_bytes([v7[4], v7[5]]), SAVE_FORMAT_VERSION);
+        let mut restored = Sim::from_save(&v7).expect("v7 round trip");
+        restored
+            .with_script(|vm| vm.run_function("probe_after_load"))
+            .expect("script attached")
+            .expect("probe runs");
+        let after: bool = restored
+            .with_script(|vm| {
+                let index = vm.code.global_by_name["hero_after_load"] as usize;
+                vm.globals[index].truthy()
+            })
+            .expect("script");
+        assert!(after, "v7 keeps the per-instance classification");
     }
 
     /// The scalar counter contract, property-tested over the whole `u32` domain

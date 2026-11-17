@@ -1241,11 +1241,27 @@ pub(super) fn trigger_register_unit_in_range(vm: &mut JassVm, a: &[Value]) -> Va
     Value::Handle(vm.host.create(Object::Opaque))
 }
 
-/// `TriggerSleepAction` is compiled to a `Wait` instruction, so this handler only
-/// runs when the name is called through a path the compiler could not see (a
-/// `code` value). It reports "did not sleep" rather than pretending to wait.
-pub(super) fn trigger_sleep_action(_vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Real(0.0)
+/// `TriggerSleepAction(timeout)` — suspend the calling script thread.
+///
+/// A direct `call TriggerSleepAction(x)` is compiled to the `Wait` instruction,
+/// so this handler only runs when the name reaches the native dispatch at run
+/// time (a name the compiler could not see, e.g. one no loaded header declares).
+/// It asks the executor to park the current thread — the same parking path,
+/// quantization and elapsed-time return value as `Wait` — so the two spellings
+/// cannot diverge. A call with no running thread is a recorded diagnostic:
+/// there is nothing to suspend, and answering 0.0 would claim a sleep that
+/// never happened.
+pub(super) fn trigger_sleep_action(vm: &mut JassVm, a: &[Value]) -> Value {
+    let seconds = r(a, 0).max(0.0);
+    if !vm.request_sleep(seconds) {
+        vm.errors.push(format!(
+            "TriggerSleepAction({seconds}): no running script thread to suspend"
+        ));
+        return Value::Real(0.0);
+    }
+    // The executor parks the thread before this value could be pushed; the
+    // resume path pushes the elapsed seconds instead.
+    Value::Real(seconds)
 }
 
 // ---------------------------------------------------------------------------

@@ -161,6 +161,86 @@ impl TimerState {
     }
 }
 
+/// `UNIT_TYPE_*` ids the simulation models, taken from the shipped `common.j`
+/// (`analysis/war3_data/Scripts/common.j:490-514`; the 1.32.9 donor copy is
+/// identical). The engine encodes a `unittype` as the enum ordinal, which is
+/// what a script passes to `IsUnitType`/`UnitAddType`/`UnitRemoveType`.
+pub mod unit_type {
+    pub const HERO: i32 = 0;
+    pub const DEAD: i32 = 1;
+    pub const STRUCTURE: i32 = 2;
+    pub const FLYING: i32 = 3;
+    pub const GROUND: i32 = 4;
+    pub const MELEE_ATTACKER: i32 = 7;
+    pub const RANGED_ATTACKER: i32 = 8;
+    /// One past the last constant the shipped header defines
+    /// (`UNIT_TYPE_MAGIC_IMMUNE` = 26).
+    pub const COUNT: i32 = 27;
+}
+
+/// Per-instance runtime classification delta for `UnitAddType` /
+/// `UnitRemoveType`.
+///
+/// The base classification comes from the shared [`crate::UnitDef`]; this type
+/// records only what the running map changed for *this* instance, so a script
+/// can make one footman count as a structure without touching the definition
+/// every other footman of the same id reads. Bit `n` is `UNIT_TYPE_*` id `n`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnitTypes {
+    added: u32,
+    removed: u32,
+}
+
+impl UnitTypes {
+    fn bit(type_id: i32) -> Option<u32> {
+        (0..32).contains(&type_id).then(|| 1u32 << type_id)
+    }
+
+    /// Records `UnitAddType(unit, type_id)`. Ids outside the header's enum are
+    /// ignored here; the native validates and reports them before this point.
+    pub fn add(&mut self, type_id: i32) {
+        if let Some(bit) = Self::bit(type_id) {
+            self.added |= bit;
+            self.removed &= !bit;
+        }
+    }
+
+    /// Records `UnitRemoveType(unit, type_id)`.
+    pub fn remove(&mut self, type_id: i32) {
+        if let Some(bit) = Self::bit(type_id) {
+            self.removed |= bit;
+            self.added &= !bit;
+        }
+    }
+
+    /// The one classification rule `IsUnitType` and the classification filters
+    /// share: an instance removal wins, then an instance add, then the value
+    /// derived from the definition. Keeping it in one place is what stops a
+    /// getter and a filter from answering differently for the same unit.
+    pub fn classify(&self, type_id: i32, derived: bool) -> bool {
+        match Self::bit(type_id) {
+            Some(bit) if self.removed & bit != 0 => false,
+            Some(bit) if self.added & bit != 0 => true,
+            _ => derived,
+        }
+    }
+
+    /// True when the map changed nothing for this instance.
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0
+    }
+
+    /// Saved bit words (`added`, `removed`).
+    pub fn bits(&self) -> (u32, u32) {
+        (self.added, self.removed)
+    }
+
+    /// Restores saved bit words.
+    pub fn from_bits(added: u32, removed: u32) -> Self {
+        Self { added, removed }
+    }
+}
+
 /// Mutable per-unit script state that the simulation does not own.
 #[derive(Debug, Clone)]
 pub struct UnitMeta {
@@ -193,6 +273,8 @@ pub struct UnitMeta {
     pub abilities: Vec<i64>,
     /// `SuspendHeroXP` state.
     pub xp_suspended: bool,
+    /// Runtime `UNIT_TYPE_*` delta set by `UnitAddType`/`UnitRemoveType`.
+    pub types: UnitTypes,
 }
 
 impl Default for UnitMeta {
@@ -222,6 +304,7 @@ impl Default for UnitMeta {
             summoned: false,
             abilities: Vec::new(),
             xp_suspended: false,
+            types: UnitTypes::default(),
         }
     }
 }
@@ -934,6 +1017,22 @@ impl Host {
     /// One entry per distinct value; the caller keeps answering `false`.
     pub fn note_unknown_map_flag(&mut self, flag: i32) {
         self.unknown_map_flags.insert(flag);
+    }
+
+    /// Clears the displayed messages the way `ClearTextMessages` does.
+    ///
+    /// The message area belongs to one client, so a clear removes what that
+    /// client can see: broadcasts (`None`) and messages addressed to
+    /// `viewer`. Messages addressed to another player stay in the list — they
+    /// are that player's screen, not this one's. `None` scope clears the whole
+    /// model (used when no local player has been declared yet).
+    pub fn clear_display_messages(&mut self, viewer: Option<u8>) {
+        match viewer {
+            Some(me) => self
+                .display_log
+                .retain(|(player, _)| matches!(player, Some(other) if *other != me)),
+            None => self.display_log.clear(),
+        }
     }
 
     /// Appends a cinematic step, bounded by [`CINEMATIC_LOG_LIMIT`].

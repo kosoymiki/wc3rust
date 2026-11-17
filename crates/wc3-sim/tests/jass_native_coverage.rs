@@ -195,13 +195,36 @@ fn registry_covers_every_native_name_the_engine_registers() {
     let stats = registry::stats();
     assert!(stats.total >= 1600, "{stats:?}");
     assert!(stats.engine_registered >= 1096, "{stats:?}");
-    // This is the headline number for the lane report: handlers now exist for a
-    // large majority of the 1096 engine registrations.
+    // Dispatch coverage (handlers present) and semantic coverage (implemented)
+    // are separate numbers on purpose: AUD-016 exists because the first used to
+    // be reported as the second.
     assert!(
-        stats.handled_engine_registered >= 150,
-        "handled engine natives: {} of {}",
-        stats.handled_engine_registered,
+        stats.dispatch_engine_registered >= 150,
+        "dispatch handlers for engine natives: {} of {}",
+        stats.dispatch_engine_registered,
         stats.engine_registered
+    );
+    assert!(
+        stats.implemented_engine_registered >= 100,
+        "implemented engine natives: {} of {}",
+        stats.implemented_engine_registered,
+        stats.engine_registered
+    );
+    assert!(
+        stats.implemented + stats.partial + stats.recorded_only + stats.no_op + stats.unsupported
+            == stats.total,
+        "every registry row carries exactly one semantic status: {stats:?}"
+    );
+    eprintln!(
+        "registry: {} rows, dispatch={}, implemented={} (+{} engine), partial={}, recorded_only={}, no_op={}, unsupported={}",
+        stats.total,
+        stats.dispatch,
+        stats.implemented,
+        stats.implemented_engine_registered,
+        stats.partial,
+        stats.recorded_only,
+        stats.no_op,
+        stats.unsupported
     );
 }
 

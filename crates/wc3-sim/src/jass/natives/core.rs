@@ -46,12 +46,61 @@ pub(super) fn r2sw(_vm: &mut JassVm, a: &[Value]) -> Value {
     }
 }
 
-pub(super) fn s2i(_vm: &mut JassVm, a: &[Value]) -> Value {
-    Value::Int(s(a, 0).trim().parse().unwrap_or(0))
+/// Numeric prefix of a string, parsed the way the engine parses one.
+///
+/// The shipped natives are not strict conversions (JassDoc `common.j`,
+/// `S2I`/`S2R` blocks, observed 2026-11-17): the parser reads an optional
+/// sign, then a run of `[0-9.]`, and stops at the first other character, so
+/// `S2I("123abc") == 123`, `S2R(".123asd") == 0.123`, `S2R("1e3") == 1.0`
+/// (the exponent letter ends the number) and a string without a leading digit
+/// is `0`. A second decimal point ends the number the same way `strtod` does.
+/// Returns `None` when the string carries no number at all.
+fn number_prefix(text: &str) -> Option<f64> {
+    let trimmed = text.trim_start_matches([' ', '\t', '\r', '\n']);
+    let (sign, rest) = match trimmed.as_bytes().first() {
+        Some(b'-') => ("-", &trimmed[1..]),
+        Some(b'+') => ("", &trimmed[1..]),
+        _ => ("", trimmed),
+    };
+    let mut token = String::with_capacity(rest.len() + 1);
+    token.push_str(sign);
+    let mut digits = 0usize;
+    let mut dots = 0usize;
+    for ch in rest.chars() {
+        match ch {
+            '0'..='9' => {
+                digits += 1;
+                token.push(ch);
+            }
+            '.' if dots == 0 => {
+                dots += 1;
+                token.push('.');
+            }
+            _ => break,
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    token.parse::<f64>().ok()
 }
 
+/// `S2I(string)` — the integer part of the numeric prefix, saturating at the
+/// integer bounds (`S2I("99999999999999999999") == 2147483647`) and `0` when
+/// the string has no leading number, matching the engine's documented
+/// behaviour.
+pub(super) fn s2i(_vm: &mut JassVm, a: &[Value]) -> Value {
+    Value::Int(number_prefix(&s(a, 0)).map_or(0, |value| value as i32))
+}
+
+/// `S2R(string)` — the numeric prefix as a real; `0.0` for a string with no
+/// leading number and for a value outside the real range, which is what the
+/// engine documents ("returns 0 for values too big or too small").
 pub(super) fn s2r(_vm: &mut JassVm, a: &[Value]) -> Value {
-    Value::Real(s(a, 0).trim().parse().unwrap_or(0.0))
+    Value::Real(number_prefix(&s(a, 0)).map_or(0.0, |value| {
+        let real = value as f32;
+        if real.is_finite() { real } else { 0.0 }
+    }))
 }
 
 /// `StringLength` counts bytes: the engine's strings are byte buffers and map
@@ -506,6 +555,13 @@ fn player_state_lumber_upkeep_rate() -> i32 {
     14
 }
 
+/// `PLAYER_STATE_OBSERVER` = ConvertPlayerState(11) in the shipped headers
+/// (`analysis/war3_full/Scripts/common.j:294`). The value is the same field
+/// `IsPlayerObserver` reads.
+fn player_state_observer() -> i32 {
+    11
+}
+
 /// `GetLocalizedString(key)` — `war3map.wts` first, the install's
 /// `GlobalStrings.fdf` second, the key itself (recorded as
 /// `JASS_STRING missing=<key>`) when neither has it.
@@ -609,12 +665,25 @@ pub(super) fn get_player_structure_count(vm: &mut JassVm, a: &[Value]) -> Value 
     let Some(index) = player_index(a, 0) else {
         return Value::Int(0);
     };
+    // `IsUnitType(u, UNIT_TYPE_STRUCTURE)` and this count must agree: both use
+    // the definition-derived classification plus the per-instance
+    // `UnitAddType`/`UnitRemoveType` delta, so a script that adds or removes the
+    // structure bit changes the count.
+    let structure = crate::jass::host::unit_type::STRUCTURE;
+    let deltas = super::unit::unit_type_deltas(vm);
     let count = vm
         .sim
         .units
         .iter()
         .filter(|unit| unit.owner == index as u8)
-        .filter(|unit| unit.def().is_building())
+        .filter(|unit| {
+            let derived = super::unit::derived_unit_type(Some(unit.def()), unit.alive, structure);
+            deltas
+                .get(&unit.id)
+                .copied()
+                .unwrap_or_default()
+                .classify(structure, derived)
+        })
         .count();
     Value::Int(count as i32)
 }
@@ -766,9 +835,24 @@ pub(super) fn get_player_slot_state(vm: &mut JassVm, a: &[Value]) -> Value {
     Value::Int(if playing { 1 } else { 0 })
 }
 
-/// `IsPlayerObserver(player)` — the simulation has no observers.
-pub(super) fn is_player_observer(_vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Bool(false)
+/// `IsPlayerObserver(player)` — reads the per-player observer flag.
+///
+/// The flag lives in the player-state map under `PLAYER_STATE_OBSERVER`
+/// (`ConvertPlayerState(11)` in `common.j`), so a script that sets the state
+/// and a script that queries it can never disagree. There is no lobby in the
+/// headless simulation, so only a script-set flag is visible; the registry
+/// marks the native `Partial` for that reason.
+pub(super) fn is_player_observer(vm: &mut JassVm, a: &[Value]) -> Value {
+    let Some(index) = player_index(a, 0) else {
+        return Value::Bool(false);
+    };
+    Value::Bool(
+        vm.host
+            .players
+            .get(index as usize)
+            .and_then(|state| state.states.get(&player_state_observer()))
+            .is_some_and(|value| *value != 0),
+    )
 }
 
 /// `GetGameSpeed()` — `GAME_SPEED_NORMAL` (2) is the melee default.
@@ -801,8 +885,17 @@ pub(super) fn set_all_unit_type_slots(vm: &mut JassVm, a: &[Value]) -> Value {
 }
 
 /// `IsFogEnabled()` / `IsFogMaskEnabled(fogMask)` — no fog renderer exists.
-pub(super) fn is_fog_enabled(_vm: &mut JassVm, _a: &[Value]) -> Value {
-    Value::Bool(false)
+/// `IsFogEnabled()` — the `FogEnable` host flag (fog of war is on by default,
+/// as in melee; `Blizzard.j`'s cinematic mode saves and restores it through
+/// exactly this query).
+pub(super) fn is_fog_enabled(vm: &mut JassVm, _a: &[Value]) -> Value {
+    Value::Bool(vm.host.fog_enabled)
+}
+
+/// `IsFogMaskEnabled()` — the `FogMaskEnable` host flag, the same state the
+/// setter writes and the save round-trips.
+pub(super) fn is_fog_mask_enabled(vm: &mut JassVm, _a: &[Value]) -> Value {
+    Value::Bool(vm.host.fog_mask_enabled)
 }
 
 /// `ForceEnumPlayers(force, filter)` — adds every slot that is playing and
@@ -957,12 +1050,15 @@ pub(super) fn have_saved_handle(vm: &mut JassVm, a: &[Value]) -> Value {
     Value::Bool(matches!(load_cell(vm, a), Some(Value::Handle(_))))
 }
 
-pub(super) fn remove_saved_integer(vm: &mut JassVm, a: &[Value]) -> Value {
-    remove_cell(vm, a);
-    Value::Null
-}
-
-pub(super) fn remove_saved_handle(vm: &mut JassVm, a: &[Value]) -> Value {
+/// `RemoveSavedInteger` / `RemoveSavedBoolean` / `RemoveSavedReal` /
+/// `RemoveSavedString` / `RemoveSavedHandle` — one implementation for all five.
+///
+/// The engine's remove natives delete by `(parent, child)` key and never look
+/// at the stored cell type: `SaveInteger` + `RemoveSavedReal` on the same key
+/// removes the integer cell. The five names therefore share this handler
+/// deliberately (`natives.rs` maps them together); the typed-delete test
+/// `tests/aud028_saved_cells.rs` pins the parity for each type.
+pub(super) fn remove_saved_cell(vm: &mut JassVm, a: &[Value]) -> Value {
     remove_cell(vm, a);
     Value::Null
 }

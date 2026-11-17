@@ -40,6 +40,23 @@ pub fn has_error(events: &[Event], needle: &str) -> bool {
         .any(|event| matches!(event, Event::Error(text) if text.contains(needle)))
 }
 
+/// Boots a JASS script against the shipped headers (`common.j` + `Blizzard.j`)
+/// and a sandbox `Sim`, the same way the audit tests drive natives. The
+/// headers are in the tree, so a missing directory is a test failure, not a
+/// skip: a run without them would not exercise the real native surface.
+pub fn scripted(script: &str) -> wc3_sim::jass::ScriptedSim {
+    use wc3_sim::jass::{ScriptBundle, ScriptedSim};
+    let mut bundle = ScriptBundle::new();
+    let dir = wc3_sim::jass::find_game_scripts().expect("game headers (common.j/Blizzard.j)");
+    bundle.add_game_scripts(&dir).expect("headers");
+    bundle.add_source("audit_test.j", script).expect("parse");
+    let mut sim = Sim::new(0x1A55, 64, 64);
+    sim.passive_income = false;
+    sim.resources = [100, 100];
+    sim.lumber = [100, 100];
+    ScriptedSim::new(sim, &bundle, 0x1A55).expect("compile")
+}
+
 pub fn gold_events(events: &[Event]) -> Vec<(u8, i32)> {
     events
         .iter()

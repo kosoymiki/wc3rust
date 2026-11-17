@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use super::native_status::{self, NativeStatus};
 use super::value::{Signature, Type, Value, parse_type_list};
 
 /// One registry row.
@@ -20,8 +21,15 @@ pub struct NativeDef {
     pub signature: Signature,
     /// True when the shipped TFT engine registers this name (`0x6f62f140`).
     pub engine_registered: bool,
-    /// True when [`super::natives`] has a handler for it.
-    pub handled: bool,
+    /// True when [`super::natives`] has a dispatch handler for it.
+    ///
+    /// A handler is necessary, not sufficient: [`Self::status`] records how
+    /// much of the behaviour the handler actually implements.
+    pub dispatch: bool,
+    /// Semantic status of the row (audit AUD-016).
+    pub status: NativeStatus,
+    /// Why the row is not `Implemented`; empty for `Implemented`.
+    pub status_reason: &'static str,
 }
 
 impl NativeDef {
@@ -52,11 +60,15 @@ pub fn table() -> &'static [NativeDef] {
                     .unwrap_or_else(|| {
                         panic!("registry: unparsable return type for {name}: {ret:?}")
                     });
+                let dispatch = super::natives::is_handled(name);
+                let (status, status_reason) = native_status::resolve(name, dispatch);
                 NativeDef {
                     name,
                     signature: Signature { params, ret },
                     engine_registered: *engine_registered,
-                    handled: super::natives::is_handled(name),
+                    dispatch,
+                    status,
+                    status_reason,
                 }
             })
             .collect()
@@ -84,37 +96,71 @@ pub fn is_native(name: &str) -> bool {
     lookup(name).is_some()
 }
 
-/// True when a handler exists for the name.
+/// True when a dispatch handler exists for the name (not a claim about how
+/// much of the native is implemented — see [`NativeDef::status`]).
 pub fn is_handled(name: &str) -> bool {
-    lookup(name).is_some_and(|def| def.handled)
+    lookup(name).is_some_and(|def| def.dispatch)
+}
+
+/// True when the native is fully implemented (`NativeStatus::Implemented`).
+pub fn is_implemented(name: &str) -> bool {
+    lookup(name).is_some_and(|def| def.status == NativeStatus::Implemented)
 }
 
 /// Registry statistics for reports and tests.
+///
+/// `dispatch` counts handlers; the per-status counters count semantics, which
+/// is the number a coverage report should quote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryStats {
     pub total: usize,
     pub engine_registered: usize,
-    pub handled: usize,
-    pub handled_engine_registered: usize,
+    /// Rows with a dispatch handler.
+    pub dispatch: usize,
+    pub dispatch_engine_registered: usize,
+    pub implemented: usize,
+    pub implemented_engine_registered: usize,
+    pub partial: usize,
+    pub recorded_only: usize,
+    pub no_op: usize,
+    pub unsupported: usize,
 }
 
 pub fn stats() -> RegistryStats {
     let mut stats = RegistryStats {
         total: 0,
         engine_registered: 0,
-        handled: 0,
-        handled_engine_registered: 0,
+        dispatch: 0,
+        dispatch_engine_registered: 0,
+        implemented: 0,
+        implemented_engine_registered: 0,
+        partial: 0,
+        recorded_only: 0,
+        no_op: 0,
+        unsupported: 0,
     };
     for def in table() {
         stats.total += 1;
         if def.engine_registered {
             stats.engine_registered += 1;
         }
-        if def.handled {
-            stats.handled += 1;
+        if def.dispatch {
+            stats.dispatch += 1;
             if def.engine_registered {
-                stats.handled_engine_registered += 1;
+                stats.dispatch_engine_registered += 1;
             }
+        }
+        match def.status {
+            NativeStatus::Implemented => {
+                stats.implemented += 1;
+                if def.engine_registered {
+                    stats.implemented_engine_registered += 1;
+                }
+            }
+            NativeStatus::Partial => stats.partial += 1,
+            NativeStatus::RecordedOnly => stats.recorded_only += 1,
+            NativeStatus::NoOp => stats.no_op += 1,
+            NativeStatus::Unsupported => stats.unsupported += 1,
         }
     }
     stats
@@ -152,7 +198,12 @@ mod tests {
             "registry should cover common.j + engine: {stats:?}"
         );
         assert!(stats.engine_registered >= 1096, "{stats:?}");
-        assert!(stats.handled > 0, "handlers must be registered");
+        assert!(stats.dispatch > 0, "handlers must be registered");
+        assert_eq!(
+            stats.implemented + stats.partial + stats.recorded_only + stats.no_op + stats.unsupported,
+            stats.total,
+            "every row has exactly one status"
+        );
     }
 
     #[test]
