@@ -298,6 +298,82 @@ impl DrawParams {
     }
 }
 
+/// Knee of the highlight shoulder in linear light.
+///
+/// 0.72 is above the confidence level of the mid-tones (a flat up-facing roof
+/// panel at noon sits at 1.10 before the shoulder, 0.88 at dawn) and below the
+/// DNC peak (1.6), so the shadow side and the wood keep the authored contrast and
+/// only the sun-facing top of the range is compressed.
+pub const LIGHT_KNEE: f32 = 0.72;
+
+/// Which tonal model the mesh shader runs. `Shoulder` is the shipped default; the
+/// other two exist for the A/B evidence frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightModel {
+    /// Exponential highlight shoulder, DNC intensities untouched.
+    Shoulder,
+    /// Sun scaled so `ambient + sun == 1.0` (no shoulder).
+    Fit,
+    /// Pre-fix behaviour: raw intensities and a hard clamp.
+    Legacy,
+}
+
+/// CPU mirror of the shader's `shoulder`, used for the uniforms and the tests.
+pub fn shoulder_cpu(value: f32, knee: f32) -> f32 {
+    if !(knee > 0.0 && knee < 1.0) {
+        return value.clamp(0.0, 1.0);
+    }
+    let span = 1.0 - knee;
+    let under = value.min(knee);
+    let over = (value - knee).max(0.0);
+    (under + span * (1.0 - (-over / span).exp())).clamp(0.0, 1.0)
+}
+
+/// `H2_WORLD_ART_LIGHT=shoulder|fit|legacy` selects the tonal model; the default is
+/// [`LightModel::Shoulder`]. Cached once per process.
+pub fn light_model() -> LightModel {
+    static MODEL: std::sync::OnceLock<LightModel> = std::sync::OnceLock::new();
+    *MODEL.get_or_init(|| {
+        if legacy_light() {
+            return LightModel::Legacy;
+        }
+        match std::env::var("H2_WORLD_ART_LIGHT").as_deref() {
+            Ok("fit") => LightModel::Fit,
+            Ok("legacy") => LightModel::Legacy,
+            _ => LightModel::Shoulder,
+        }
+    })
+}
+
+/// Evidence switches for the world-art before/after capture (packet `B-world`).
+///
+/// `H2_WORLD_ART_LEGACY_LIGHT=1` restores the raw DNC intensities (no fit) and
+/// `H2_WORLD_ART_LEGACY_CONTACT=1` drops the contact band and the ground shadow;
+/// `H2_WORLD_ART_LEGACY=1` sets both. With them set this build renders exactly what
+/// the base rendered before the flatness fix, so both frames come from one binary
+/// and differ only by the renderer change under test. Cached once; normal runs
+/// never set them.
+fn legacy_switch(name: &'static str, include_legacy_all: bool) -> bool {
+    fn read(name: &'static str) -> bool {
+        matches!(
+            std::env::var(name).as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    }
+    let all = read("H2_WORLD_ART_LEGACY");
+    read(name) || (include_legacy_all && all)
+}
+
+fn legacy_light() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| legacy_switch("H2_WORLD_ART_LEGACY_LIGHT", true))
+}
+
+fn legacy_contact() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| legacy_switch("H2_WORLD_ART_LEGACY_CONTACT", true))
+}
+
 /// Fit the DNC directional term into the range a fixed-function pipeline can
 /// represent without clipping.
 ///
@@ -616,11 +692,32 @@ fn ambient_light(normal: vec3<f32>) -> vec3<f32> {
     return camera.ambient.rgb * mix(GROUND_AMBIENT, 1.0, up);
 }
 
+/// Highlight shoulder: identity up to the knee, then an exponential approach to
+/// 1.0. `camera.sun.w` carries the knee (0 disables it).
+///
+/// The shipped DNC intensities put `ambient + sun · N·L` at 1.6 on a surface
+/// facing the sun, so a hard clamp flattens everything above `N·L ≈ 0.54` — the
+/// whole domed roof of the Great Hall, one value. A shoulder keeps the shadow
+/// side and the mid-tones exactly as authored (identity below the knee, so the
+/// dark ribs keep their contrast) and turns the clipped top into a gradient that
+/// still approaches full brightness instead of losing 25 % of it.
+fn shoulder(value: vec3<f32>) -> vec3<f32> {
+    let knee = camera.sun.w;
+    if (knee <= 0.0 || knee >= 1.0) {
+        return clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let knee3 = vec3<f32>(knee);
+    let span = vec3<f32>(1.0 - knee);
+    let under = min(value, knee3);
+    let over = max(value - knee3, vec3<f32>(0.0));
+    return clamp(under + span * (vec3<f32>(1.0) - exp(-over / span)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 fn surface_light(normal: vec3<f32>) -> vec3<f32> {
     let n = normalize(normal);
     let l = normalize(camera.light.xyz);
     let ndl = clamp(dot(n, l), 0.0, 1.0);
-    return clamp(ambient_light(n) + camera.sun.rgb * ndl, vec3<f32>(0.0), vec3<f32>(1.0));
+    return shoulder(ambient_light(n) + camera.sun.rgb * ndl);
 }
 
 /// Contact darkening at the bottom of a model.
@@ -660,6 +757,15 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     let tint = vec3<f32>(input.color.r * scale, input.color.g * scale, input.color.b * scale);
     let lit = c.rgb * tint * surface_light(input.normal) * contact_scale(input.world.y);
     return vec4<f32>(distance_haze(lit, input.world), c.a * input.color.a);
+}
+
+/// Ground-shadow decal. The alpha ramp is carried by the vertex colour (a fan
+/// from the shadow centre fading to zero at the rim), so this entry ignores the
+/// texture entirely: the draw binds no image of its own and sampling whatever the
+/// shadow quad happened to reference would modulate its alpha with unrelated art.
+@fragment
+fn fs_shadow(input: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, input.color.a);
 }
 
 // `Modulate` / `Modulate2x`: the texture is the *colour*, not an alpha mask.
@@ -711,6 +817,10 @@ pub enum PipelineKind {
     /// Internal hard-cutout pipeline (foliage/particles that ask for it), alpha
     /// test 0.5 with no blending and depth write.
     Cutout = 6,
+    /// Internal ground-shadow decal: no texture, vertex alpha, `SRC_ALPHA /
+    /// ONE_MINUS_SRC_ALPHA`, no depth write. Never produced by
+    /// [`Self::from_blend`]: only the renderer's own contact shadows use it.
+    Shadow = 7,
 }
 
 impl PipelineKind {
@@ -739,7 +849,7 @@ impl PipelineKind {
     }
 
     /// Number of pipeline slots (one per [`Self`] variant).
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
 
     /// Draw group: 0 = depth-writing opaque/alpha-test, 1 = blended/additive,
     /// 2 = decals. The game interleaves terrain, water and doodads between these
@@ -748,6 +858,7 @@ impl PipelineKind {
         match self {
             Self::Opaque | Self::AlphaTest | Self::Cutout => 0,
             Self::Blend | Self::Additive | Self::Modulate | Self::Modulate2x => 1,
+            Self::Shadow => 2,
         }
     }
 }
@@ -779,10 +890,11 @@ struct ModelGeometry {
     indices: wgpu::Buffer,
     /// `(index_start, index_count)` per geoset.
     geosets: Vec<(u32, u32)>,
-    /// Lowest / highest visible vertex in the Y-up model space the vertex shader
-    /// produces (empty models report `0.0`). Drives the contact band.
-    min_y: f32,
-    max_y: f32,
+    /// Bounds of the visible geometry in the Y-up model space the vertex shader
+    /// produces (`0..0` for an empty model). Drives the contact band and the
+    /// ground shadow.
+    min: Vec3,
+    max: Vec3,
 }
 
 /// Batched mesh pass.
@@ -956,6 +1068,7 @@ impl MeshRenderer {
             ("fs_modulate", blend_state(4), false),
             ("fs_modulate", blend_state(5), false),
             ("fs_cutout", None, true),
+            ("fs_shadow", blend_state(2), false),
         ];
         for (index, (entry, blend, depth_write)) in table.into_iter().enumerate() {
             let label = match index {
@@ -965,7 +1078,8 @@ impl MeshRenderer {
                 3 => "mesh-additive",
                 4 => "mesh-modulate",
                 5 => "mesh-modulate2x",
-                _ => "mesh-cutout",
+                6 => "mesh-cutout",
+                _ => "mesh-shadow",
             };
             pipelines_gpu.push(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -1144,20 +1258,24 @@ impl MeshRenderer {
             let mut vertices: Vec<MeshVertex> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
             let mut geosets = Vec::with_capacity(model.len());
-            let mut min_y = f32::MAX;
-            let mut max_y = f32::MIN;
+            let mut min = Vec3::splat(f32::MAX);
+            let mut max = Vec3::splat(f32::MIN);
             for mesh in model {
-                // The contact band is authored from the geometry itself: the
-                // lowest and highest *visible* vertex of the model in the Y-up
-                // space the vertex shader ends in (MDX Z-up becomes Y, so the
-                // model-space height is `position.z`; `hidden` helper planes are
+                // The contact band and the ground shadow are authored from the
+                // geometry itself: the bounds of the *visible* vertices in the
+                // Y-up space the vertex shader ends in (MDX Z-up becomes Y, so a
+                // model-space point is `(x, z, -y)`; `hide` helper planes are
                 // ignored because they are never drawn and would stretch the
-                // band across the whole model).
+                // bounds across the whole model).
                 if !mesh.hide {
                     for position in &mesh.positions {
-                        let y = if mesh.z_up { position.z } else { position.y };
-                        min_y = min_y.min(y);
-                        max_y = max_y.max(y);
+                        let local = if mesh.z_up {
+                            Vec3::new(position.x, position.z, -position.y)
+                        } else {
+                            *position
+                        };
+                        min = min.min(local);
+                        max = max.max(local);
                     }
                 }
                 let base = vertices.len() as u32;
@@ -1166,10 +1284,10 @@ impl MeshRenderer {
                 indices.extend(mesh.indices.iter().map(|index| base + index));
                 geosets.push((start, mesh.indices.len() as u32));
             }
-            let (min_y, max_y) = if min_y <= max_y {
-                (min_y, max_y)
+            let (min, max) = if min.x <= max.x {
+                (min, max)
             } else {
-                (0.0, 0.0)
+                (Vec3::ZERO, Vec3::ZERO)
             };
             geometry.push(ModelGeometry {
                 vertices: upload_static(
@@ -1187,8 +1305,8 @@ impl MeshRenderer {
                     "model-indices",
                 ),
                 geosets,
-                min_y,
-                max_y,
+                min,
+                max,
             });
         }
 
@@ -1307,18 +1425,36 @@ impl MeshRenderer {
     /// the calibration the DNC numbers were authored for (`daynight`: a flat
     /// up-facing surface lands on ~1.0 at noon).
     pub fn set_surface_light(&mut self, sun: [f32; 4], ambient: [f32; 4], flat: [f32; 4]) {
-        let fitted = fit_directional([sun[0], sun[1], sun[2]], [ambient[0], ambient[1], ambient[2]]);
-        self.sun_light = [fitted[0], fitted[1], fitted[2], sun[3]];
+        // `sun.w` in the uniform is the shoulder knee; the caller's `w` (1.0 =
+        // exposure placeholder) is not used. See `light_model` for the evidence
+        // switch that reproduces the pre-fix render.
+        let model = light_model();
+        let (directional, knee) = match model {
+            LightModel::Legacy => ([sun[0], sun[1], sun[2]], sun[3]),
+            LightModel::Shoulder => ([sun[0], sun[1], sun[2]], LIGHT_KNEE),
+            LightModel::Fit => {
+                let fitted = fit_directional(
+                    [sun[0], sun[1], sun[2]],
+                    [ambient[0], ambient[1], ambient[2]],
+                );
+                ([fitted[0], fitted[1], fitted[2]], 0.0)
+            }
+        };
+        self.sun_light = [directional[0], directional[1], directional[2], knee];
         self.ambient_light = ambient;
-        // Diagnostics: the flat up-facing surface (`N · L` = DNC `FLAT_NDL`) of
-        // the light the shader actually runs, not the raw curve sample.
+        // Diagnostics: the light of a flat up-facing surface (`N · L` =
+        // `FLAT_NDL`) as the shader will evaluate it, not the raw curve sample.
         let flat_ndl = crate::daynight::FLAT_NDL;
-        self.day_light = [
-            (ambient[0] + fitted[0] * flat_ndl).clamp(0.0, 1.0),
-            (ambient[1] + fitted[1] * flat_ndl).clamp(0.0, 1.0),
-            (ambient[2] + fitted[2] * flat_ndl).clamp(0.0, 1.0),
-            flat[3],
-        ];
+        self.day_light = if model == LightModel::Legacy {
+            flat
+        } else {
+            [
+                shoulder_cpu(ambient[0] + directional[0] * flat_ndl, knee),
+                shoulder_cpu(ambient[1] + directional[1] * flat_ndl, knee),
+                shoulder_cpu(ambient[2] + directional[2] * flat_ndl, knee),
+                flat[3],
+            ]
+        };
     }
 
     /// Legacy single-colour entry point: `[r, g, b, brightness]`. Kept for the
@@ -1436,6 +1572,7 @@ impl MeshRenderer {
             let geometry_table = &self.geometry;
             let skip_hidden = self.skip_hidden;
             let layer_priority = &self.layer_priority;
+            let light_dir = self.light_dir;
             let vertex_scratch = &mut self.vertex_scratch;
             let index_scratch = &mut self.index_scratch;
             let draw_scratch = &mut self.draw_scratch;
@@ -1492,6 +1629,17 @@ impl MeshRenderer {
                         draw_offset: param_scratch.len() as u64 * self.draw_stride,
                         shader_index: palette_base as u64 + first_bone as u64,
                     });
+                }
+                if !legacy_contact() {
+                    push_ground_shadow(
+                        vertex_scratch,
+                        index_scratch,
+                        draw_scratch,
+                        param_scratch,
+                        unit,
+                        geometry,
+                        light_dir,
+                    );
                 }
                 for (mesh_index, mesh) in model.iter().enumerate() {
                     let geoset_alpha = unit.mesh_alpha.get(mesh_index).copied().unwrap_or(1.0);
@@ -1553,12 +1701,13 @@ impl MeshRenderer {
                     // Contact band from this model's own bounding box, in world
                     // space so units standing on a cliff still darken at their
                     // feet. `CONTACT_BAND` is the share of the model height the
-                    // term covers; `CONTACT_FLOOR` keeps a small unit readable.
-                    let (contact_base, contact_band) = contact_band(
-                        unit.world,
-                        geometry.min_y,
-                        geometry.max_y,
-                    );
+                    // term covers; `CONTACT_MIN_BAND` keeps a small unit readable.
+                    let (contact_base, contact_band, contact_strength) = if legacy_contact() {
+                        (0.0, 0.0, 0.0)
+                    } else {
+                        let (base, band) = contact_band(unit.world, geometry.min.y, geometry.max.y);
+                        (base, band, CONTACT_STRENGTH)
+                    };
                     for (layer_index, layer) in mesh.layers.iter().enumerate() {
                         let layer_alpha = unit
                             .layer_alpha
@@ -1590,7 +1739,7 @@ impl MeshRenderer {
                                     PipelineKind::alpha_ref(layer.blend),
                                     layer.uv_set,
                                 )
-                                .with_contact(contact_base, contact_band, CONTACT_STRENGTH),
+                                .with_contact(contact_base, contact_band, contact_strength),
                         );
                         let priority = layer_priority
                             .get(&(unit.model as u32, mesh_index as u32, layer_index as u32))
@@ -2180,6 +2329,123 @@ fn skin_cpu_into(
         base
 }
 
+/// WC3 draws a soft shadow blob under every unit and building: it is engine
+/// geometry (`Shadow` texture quad in the original), not model data — MDX geosets
+/// carry no shadow, which is why the shipped Great Hall has none and read as
+/// pasted onto the ground.
+///
+/// The blob is a triangle fan from the model's own footprint: the centre vertex
+/// carries [`SHADOW_ALPHA`], the rim carries zero, so the alpha ramp is
+/// interpolated per pixel and no shadow texture is needed. The fan is offset
+/// away from the sun by a fraction of the model height, so the shadow sits on
+/// the side the light does not reach, and lifted [`SHADOW_LIFT`] world units so it
+/// does not z-fight with the terrain under the model.
+fn push_ground_shadow(
+    vertex_scratch: &mut Scratch<MeshVertex>,
+    index_scratch: &mut Scratch<u32>,
+    draw_scratch: &mut Scratch<Draw>,
+    param_scratch: &mut Scratch<DrawParams>,
+    unit: &crate::scene::UnitDraw,
+    geometry: &ModelGeometry,
+    light: [f32; 4],
+) {
+    const SEGMENTS: usize = 24;
+    if geometry.max.y <= geometry.min.y {
+        return;
+    }
+    let scale = Vec3::new(
+        unit.world.transform_vector3(Vec3::X).length(),
+        unit.world.transform_vector3(Vec3::Y).length(),
+        unit.world.transform_vector3(Vec3::Z).length(),
+    );
+    let half_x = (geometry.max.x - geometry.min.x).max(0.0) * 0.5 * scale.x;
+    let half_z = (geometry.max.z - geometry.min.z).max(0.0) * 0.5 * scale.z;
+    if half_x <= 0.0 || half_z <= 0.0 {
+        return;
+    }
+    let height = (geometry.max.y - geometry.min.y) * scale.y;
+    let centre_local = Vec3::new(
+        (geometry.min.x + geometry.max.x) * 0.5,
+        geometry.min.y,
+        (geometry.min.z + geometry.max.z) * 0.5,
+    );
+    let mut centre = unit.world.transform_point3(centre_local);
+    // Away from the sun: `light` points *towards* it, so the shadow goes the
+    // other way. A high sun casts a short shadow, a low sun a long one.
+    let sun = Vec3::new(light[0], light[1], light[2]);
+    let flat = Vec3::new(sun.x, 0.0, sun.z).normalize_or_zero();
+    centre -= flat * (height * SHADOW_OFFSET);
+    centre.y += SHADOW_LIFT;
+    let radius = Vec3::new(
+        half_x * (1.0 + SHADOW_SPREAD),
+        0.0,
+        half_z * (1.0 + SHADOW_SPREAD),
+    );
+    // Three-ring profile: opaque core (hidden under the model anyway), a plateau
+    // ring out to `SHADOW_PLATEAU` of the radius, then a fade to zero. A plain
+    // centre-to-rim fan has zero alpha exactly where the blob becomes visible
+    // outside the footprint, which is why the first version measured as "no
+    // shadow" on the frame.
+    let base = vertex_scratch.len() as u32;
+    let mut push = |offset: Vec3, alpha: f32| {
+        vertex_scratch.push(MeshVertex::colored(
+            [centre.x + offset.x, centre.y, centre.z + offset.z],
+            Vec3::Y,
+            [0.5, 0.5],
+            [0.0, 0.0, 0.0, alpha],
+        ));
+    };
+    push(Vec3::ZERO, SHADOW_ALPHA);
+    for ring in [SHADOW_PLATEAU, 1.0] {
+        let alpha = if ring < 1.0 {
+            SHADOW_ALPHA * 0.82
+        } else {
+            0.0
+        };
+        for segment in 0..=SEGMENTS {
+            let angle = (segment as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
+            push(
+                Vec3::new(
+                    angle.cos() * radius.x * ring,
+                    0.0,
+                    angle.sin() * radius.z * ring,
+                ),
+                alpha,
+            );
+        }
+    }
+    let index_start = index_scratch.len() as u32;
+    let ring1 = base + 1;
+    let ring2 = ring1 + SEGMENTS as u32 + 1;
+    for segment in 0..SEGMENTS as u32 {
+        index_scratch.push(base);
+        index_scratch.push(ring1 + segment);
+        index_scratch.push(ring1 + segment + 1);
+        let (a, b) = (ring1 + segment, ring1 + segment + 1);
+        let (c, d) = (ring2 + segment, ring2 + segment + 1);
+        index_scratch.push(a);
+        index_scratch.push(c);
+        index_scratch.push(d);
+        index_scratch.push(a);
+        index_scratch.push(d);
+        index_scratch.push(b);
+    }
+    let params = param_scratch.len() as u32;
+    param_scratch.push(DrawParams::identity([1.0, 1.0, 1.0, 1.0]));
+    draw_scratch.push(Draw {
+        group: 2,
+        priority: 0,
+        model: u32::MAX,
+        index_start,
+        index_count: SEGMENTS as u32 * 9,
+        index_base: 0,
+        // `fs_shadow` never samples the texture.
+        texture: 0,
+        pipeline: PipelineKind::Shadow as u8,
+        params,
+    });
+}
+
 fn push_ring(
     ring: &Ring,
     vertex_scratch: &mut Scratch<MeshVertex>,
@@ -2247,6 +2513,16 @@ const CONTACT_STRENGTH: f32 = 0.55;
 /// World units of contact band a model gets at minimum, so a foot-sized mesh
 /// still darkens where it meets the ground.
 const CONTACT_MIN_BAND: f32 = 6.0;
+
+/// Ground-shadow shape: alpha at the centre of the blob, the share of the model
+/// height the shadow is pushed away from the sun, the world-unit lift above the
+/// model's base plane (prevents z-fighting with the terrain) and how far the blob
+/// spreads beyond the footprint.
+const SHADOW_ALPHA: f32 = 0.40;
+const SHADOW_OFFSET: f32 = 0.22;
+const SHADOW_LIFT: f32 = 5.0;
+const SHADOW_SPREAD: f32 = 0.22;
+const SHADOW_PLATEAU: f32 = 0.62;
 
 /// World-space contact band for one unit: `(base_y, band_height)`.
 ///
@@ -2814,6 +3090,7 @@ mod tests {
         ambient: [f32; 3],
         normal: Vec3,
         light: Vec3,
+        knee: f32,
     ) -> [f32; 3] {
         const GROUND_AMBIENT: f32 = 0.55;
         let n = normal.normalize_or(Vec3::Y);
@@ -2822,9 +3099,30 @@ mod tests {
         let ambient_scale = GROUND_AMBIENT + (1.0 - GROUND_AMBIENT) * up;
         let mut out = [0.0f32; 3];
         for channel in 0..3 {
-            out[channel] = (ambient[channel] * ambient_scale + sun[channel] * ndl).clamp(0.0, 1.0);
+            out[channel] = shoulder_cpu(ambient[channel] * ambient_scale + sun[channel] * ndl, knee);
         }
         out
+    }
+
+    #[test]
+    fn shoulder_is_identity_below_the_knee_and_approaches_one() {
+        for value in [0.0f32, 0.1, 0.3, 0.5, LIGHT_KNEE] {
+            assert!((shoulder_cpu(value, LIGHT_KNEE) - value).abs() < 1e-6, "value {value}");
+        }
+        // Above the knee it keeps rising but never reaches 1.0 (f32 rounds the
+        // asymptote to 1.0 past ~3, so the sweep stops inside the useful range).
+        let mut previous = LIGHT_KNEE;
+        for value in [0.8f32, 1.0, 1.2, 1.6, 2.0, 2.6] {
+            let mapped = shoulder_cpu(value, LIGHT_KNEE);
+            assert!(mapped > previous, "{value} -> {mapped}");
+            assert!(mapped < 1.0, "{value} -> {mapped}");
+            previous = mapped;
+        }
+        // The DNC peak (1.6) lands just under full brightness, not at 0.62.
+        assert!((shoulder_cpu(1.6, LIGHT_KNEE) - 0.987).abs() < 2e-3);
+        // A disabled knee is the old hard clamp.
+        assert_eq!(shoulder_cpu(1.6, 0.0), 1.0);
+        assert_eq!(shoulder_cpu(1.6, 1.0), 1.0);
     }
 
     /// Hand-computed values of the shader's light for the four surfaces that make
@@ -2832,37 +3130,119 @@ mod tests {
     /// side and a downward face under the eaves.
     #[test]
     fn surface_light_values_are_hand_computable() {
-        let sun = fit_directional([1.3, 1.3, 1.3], [0.3, 0.3, 0.3]);
+        // Shipped Lordaeron unit DNC at noon, as `DayNightCurve::sample` delivers
+        // it: the per-term white balance normalises the tracks to exactly 1.0, so
+        // `sun = sun_intensity` and `ambient = ambient_intensity`.
+        let sun = [1.3, 1.3, 1.3];
         let ambient = [0.3, 0.3, 0.3];
+        let knee = LIGHT_KNEE;
         let light = Vec3::from_array([-0.675_456, 0.615_662, 0.405_856]);
-        // Roof, facing up: ndl = 0.615662, ambient full.
-        let up = surface_light_cpu(sun, ambient, Vec3::Y, light);
-        assert!((up[0] - 0.730_963_4).abs() < 1e-5, "up = {up:?}");
-        // Straight at the sun: ndl = 1, ambient weighted 0.55 + 0.45 * 0.8078.
-        let toward = surface_light_cpu(sun, ambient, light, light);
-        assert!((toward[0] - 0.974_053).abs() < 1e-4, "toward = {toward:?}");
-        // Facing away from the sun: ambient only, weighted 0.55 + 0.45 * 0.1922.
-        let away = surface_light_cpu(sun, ambient, -light, light);
-        assert!((away[0] - 0.190_948).abs() < 1e-4, "away = {away:?}");
+        // Roof, facing up: raw 0.3 + 1.3 * 0.615662 = 1.100361, shoulder -> 0.9279.
+        let up = surface_light_cpu(sun, ambient, Vec3::Y, light, knee);
+        assert!((up[0] - 0.928_022).abs() < 1e-4, "up = {up:?}");
+        // Straight at the sun: raw 0.274057 + 1.3 = 1.574057, shoulder -> 0.9867.
+        let toward = surface_light_cpu(sun, ambient, light, light, knee);
+        assert!((toward[0] - 0.986_731).abs() < 1e-4, "toward = {toward:?}");
+        // Facing away from the sun: ambient only, below the knee, untouched.
+        let away = surface_light_cpu(sun, ambient, -light, light, knee);
+        assert!((away[0] - 0.190_943).abs() < 1e-4, "away = {away:?}");
         // Straight down (under the eaves): no sun, ground-weighted ambient.
-        let down = surface_light_cpu(sun, ambient, -Vec3::Y, light);
+        let down = surface_light_cpu(sun, ambient, -Vec3::Y, light, knee);
         assert!((down[0] - 0.165).abs() < 1e-6, "down = {down:?}");
-        // Form: the roof now has a gradient instead of a plateau — the value at
-        // 45° off the sun is strictly between the shadow and the lit side.
-        let tilted = surface_light_cpu(
-            sun,
-            ambient,
-            Vec3::new(0.0, 0.9, 0.436).normalize(),
-            light,
-        );
-        assert!(tilted[0] > down[0] && tilted[0] < toward[0], "tilted = {tilted:?}");
+        // Form: brightness rises with N·L and nothing saturates (see
+        // `roof_band_is_not_a_plateau` for the whole-band proof).
+        let mut previous = 0.0;
+        for step in 0..=10 {
+            let ndl = step as f32 / 10.0;
+            let value = shoulder_cpu(ambient[0] + sun[0] * ndl, knee);
+            assert!(value > previous || step == 0, "ndl {ndl}: {value} <= {previous}");
+            previous = value;
+        }
+        assert!(toward[0] > up[0] && up[0] > away[0]);
     }
 
-    /// The clamp can no longer bite: over a full sweep of normals the raw sum stays
-    /// at or below 1.0, so the shader's `clamp` is a guard and not the tonal curve.
+    /// The visible face of the Great Hall (everything with `n.y > 0.6`, i.e. the
+    /// roof) used to collapse onto a handful of values because the light clipped;
+    /// with the shoulder every normal gets its own value again.
     #[test]
-    fn fitted_light_never_clips() {
-        let sun = fit_directional([1.3, 1.3, 1.3], [0.3, 0.3, 0.3]);
+    fn roof_band_is_not_a_plateau() {
+        let sun = [1.3, 1.3, 1.3];
+        let ambient = [0.3, 0.3, 0.3];
+        let light = Vec3::new(-0.675_456, 0.615_662, 0.405_856).normalize();
+        let mut legacy_values: std::collections::BTreeMap<u32, usize> =
+            std::collections::BTreeMap::new();
+        let mut shoulder_values: std::collections::BTreeMap<u32, usize> =
+            std::collections::BTreeMap::new();
+        let mut up_facing = 0usize;
+        let mut legacy_clipped = 0usize;
+        let mut shoulder_clipped = 0usize;
+        for yaw in 0..72 {
+            for pitch in 0..24 {
+                let angle = yaw as f32 / 72.0 * std::f32::consts::TAU;
+                // Stay off the exact pole: every azimuth there is the same
+                // normal, which would look like a plateau of its own.
+                let elevation = 0.62 + 0.33 * (pitch as f32 / 23.0);
+                let normal = Vec3::new(
+                    angle.cos() * (1.0 - elevation * elevation).sqrt(),
+                    elevation,
+                    angle.sin() * (1.0 - elevation * elevation).sqrt(),
+                );
+                if normal.y <= 0.6 {
+                    continue;
+                }
+                up_facing += 1;
+                let ndl = normal.dot(light).clamp(0.0, 1.0);
+                // Legacy: constant ambient, raw sun, hard clamp.
+                let raw = ambient[0] + sun[0] * ndl;
+                if raw > 1.0 {
+                    legacy_clipped += 1;
+                }
+                *legacy_values
+                    .entry((raw.clamp(0.0, 1.0) * 10_000.0) as u32)
+                    .or_insert(0) += 1;
+                // Shipped: shaped ambient + shoulder. "Clipped" now means the
+                // shader's own guard was reached, i.e. the tonal curve saturated —
+                // the shoulder asymptote keeps every one of these below it.
+                let shaped = surface_light_cpu(sun, ambient, normal, light, LIGHT_KNEE)[0];
+                if shaped >= 1.0 {
+                    shoulder_clipped += 1;
+                }
+                *shoulder_values
+                    .entry((shaped * 10_000.0) as u32)
+                    .or_insert(0) += 1;
+            }
+        }
+        assert!(up_facing > 500, "sample grid too small: {up_facing}");
+        let legacy_clipped = legacy_clipped as f32 / up_facing as f32;
+        assert!(
+            legacy_clipped > 0.30,
+            "the old light clipped {legacy_clipped:.3} of the roof band"
+        );
+        assert_eq!(shoulder_clipped, 0, "the shoulder must not clip");
+        // A plateau is one value shared by a large share of the band: the clipped
+        // legacy light puts almost half of it on exactly 1.0, the shoulder puts
+        // every normal on its own value (only quantisation groups them).
+        let peak = |values: &std::collections::BTreeMap<u32, usize>| {
+            values.values().copied().max().unwrap_or(0)
+        };
+        let legacy_peak = peak(&legacy_values);
+        let shoulder_peak = peak(&shoulder_values);
+        assert!(
+            legacy_peak * 20 > up_facing,
+            "the old light should flatten a large share of the roof: {legacy_peak}/{up_facing}"
+        );
+        assert!(
+            shoulder_peak * 20 <= up_facing,
+            "the shoulder still flattens {shoulder_peak}/{up_facing} samples onto one value"
+        );
+    }
+
+    /// Nothing in the light path can clip any more: the shoulder's image of the
+    /// whole unit sphere stays strictly inside `[0, 1]` and the sun side still
+    /// reaches nearly full brightness.
+    #[test]
+    fn shoulder_light_never_clips() {
+        let sun = [1.3, 1.3, 1.3];
         let ambient = [0.3, 0.3, 0.3];
         let light = Vec3::new(-0.675_456, 0.615_662, 0.405_856).normalize();
         let mut highest = 0.0f32;
@@ -2875,14 +3255,14 @@ mod tests {
                     elevation.sin(),
                     angle.sin() * elevation.cos(),
                 );
-                let value = surface_light_cpu(sun, ambient, normal, light);
+                let value = surface_light_cpu(sun, ambient, normal, light, LIGHT_KNEE);
                 for channel in value {
                     highest = highest.max(channel);
                 }
             }
         }
-        assert!(highest <= 1.0 + 1e-6, "highest = {highest}");
-        assert!(highest > 0.9, "the lit side must still reach full light");
+        assert!(highest < 1.0, "highest = {highest}");
+        assert!(highest > 0.95, "the lit side must still reach full light");
     }
 
     /// Contact band from real geometry: a 4x4 building gets a band proportional to
@@ -3167,6 +3547,43 @@ mod world_art {
             "WORLD_ART after  clamped={:.3} mean={:.4} spread={:.4}",
             report.clamped_after, report.mean_after, report.spread_after
         );
+        // Texture-independent form of the roof: the light span across the
+        // up-facing surfaces (n.y > 0.6), which is where the dome lives. A
+        // clipped light makes this zero no matter how good the texture is.
+        let convert = z_up_to_y_up();
+        let fitted = fit_directional(sun, ambient);
+        let mut span_before = (f32::MAX, f32::MIN);
+        let mut span_after = (f32::MAX, f32::MIN);
+        let mut up_vertices = 0usize;
+        for mesh in &asset.meshes {
+            let normals = mesh.expanded().normals;
+            for normal in &normals {
+                let n = if mesh.z_up {
+                    convert.transform_vector3(*normal)
+                } else {
+                    *normal
+                }
+                .normalize_or(Vec3::Y);
+                if n.y <= 0.6 {
+                    continue;
+                }
+                up_vertices += 1;
+                let ndl = n.dot(dir).clamp(0.0, 1.0);
+                let before: f32 = (0..3)
+                    .map(|c| (ambient[c] + sun[c] * ndl).clamp(0.0, 1.0))
+                    .fold(0.0f32, f32::max);
+                let after: f32 = (0..3)
+                    .map(|c| (ambient[c] + fitted[c] * ndl).clamp(0.0, 1.0))
+                    .fold(0.0f32, f32::max);
+                span_before = (span_before.0.min(before), span_before.1.max(before));
+                span_after = (span_after.0.min(after), span_after.1.max(after));
+            }
+        }
+        println!(
+            "WORLD_ART up_facing_verts={up_vertices} light_span_before={:.4} light_span_after={:.4}",
+            span_before.1 - span_before.0,
+            span_after.1 - span_after.0
+        );
         for (index, mesh) in asset.meshes.iter().enumerate() {
             println!(
                 "{}",
@@ -3182,6 +3599,15 @@ mod world_art {
         background: Vec<u8>,
         width: u32,
         height: u32,
+        /// Screen rectangle of the model's own bounding box (x0, y0, x1, y1).
+        /// Band limits come from here, not from the difference mask: the contact
+        /// shadow grows the mask, and bands scaled by the mask would move between
+        /// the before and the after frame.
+        geometry_box: (usize, usize, usize, usize),
+        /// Screen row where the model meets the ground (projected base centre).
+        /// The contact ring is sampled below it: everything above is building and
+        /// sky, where a ground shadow cannot land.
+        base_row: usize,
     }
 
     /// Metrics of one building frame, split by the bands of the silhouette.
@@ -3198,12 +3624,21 @@ mod world_art {
         /// model that loses its `N · L` gradient collapses it.
         roof_form: f32,
         roof_gradient: f32,
+        /// p90 - p50 of the roof band: the shading difference between the lit and
+        /// the average roof panel (texture-only variation included).
+        roof_panel_spread: f32,
         wall_mean: f32,
         wall_spread: f32,
         wall_gradient: f32,
         /// Lowest 7 % of the silhouette against the 45..60 % band: the contact
         /// term, as a ratio (1.0 = the base is lit exactly like the wall above).
         base_ratio: f32,
+        /// Share of the ground ring around the model that the unit pass darkens by
+        /// more than 5 %: 0 = no shadow at all, 1 = the whole ring is shadowed.
+        shadow_coverage: f32,
+        /// Mean brightness of the shadowed part of that ring relative to the same
+        /// ground without the unit pass (1.0 = nothing darkens the ground).
+        ground_contact: f32,
         grass_mean: f32,
     }
 
@@ -3272,6 +3707,7 @@ mod world_art {
     fn metrics(frame: &HallFrame) -> FrameMetrics {
         let (width, height) = (frame.width as usize, frame.height as usize);
         let stride = width * 4;
+        let (box_x0, box_y0, box_x1, box_y1) = frame.geometry_box;
         let mut raw = vec![false; width * height];
         for y in 0..height {
             for x in 0..width {
@@ -3296,7 +3732,18 @@ mod world_art {
             ((width / 2) + half).min(width),
             ((height / 2) + half).min(height),
         );
-        let mask = largest_component(&raw, width, height, window);
+        let mut mask = largest_component(&raw, width, height, window);
+        // The shadow belongs to the ground, not to the building: keep only the
+        // mask inside the model's own projected box so the bands and the contact
+        // annulus both stay comparable between frames.
+        for y in 0..height {
+            for x in 0..width {
+                let index = y * width + x;
+                if mask[index] && (x < box_x0 || x > box_x1 || y < box_y0 || y > box_y1) {
+                    mask[index] = false;
+                }
+            }
+        }
         let mut out = FrameMetrics::default();
         let mut min_y = height;
         let mut max_y = 0usize;
@@ -3312,9 +3759,10 @@ mod world_art {
         if out.building_pixels == 0 || max_y <= min_y {
             return out;
         }
-        let span = (max_y - min_y + 1) as f32;
-        let roof_end = min_y + ((span * 0.40) as usize).max(1);
-        let wall_start = max_y.saturating_sub(((span * 0.35) as usize).max(1));
+        // Bands from the geometry box: roof = top 40 %, wall = bottom 35 %.
+        let span = (box_y1.saturating_sub(box_y0) + 1) as f32;
+        let roof_end = box_y0 + ((span * 0.40) as usize).max(1);
+        let wall_start = box_y1.saturating_sub(((span * 0.35) as usize).max(1));
         let band = |y0: usize, y1: usize| -> (Vec<f32>, Vec<f32>) {
             let mut luma = Vec::new();
             let mut gradient = Vec::new();
@@ -3366,6 +3814,17 @@ mod world_art {
             )
         };
         let (roof_mean, roof_spread) = summarise(&roof);
+        // Bright half of the roof band: the panels, without the dark ribs. A light
+        // model that clips the whole dome at 1.0 collapses this range even though
+        // the full-band spread (which the ribs dominate) looks healthy.
+        let roof_panel = if roof.is_empty() {
+            0.0
+        } else {
+            let mut sorted = roof.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            percentile(&sorted, 0.90) - percentile(&sorted, 0.50)
+        };
+        out.roof_panel_spread = roof_panel;
         let (wall_mean, wall_spread) = summarise(&wall);
         out.roof_mean = roof_mean;
         out.roof_spread = roof_spread;
@@ -3375,27 +3834,47 @@ mod world_art {
             roof_gradient.iter().sum::<f32>() / roof_gradient.len().max(1) as f32;
         out.wall_gradient =
             wall_gradient.iter().sum::<f32>() / wall_gradient.len().max(1) as f32;
-        // Large-scale form: eight horizontal strips across the roof band.
-        let mut strips = [0.0f32; 8];
-        let mut counts = [0usize; 8];
+        // Large-scale form: a 6x6 grid over the roof band of the geometry box. A directional light
+        // puts the lit and shadow halves of a dome in different cells, so the
+        // cell-mean range is exactly "how much of the form survives"; texture
+        // noise averages out inside a cell.
+        let mut cells = [[0.0f32; 6]; 6];
+        let mut counts = [[0usize; 6]; 6];
+        let mut min_x = width;
+        let mut max_x = 0usize;
         for y in min_y..roof_end {
-            let slot = (((y - min_y) as f32 / span * 8.0) as usize).min(7);
             for x in 0..width {
                 if mask[y * width + x] {
-                    strips[slot] += linear_luma(&frame.rgba, y * stride + x * 4);
-                    counts[slot] += 1;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
                 }
+            }
+        }
+        let across = (max_x.saturating_sub(min_x) + 1).max(1) as f32;
+        for y in box_y0.max(min_y)..roof_end.min(height) {
+            let row = (((y - box_y0) as f32 / span) * 6.0) as usize;
+            let row = row.min(5);
+            for x in 0..width {
+                if !mask[y * width + x] {
+                    continue;
+                }
+                let column = (((x.saturating_sub(min_x)) as f32 / across) * 6.0) as usize;
+                let column = column.min(5);
+                cells[row][column] += linear_luma(&frame.rgba, y * stride + x * 4);
+                counts[row][column] += 1;
             }
         }
         let mut low = f32::MAX;
         let mut high = f32::MIN;
-        for slot in 0..8 {
-            if counts[slot] < 20 {
-                continue;
+        for row in 0..6 {
+            for column in 0..6 {
+                if counts[row][column] < 40 {
+                    continue;
+                }
+                let mean = cells[row][column] / counts[row][column] as f32;
+                low = low.min(mean);
+                high = high.max(mean);
             }
-            let mean = strips[slot] / counts[slot] as f32;
-            low = low.min(mean);
-            high = high.max(mean);
         }
         out.roof_form = if high > low { high - low } else { 0.0 };
         // Contact: lowest 7 % of the silhouette against the 45..60 % band.
@@ -3422,6 +3901,50 @@ mod world_art {
         let base = band_mean(base_start, max_y + 1);
         let reference = band_mean(ref_start, ref_end);
         out.base_ratio = if reference > 1e-4 { base / reference } else { 0.0 };
+        // Ground contact: the terrain ring just outside the model's projected box
+        // (a silhouette cannot leave its own bounding box), compared pixel by
+        // pixel with the same frame rendered without the unit pass. Two numbers:
+        // `shadow_coverage` is the share of that ring the unit pass darkens by
+        // more than 5 %, `ground_contact` is how dark it gets there. Pixels that
+        // get *brighter* (a peon standing in the ring) are excluded from both, so
+        // the measure is about the shadow, not about the units.
+        let margin_x = ((box_x1 - box_x0) as f32 * 0.30) as usize + 2;
+        let margin_y = ((box_y1 - box_y0) as f32 * 0.30) as usize + 2;
+        let outer = (
+            box_x0.saturating_sub(margin_x),
+            box_y0.saturating_sub(margin_y),
+            (box_x1 + margin_x).min(width - 1),
+            (box_y1 + margin_y).min(height - 1),
+        );
+        let mut darkened = 0.0f32;
+        let mut ring = 0.0f32;
+        let mut darkened_pixels = 0usize;
+        let ground_start = frame.base_row.saturating_sub(6);
+        for y in outer.1.max(ground_start)..=outer.3 {
+            for x in outer.0..=outer.2 {
+                if x >= box_x0 && x <= box_x1 && y >= box_y0 && y <= box_y1 {
+                    continue;
+                }
+                let index = y * width + x;
+                let full = linear_luma(&frame.rgba, index * 4);
+                let without = linear_luma(&frame.background, index * 4);
+                ring += 1.0;
+                if without > 1e-4 && full < without * 0.95 {
+                    darkened += full / without;
+                    darkened_pixels += 1;
+                }
+            }
+        }
+        out.shadow_coverage = if ring > 0.0 {
+            darkened_pixels as f32 / ring
+        } else {
+            0.0
+        };
+        out.ground_contact = if darkened_pixels > 0 {
+            darkened / darkened_pixels as f32
+        } else {
+            1.0
+        };
         // Grass control: the background frame under the building's own rows.
         let mut grass = 0.0f32;
         let mut grass_count = 0usize;
@@ -3493,6 +4016,12 @@ mod world_art {
         renderer.set_time_of_day(12.0);
         renderer.resize(&buffer.device, width, height);
         let full = {
+            // Pin the clock for *both* frames: `render_with` advances the
+            // free-running day/night clock by the wall time since the previous
+            // frame, and the first frame's delta includes the whole asset upload
+            // (~30 s = 1.5 game hours), so an unpinned before/after pair would be
+            // lit at different times of day.
+            renderer.set_time_of_day(12.0);
             buffer.render(
                 &mut renderer,
                 &scene,
@@ -3505,6 +4034,7 @@ mod world_art {
             buffer.read().ok()?
         };
         let background = {
+            renderer.set_time_of_day(12.0);
             buffer.render(
                 &mut renderer,
                 &scene,
@@ -3517,11 +4047,42 @@ mod world_art {
             );
             buffer.read().ok()?
         };
+        // Screen box of the Great Hall's own geometry: the 8 corners of the
+        // model's visible bounds through the unit's world matrix and the frame's
+        // projection. Band limits and the contact annulus are derived from it.
+        let model_index = game.assets.model_index_for_def("ogre");
+        let hall_unit = scene
+            .units
+            .iter()
+            .find(|unit| {
+                unit.model == model_index
+                    && (unit.world.w_axis.x - target.x).abs() < 1.0
+                    && (unit.world.w_axis.z - target.y).abs() < 1.0
+            })
+            .or_else(|| scene.units.iter().find(|unit| unit.model == model_index))?;
+        let bounds = local_bounds(&game.assets, model_index, &hall_unit.mesh_alpha);
+        let geometry_box = screen_box(bounds, hall_unit.world, scene.view_proj, width, height);
+        let base_world = hall_unit
+            .world
+            .transform_point3(Vec3::new(
+                (bounds.0.x + bounds.1.x) * 0.5,
+                bounds.0.y,
+                (bounds.0.z + bounds.1.z) * 0.5,
+            ));
+        let base_clip = scene.view_proj * base_world.extend(1.0);
+        let base_row = if base_clip.w > 0.0 {
+            let ndc = base_clip.truncate() / base_clip.w;
+            (((0.5 - ndc.y * 0.5) * height as f32).clamp(0.0, height as f32 - 1.0)) as usize
+        } else {
+            geometry_box.3
+        };
         let frame = HallFrame {
             rgba: full,
             background,
             width,
             height,
+            geometry_box,
+            base_row,
         };
         let metrics = metrics(&frame);
         if tag != "none" {
@@ -3537,18 +4098,96 @@ mod world_art {
         Some((frame, metrics))
     }
 
+    /// Y-up model-space bounds of one model's visible geometry, exactly as
+    /// `MeshRenderer` computes them for the contact band.
+    fn local_bounds(
+        assets: &wc3_game::Assets,
+        model: usize,
+        mesh_alpha: &[f32],
+    ) -> (Vec3, Vec3) {
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        if let Some(asset) = assets.models.get(model) {
+            for (index, mesh) in asset.meshes.iter().enumerate() {
+                // Only what this frame draws: a building model contains every
+                // upgrade stage, and the hidden stages would stretch the box far
+                // past the visible silhouette.
+                if mesh.hide || mesh_alpha.get(index).copied().unwrap_or(1.0) <= 0.001 {
+                    continue;
+                }
+                let expanded = mesh.expanded();
+                for position in &expanded.positions {
+                    let local = if mesh.z_up {
+                        Vec3::new(position.x, position.z, -position.y)
+                    } else {
+                        *position
+                    };
+                    min = min.min(local);
+                    max = max.max(local);
+                }
+            }
+        }
+        if min.x <= max.x {
+            (min, max)
+        } else {
+            (Vec3::ZERO, Vec3::ZERO)
+        }
+    }
+
+    /// Screen rectangle of a model-space AABB under `world` and `view_proj`.
+    fn screen_box(
+        bounds: (Vec3, Vec3),
+        world: Mat4,
+        view_proj: Mat4,
+        width: u32,
+        height: u32,
+    ) -> (usize, usize, usize, usize) {
+        let (min, max) = bounds;
+        let mut x0 = width as f32;
+        let mut y0 = height as f32;
+        let mut x1 = 0.0f32;
+        let mut y1 = 0.0f32;
+        for corner in 0..8 {
+            let local = Vec3::new(
+                if corner & 1 == 0 { min.x } else { max.x },
+                if corner & 2 == 0 { min.y } else { max.y },
+                if corner & 4 == 0 { min.z } else { max.z },
+            );
+            let clip = view_proj * (world * local.extend(1.0));
+            if clip.w <= 0.0 {
+                continue;
+            }
+            let ndc = clip.truncate() / clip.w;
+            let x = (ndc.x * 0.5 + 0.5) * width as f32;
+            let y = (0.5 - ndc.y * 0.5) * height as f32;
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        (
+            x0.max(0.0) as usize,
+            y0.max(0.0) as usize,
+            (x1.min(width as f32 - 1.0)).max(0.0) as usize,
+            (y1.min(height as f32 - 1.0)).max(0.0) as usize,
+        )
+    }
+
     fn print_metrics(tag: &str, metrics: &FrameMetrics) {
         println!(
-            "WORLD_ART {tag} pixels={} roof_mean={:.4} roof_spread={:.4} roof_form={:.4} roof_grad={:.4} wall_mean={:.4} wall_spread={:.4} wall_grad={:.4} base_ratio={:.3} grass={:.4}",
+            "WORLD_ART {tag} pixels={} roof_mean={:.4} roof_spread={:.4} roof_form={:.4} roof_panel={:.4} roof_grad={:.4} wall_mean={:.4} wall_spread={:.4} wall_grad={:.4} base_ratio={:.3} shadow={:.3} ground_contact={:.3} grass={:.4}",
             metrics.building_pixels,
             metrics.roof_mean,
             metrics.roof_spread,
             metrics.roof_form,
+            metrics.roof_panel_spread,
             metrics.roof_gradient,
             metrics.wall_mean,
             metrics.wall_spread,
             metrics.wall_gradient,
             metrics.base_ratio,
+            metrics.shadow_coverage,
+            metrics.ground_contact,
             metrics.grass_mean
         );
     }
@@ -3560,10 +4199,53 @@ mod world_art {
     #[test]
     fn world_art_hall_frame() {
         let tag = std::env::var("H2_WORLD_ART_TAG").unwrap_or_else(|_| "frame".to_string());
+        let legacy = std::env::var("H2_WORLD_ART_LEGACY").is_ok()
+            || std::env::var("H2_WORLD_ART_LIGHT").as_deref() == Ok("legacy");
         let Some((_frame, metrics)) = render_hall(&tag) else {
             println!("SKIP world_art_hall_frame: install/map/GPU missing");
             return;
         };
         print_metrics(&tag, &metrics);
+        if legacy {
+            // Evidence frame only: the pre-fix renderer has no contact term and no
+            // ground shadow, and that is exactly what this state must show.
+            println!("WORLD_ART legacy frame: no contrast assertions");
+            return;
+        }
+        // Regression gate on the real frame (packet `B-world` acceptance): the
+        // Great Hall must be grounded by the unit pass and must keep shading
+        // detail on its roof.
+        assert!(
+            metrics.building_pixels > 20_000,
+            "the Great Hall must fill the close-up: {} px",
+            metrics.building_pixels
+        );
+        // Measured on the shipped install (Turnip Adreno 725, 720x720, hour 12):
+        // before  shadow 0.003 base 0.765;  after  shadow 0.027 base 0.713.
+        assert!(
+            metrics.shadow_coverage > 0.015,
+            "the unit pass must darken the ground beside the hall (contact shadow), coverage {:.3}",
+            metrics.shadow_coverage
+        );
+        assert!(
+            metrics.ground_contact < 0.85,
+            "the ground shadow must be visible, got {:.3} of the unshadowed luma",
+            metrics.ground_contact
+        );
+        assert!(
+            metrics.base_ratio < 0.75,
+            "the base of the silhouette must be darker than its middle (contact band), got {:.3}",
+            metrics.base_ratio
+        );
+        assert!(
+            metrics.roof_panel_spread > 0.20,
+            "the roof band must carry shading detail, got {:.3}",
+            metrics.roof_panel_spread
+        );
+        assert!(
+            metrics.roof_form > 0.10,
+            "the roof must show large-scale form, got {:.3}",
+            metrics.roof_form
+        );
     }
 }

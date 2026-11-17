@@ -239,6 +239,32 @@ pub fn encode_command(command: &Command) -> Vec<u8> {
             out.extend_from_slice(&building.0.to_le_bytes());
             out.extend_from_slice(&(*index as u32).to_le_bytes());
         }
+        // Commands 10-13 (AUD-030-N1): `LearnAbility` writes the ability id,
+        // the other three reuse their sibling shapes. Decode interns the id back
+        // to the canonical `&'static str`.
+        Command::LearnAbility { unit, ability } => {
+            out.push(10);
+            out.extend_from_slice(&unit.0.to_le_bytes());
+            let bytes = ability.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+        Command::Repair { units, target } => {
+            out.push(11);
+            write_ids(&mut out, units);
+            out.extend_from_slice(&target.0.to_le_bytes());
+        }
+        Command::HarvestLumber { units, to } => {
+            out.push(12);
+            write_ids(&mut out, units);
+            out.extend_from_slice(&to.x.to_le_bytes());
+            out.extend_from_slice(&to.y.to_le_bytes());
+        }
+        Command::ReviveHero { hero, altar } => {
+            out.push(13);
+            out.extend_from_slice(&hero.0.to_le_bytes());
+            out.extend_from_slice(&altar.0.to_le_bytes());
+        }
     }
     out
 }
@@ -306,6 +332,26 @@ pub fn decode_command(data: &[u8]) -> Result<Command, ReplayError> {
             building: UnitId(r.u32()?),
             index: r.u32()? as usize,
         },
+        10 => {
+            let unit = UnitId(r.u32()?);
+            let raw = r.string()?;
+            let ability = wc3_sim::save::intern_static_name(&raw)
+                .ok_or(ReplayError::Corrupt("ability id"))?;
+            Command::LearnAbility { unit, ability }
+        }
+        11 => Command::Repair {
+            units: r.ids()?,
+            target: UnitId(r.u32()?),
+        },
+        12 => {
+            let units = r.ids()?;
+            let to = glam::Vec2::new(r.f32()?, r.f32()?);
+            Command::HarvestLumber { units, to }
+        }
+        13 => Command::ReviveHero {
+            hero: UnitId(r.u32()?),
+            altar: UnitId(r.u32()?),
+        },
         _ => return Err(ReplayError::Corrupt("command tag")),
     };
     Ok(command)
@@ -366,6 +412,14 @@ impl<'a> Reader<'a> {
     }
     fn f32(&mut self) -> Result<f32, ReplayError> {
         Ok(f32::from_le_bytes(self.bytes(4)?.try_into().expect("4")))
+    }
+    /// Length-prefixed UTF-8 (ability ids written by `encode_command`).
+    fn string(&mut self) -> Result<String, ReplayError> {
+        let len = u16::from_le_bytes(self.bytes(2)?.try_into().expect("2")) as usize;
+        let bytes = self.bytes(len)?;
+        std::str::from_utf8(bytes)
+            .map(str::to_string)
+            .map_err(|_| ReplayError::Corrupt("ability id encoding"))
     }
     fn ids(&mut self) -> Result<Vec<UnitId>, ReplayError> {
         let count = u16::from_le_bytes(self.bytes(2)?.try_into().expect("2")) as usize;
@@ -550,11 +604,57 @@ mod tests {
                 ability: Ability::Fireball(25),
                 target: Some(UnitId(8)),
             },
+            // Tags 6-13: added to `wc3-sim` after the first replay format; each
+            // must survive the round-trip with its exact shape (AUD-030-N1).
+            Command::MoveAttack {
+                units: vec![UnitId(11)],
+                to: Vec2::new(-3.0, 4.5),
+            },
+            Command::Hold {
+                units: vec![UnitId(12), UnitId(13)],
+            },
+            Command::Harvest {
+                units: vec![UnitId(14)],
+                to: Vec2::new(512.0, 512.0),
+            },
+            Command::CancelTrain {
+                building: UnitId(15),
+                index: 2,
+            },
+            Command::LearnAbility {
+                unit: UnitId(16),
+                ability: "AHhb",
+            },
+            Command::Repair {
+                units: vec![UnitId(17)],
+                target: UnitId(18),
+            },
+            Command::HarvestLumber {
+                units: vec![UnitId(19)],
+                to: Vec2::new(64.0, 128.0),
+            },
+            Command::ReviveHero {
+                hero: UnitId(20),
+                altar: UnitId(21),
+            },
         ];
         for command in commands {
             let encoded = encode_command(&command);
             assert_eq!(decode_command(&encoded).unwrap(), command);
         }
+    }
+
+    #[test]
+    fn unknown_ability_id_is_a_typed_error() {
+        let mut encoded = vec![10u8];
+        encoded.extend_from_slice(&1u32.to_le_bytes());
+        let raw = b"NOTANABILITY";
+        encoded.extend_from_slice(&(raw.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(raw);
+        assert!(matches!(
+            decode_command(&encoded),
+            Err(ReplayError::Corrupt("ability id"))
+        ));
     }
 
     #[test]

@@ -1196,6 +1196,7 @@ fn to_gpu_scene(scene: &wc3_game::Scene) -> GpuScene {
         .collect();
     GpuScene {
         view_proj: scene.view_proj,
+        eye: scene.eye,
         viewport: scene.viewport,
         units: scene
             .units

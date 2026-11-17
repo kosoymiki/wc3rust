@@ -330,6 +330,17 @@ pub fn generate_mips(width: u32, height: u32, rgba: &[u8]) -> Vec<Mip> {
 
 // ------------------------------------------------------- compressed formats
 
+/// Largest texture side accepted by the length helpers below
+/// (`GL_MAX_TEXTURE_SIZE` on the supported Vulkan/GLES 3 adapters, same value as
+/// `astc::MAX_TEXTURE_SIDE`). Compressed container headers store `u32`
+/// dimensions, so every block-grid computation caps the side before casting;
+/// see [`CompressedFormat::block_grid`].
+pub const MAX_TEXTURE_SIDE: u32 = 16_384;
+
+// The two caps must agree: `.astc` parsing and in-memory validation of the same
+// texture may not disagree about which dimensions are legal.
+const _: () = assert!(MAX_TEXTURE_SIDE == crate::astc::MAX_TEXTURE_SIDE);
+
 /// A GPU-compressed texture format the renderer can sample.
 ///
 /// Only the formats the base actually considers are listed: ASTC (the mobile
@@ -409,18 +420,24 @@ impl CompressedFormat {
     }
 
     /// Rows of blocks for an image of `height` texels (blocks are always whole).
+    ///
+    /// `height` is clamped to [`MAX_TEXTURE_SIDE`]: no supported adapter holds a
+    /// taller texture, and the clamp keeps the block arithmetic inside `u32`
+    /// for every length helper that shares the cap (AUD-009-N1).
     pub fn block_rows(self, height: u32) -> u32 {
-        height.div_ceil(self.block().1).max(1)
+        height.min(MAX_TEXTURE_SIDE).div_ceil(self.block().1).max(1)
     }
 
     /// Row pitch in bytes for an image of `width` texels (2048-aligned, the
     /// WebGPU `Queue::write_texture` requirement for block-compressed data).
+    ///
+    /// `width` is clamped to [`MAX_TEXTURE_SIDE`]; see [`Self::block_rows`].
     pub fn row_pitch(self, width: u32) -> u32 {
-        let row = width.div_ceil(self.block().0).max(1) * self.block_bytes();
+        let row = width.min(MAX_TEXTURE_SIDE).div_ceil(self.block().0).max(1) * self.block_bytes();
         row.div_ceil(2048) * 2048
     }
 
-/// Bytes a full mip chain occupies (block padding included).
+    /// Bytes a full mip chain occupies (block padding included).
     pub fn chain_bytes(self, width: u32, height: u32, levels: u32) -> u64 {
         let mut w = width.max(1);
         let mut h = height.max(1);
@@ -441,8 +458,35 @@ impl CompressedFormat {
     }
 
     /// Natural (unaligned) row pitch in bytes.
+    ///
+    /// `width` is clamped to [`MAX_TEXTURE_SIDE`]; see [`Self::block_rows`].
     pub fn natural_pitch(self, width: u32) -> u32 {
-        width.div_ceil(self.block().0).max(1) * self.block_bytes()
+        width.min(MAX_TEXTURE_SIDE).div_ceil(self.block().0).max(1) * self.block_bytes()
+    }
+
+    /// Block grid `(columns, rows)` for `width`x`height`, checked (AUD-009-N1).
+    ///
+    /// Single source of truth for compressed lengths, mirroring
+    /// `astc::payload_len`: zero dimensions and sides above
+    /// [`MAX_TEXTURE_SIDE`] are rejected, and the division is done in `u64` so
+    /// a crafted `u32` dimension can never wrap the multiplication that
+    /// follows. Rejecting (rather than clamping) is required here because
+    /// [`CompressedLevel::is_consistent`] is the validator for external
+    /// `.astc`/sidecar data.
+    pub fn block_grid(self, width: u32, height: u32) -> Result<(u64, u64), String> {
+        if width == 0 || height == 0 {
+            return Err(format!("texture: zero dimension {width}x{height}"));
+        }
+        if width > MAX_TEXTURE_SIDE || height > MAX_TEXTURE_SIDE {
+            return Err(format!(
+                "texture: {width}x{height} exceeds the {MAX_TEXTURE_SIDE}-texel side limit"
+            ));
+        }
+        let (bw, bh) = self.block();
+        Ok((
+            (width as u64).div_ceil(bw as u64),
+            (height as u64).div_ceil(bh as u64),
+        ))
     }
 }
 
@@ -457,13 +501,32 @@ pub struct CompressedLevel {
 }
 
 impl CompressedLevel {
-    fn expected_bytes(format: CompressedFormat, width: u32, height: u32) -> usize {
-        (format.natural_pitch(width) * format.block_rows(height)) as usize
+    /// Bytes a `width`x`height` level occupies for `format`, checked.
+    ///
+    /// Every step is 64-bit and dimension-capped through
+    /// [`CompressedFormat::block_grid`]; a crafted or stale `u32` size is an
+    /// `Err`, never a wrapped length that would make an undersized payload look
+    /// valid (AUD-009-N1).
+    fn expected_bytes(format: CompressedFormat, width: u32, height: u32) -> Result<usize, String> {
+        let (blocks_x, blocks_y) = format.block_grid(width, height)?;
+        let bytes = blocks_x
+            .checked_mul(blocks_y)
+            .and_then(|blocks| blocks.checked_mul(format.block_bytes() as u64))
+            .ok_or_else(|| {
+                format!("texture: {width}x{height} block grid overflows the byte count")
+            })?;
+        usize::try_from(bytes)
+            .map_err(|_| format!("texture: {bytes}-byte level does not fit in this address space"))
     }
 
     /// True when `data` matches the block layout for `width`x`height`.
+    ///
+    /// A level whose dimensions are impossible (zero, above
+    /// [`MAX_TEXTURE_SIDE`], or not representable in `usize`) is inconsistent
+    /// by definition, so this never panics on external data.
     pub fn is_consistent(&self, format: CompressedFormat) -> bool {
-        self.data.len() == Self::expected_bytes(format, self.width, self.height)
+        Self::expected_bytes(format, self.width, self.height)
+            .is_ok_and(|expected| self.data.len() == expected)
     }
 }
 
@@ -500,13 +563,22 @@ impl CompressedImage {
                     self.format.block()
                 ));
             }
-            if !level.is_consistent(self.format) {
+            let expected =
+                match CompressedLevel::expected_bytes(self.format, level.width, level.height) {
+                    Ok(expected) => expected,
+                    Err(why) => {
+                        return Err(format!(
+                            "level {index} is {}x{}: {why}",
+                            level.width, level.height
+                        ));
+                    }
+                };
+            if level.data.len() != expected {
                 return Err(format!(
-                    "level {index} is {}x{} -> {} bytes, expected {} for {:?}",
+                    "level {index} is {}x{} -> {} bytes, expected {expected} for {:?}",
                     level.width,
                     level.height,
                     level.data.len(),
-                    CompressedLevel::expected_bytes(self.format, level.width, level.height),
                     self.format
                 ));
             }
@@ -516,7 +588,10 @@ impl CompressedImage {
 
     /// Total bytes of the chain (what the GPU will hold).
     pub fn bytes(&self) -> u64 {
-        self.levels.iter().map(|level| level.data.len() as u64).sum()
+        self.levels
+            .iter()
+            .map(|level| level.data.len() as u64)
+            .sum()
     }
 
     /// Build the mip chain from a single encoded level by keeping only level 0
@@ -766,20 +841,10 @@ impl TextureStore {
             if image.width < max_size || image.height < max_size {
                 stats.upscaled_by_baseline += 1;
             }
-            bind_groups.push(upload_levels(
-                device,
-                queue,
-                layout,
-                sampler,
-                role,
-                &levels,
-            ));
+            bind_groups.push(upload_levels(device, queue, layout, sampler, role, &levels));
         }
         stats.upload_micros = started.elapsed().as_micros() as u64;
-        Self {
-            bind_groups,
-            stats,
-        }
+        Self { bind_groups, stats }
     }
 
     /// Upload decoded BLP images using their **authored** mip chain.
@@ -825,10 +890,7 @@ impl TextureStore {
             ));
         }
         stats.upload_micros = started.elapsed().as_micros() as u64;
-        Self {
-            bind_groups,
-            stats,
-        }
+        Self { bind_groups, stats }
     }
 
     /// Upload a mixed list: RGBA sources are capped/mipped/uploaded as usual,
@@ -902,10 +964,7 @@ impl TextureStore {
             }
         }
         stats.upload_micros = started.elapsed().as_micros() as u64;
-        Ok(Self {
-            bind_groups,
-            stats,
-        })
+        Ok(Self { bind_groups, stats })
     }
 
     pub fn bind_group(&self, index: usize) -> Option<&wgpu::BindGroup> {
@@ -1186,7 +1245,10 @@ pub fn plan_bytes(info: &TexInfo, bpp: u32) -> u64 {
 pub fn compression_plan(images: &[TexInfo], max_size: u32) -> String {
     let mut fitted = Vec::with_capacity(images.len());
     for info in images {
-        let (width, height) = (info.width.min(max_size).max(1), info.height.min(max_size).max(1));
+        let (width, height) = (
+            info.width.min(max_size).max(1),
+            info.height.min(max_size).max(1),
+        );
         fitted.push(TexInfo {
             width: pow2_at_most(width),
             height: pow2_at_most(height),
@@ -1287,8 +1349,7 @@ mod tests {
                             + decode_srgb_reference(sample(sx0, sy1, channel))
                             + decode_srgb_reference(sample(sx1, sy1, channel)))
                             * 0.25;
-                        next[((y * nw + x) * 4) as usize + channel] =
-                            encode_srgb_reference(linear);
+                        next[((y * nw + x) * 4) as usize + channel] = encode_srgb_reference(linear);
                     }
                     let alpha = (sample(sx0, sy0, 3) as u32
                         + sample(sx1, sy0, 3) as u32
@@ -1340,7 +1401,11 @@ mod tests {
     #[test]
     fn blp_plan_uses_authored_levels_under_the_cap() {
         // 64x64 with a full chain, cap 256: nothing is dropped or generated.
-        let image = blp(64, 64, &[(64, 64), (32, 32), (16, 16), (8, 8), (4, 4), (2, 2), (1, 1)]);
+        let image = blp(
+            64,
+            64,
+            &[(64, 64), (32, 32), (16, 16), (8, 8), (4, 4), (2, 2), (1, 1)],
+        );
         let plan = blp_chain_plan(&image, 256);
         assert_eq!(plan.base_level, 0);
         assert_eq!((plan.width, plan.height), (64, 64));
@@ -1418,6 +1483,87 @@ mod tests {
         let plan = compression_plan(&images, 256);
         assert!(plan.contains("astc-8x8"));
         assert!(plan.contains("rgba8"));
+    }
+
+    #[test]
+    fn expected_bytes_accepts_a_legitimate_large_level() {
+        // 16384x16384 is the adapter maximum; ASTC 6x6 has 2731x2731 blocks.
+        let expected = CompressedLevel::expected_bytes(CompressedFormat::Astc6x6, 16_384, 16_384)
+            .expect("the adapter maximum is a legal level");
+        assert_eq!(expected, 2731 * 2731 * 16);
+        // ETC2 RGBA8 uses 4x4 blocks and 16 bytes per block.
+        let etc2 = CompressedLevel::expected_bytes(CompressedFormat::Etc2Rgba8, 16_384, 16_384)
+            .expect("the adapter maximum is a legal level");
+        assert_eq!(etc2, 4096 * 4096 * 16);
+    }
+
+    #[test]
+    fn expected_bytes_rejects_dimensions_that_would_overflow_u32() {
+        // The pre-fix code multiplied the pitch by the block rows in `u32`:
+        // these sizes wrapped (release) or panicked (debug) before validation.
+        for (width, height) in [
+            (u32::MAX, u32::MAX),
+            (u32::MAX, 1),
+            (1, u32::MAX),
+            (MAX_TEXTURE_SIDE + 1, 1),
+            (65_536, 65_536),
+        ] {
+            let err = CompressedLevel::expected_bytes(CompressedFormat::Astc6x6, width, height)
+                .expect_err("oversized side must be rejected before the multiplication");
+            assert!(
+                err.contains("side limit"),
+                "{width}x{height}: unexpected error {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn expected_bytes_rejects_zero_dimensions() {
+        for (width, height) in [(0, 16), (16, 0), (0, 0)] {
+            let err = CompressedLevel::expected_bytes(CompressedFormat::Astc8x8, width, height)
+                .expect_err("zero dimension has no block grid");
+            assert!(err.contains("zero dimension"), "unexpected error {err}");
+        }
+    }
+
+    #[test]
+    fn is_consistent_is_false_for_impossible_levels_instead_of_panicking() {
+        let impossible = CompressedLevel {
+            width: u32::MAX,
+            height: u32::MAX,
+            data: vec![0u8; 16],
+        };
+        assert!(!impossible.is_consistent(CompressedFormat::Astc6x6));
+        // 32766 is a whole number of 6x6 blocks but above the adapter cap: the
+        // old arithmetic wrapped here, so 16 bytes could pass a length check.
+        let oversized = CompressedLevel {
+            width: 32_766,
+            height: 32_766,
+            data: vec![0u8; 16],
+        };
+        assert!(!oversized.is_consistent(CompressedFormat::Astc6x6));
+        let image = CompressedImage {
+            format: CompressedFormat::Astc6x6,
+            width: 32_766,
+            height: 32_766,
+            levels: vec![oversized],
+        };
+        let err = image.validate().expect_err("impossible level is invalid");
+        assert!(err.contains("side limit"), "unexpected error {err}");
+    }
+
+    #[test]
+    fn a_level_one_byte_short_or_long_is_inconsistent() {
+        let expected = CompressedLevel::expected_bytes(CompressedFormat::Astc8x8, 64, 64)
+            .expect("64x64 ASTC 8x8 is legal");
+        let level = |len: usize| CompressedLevel {
+            width: 64,
+            height: 64,
+            data: vec![0u8; len],
+        };
+        assert!(level(expected).is_consistent(CompressedFormat::Astc8x8));
+        assert!(!level(expected - 1).is_consistent(CompressedFormat::Astc8x8));
+        assert!(!level(expected + 1).is_consistent(CompressedFormat::Astc8x8));
     }
 }
 

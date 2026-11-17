@@ -25,7 +25,14 @@ the four area sections appended below, verbatim from the lanes that did the work
 | AUD-015 | P2 | FIXED | 3966c3f | `aud015_*` 7 tests + on-device permission map `r-x` → `r-x` (pre-fix `r-x` → `rwx`); `linker_symbols_resolve` passes |
 | AUD-026 | P3 | FIXED (SDL 3.5.0 contract proven; main-thread guard added) | 3966c3f | SDL source table in `status-android.md`; `SDL_IsMainThread` + `PENDING_CHECKPOINT`; `LIFECYCLE_LOG_CHECK_SELFTEST PASS`; device stress scenario |
 | AUD-029 | P4 | FIXED | 3966c3f | `dist/security-summary-{release,debug}.json` gate PASS; the same gate exits 1 on the pre-fix debuggable APK |
-| AUD-009-N1 | P3 | OPEN — next pass | — | `CompressedLevel::expected_bytes` still multiplies in u32 (`crates/wc3-render/src/texture.rs:460,444,412`); latent, `is_consistent` is public |
+| AUD-009-N1 | P3 | FIXED | SHA493 | `texture::tests` 16/16: overflow boundary (`u32::MAX` sides, 65 536²), legitimate 16384² level, zero side, impossible level via `is_consistent`/`validate` |
+| AUD-020 | P3 | FIXED | SHA493 | `sdl3::tests` 5/5: zero samples, stock block, `c_int` boundary (536 870 911 samples), `usize::MAX` overflow branch, split above `MAX_PUT_BYTES` |
+| AUD-025 | P3 | FIXED | SHA493 | `wc3-game --test input_limits --features movie_decoder` 7/7 (MPQ/AVI/ASTC/save/net + retail `War3*.mpq`); caps table `docs/audit/INPUT_LIMITS.md` |
+| AUD-030 | P3 | FIXED | SHA493 | `scripts/test-all.sh`: 30 members from `cargo metadata`, host check + per-target checks, per-member tests, JSONL summary; `--self-test` PASS (gate exits 1 on an injected failure in `wc3-bink`) |
+| AUD-030-N1 | P3 | FIXED | SHA493 | `wc3-replay` command tags 6-13 round-trip + `unknown_ability_id_is_a_typed_error`; gate `check --workspace` rc=0 |
+| AUD-030-N2 | P3 | FIXED | SHA493 | `cargo check -p herofolends-bench` rc=0 (bench `Scene` carries `eye`) |
+| AUD-031 | P4 | FIXED (documented + surfaced) | SHA493 | `wc3-re --lib unknown_native`; `GAME_JASS_UNIMPLEMENTED` boot line; `docs/audit/ERROR_MODEL.md` |
+| AUD-032 | P4 | FIXED (inventory + seat-default session fix) | SHA493 | `wc3-re --lib local_player`; `docs/audit/GLOBALS.md` (D/C/S/T inventory) |
 
 ## Gates run for this registry
 
@@ -1104,3 +1111,109 @@ GAME_SAFE_AREA unavailable (SDL_GetWindowSafeArea failed)   (unchanged, one-shot
 
 ---
 
+
+---
+
+# Infrastructure and quality gate (LEDGER 493)
+
+<!-- source: docs/audit/status-infra.md -->
+
+Items: AUD-020, AUD-009-N1, AUD-025, AUD-030 (and its two findings), AUD-031,
+AUD-032. Full evidence, reproduction traces and residuals: `docs/audit/status-infra.md`.
+Related documents written by this lane: `docs/audit/INPUT_LIMITS.md` (AUD-025
+caps table), `docs/audit/ERROR_MODEL.md` (AUD-031 boundaries),
+`docs/audit/GLOBALS.md` (AUD-032 inventory).
+
+## AUD-020 — SDL audio FFI byte count
+
+Before: `samples.len() * size_of::<f32>()` unchecked, then `bytes as c_int`
+(`sdl3.rs` HEAD). Arithmetic reproduction: `(600_000_000 * 4) as i32 =
+-1 894 967 296` — a negative byte count handed to `SDL_PutAudioStreamData`.
+Fix: `MAX_PUT_BYTES = 1 MiB`, `put_bytes()` with `checked_mul` +
+`c_int::try_from` returning `AudioError::Backend`, `chunk_lengths()` splits
+larger blocks, empty block returns `Ok(0)`. Tests 5/5.
+
+## AUD-009-N1 — `CompressedLevel::expected_bytes` u32 arithmetic
+
+Before: pitch × block rows multiplied in `u32`; ASTC 6x6 at 1 000 002²
+panicked in debug ("attempt to multiply with overflow") and wrapped to
+2 064 590 736 B in release (true length 444 446 222 224 B) — a 2 GB payload
+could satisfy `is_consistent` for a 444 GB level. Fix: `MAX_TEXTURE_SIDE = 16 384`
+with a compile-time equality assert against `astc::MAX_TEXTURE_SIDE`,
+`block_grid()` (checked, capped, `u64`), `expected_bytes() -> Result`,
+`is_consistent()` false on impossible levels, `validate()` reports the reason.
+Tests 16/16.
+
+## AUD-025 — unified input limits
+
+`docs/audit/INPUT_LIMITS.md` is the single cap table (file size, decoded bytes,
+dimensions, element counts, nesting depth, block/string size, allocation and
+CPU-work bound) with the enforcing `file:line` and typed error per row. The
+shared negative corpus `crates/wc3-game/tests/input_limits.rs` (7/7) drives
+MPQ, AVI, ASTC, save and replay through their public entry points, plus a retail
+pass over `War3.mpq`/`War3x.mpq`/`War3xlocal.mpq` (all blocks below the 512 MiB
+cap, `(listfile)` decodes). One real gap closed: `Sim::from_save_path` read the
+whole file with `std::fs::read`; it now checks `MAX_SAVE_BYTES = 64 MiB` from
+metadata and reads through `take(MAX_SAVE_BYTES + 1)`, with a new
+`SaveError::Oversize { len, limit }` (also enforced in `open_envelope`).
+Not claimed: fuzzing with a time/allocation budget.
+
+## AUD-030 — workspace-wide quality gate
+
+`scripts/test-all.sh` no longer carries a hand-written crate list: members come
+from `cargo metadata --no-deps` (30 today, `--list` prints them as JSON). Phases:
+`cargo check --workspace`, per-installed-Android-target
+`check -p herofolends-android --target <triple>` (a triple without a linker is
+recorded `SKIP` with the missing tool, never PASS), then per-member
+`cargo test -p` through `scripts/h2-cargo` under `timeout`, address-space capped,
+one log per job, tail printed on failure, machine-readable
+`analysis/test-all.jsonl`. `EXCLUDE` is the only skip path and each entry names
+its reason (three cdylib hook shims with no tests; compile coverage in phase 1).
+Self-test: a failing `#[test]` injected into `wc3-bink` (a crate the old subset
+never ran) makes the gate exit 1; the probe is removed by a trap.
+
+Failure modes are distinct: exit 0 = every job passed, 1 = a test failed,
+2 = bad usage/metadata, 3 = `TEST_ALL_ABORT reason=disk` (free space below
+`H2_TEST_ALL_MIN_FREE_KB`, or a job log contains `No space left on device`).
+A disk-starved filesystem is never reported as twenty member failures (that is
+exactly what run 4 produced before this guard).
+
+Findings on the first run, both fixed here:
+
+- **AUD-030-N1** — `wc3-replay` did not compile: `encode_command` missed
+  `HarvestLumber`/`LearnAbility`/`ReviveHero`/`Repair` (E0004). Tags 10-13 added;
+  `LearnAbility` writes a length-prefixed ability id and decodes it through the
+  new `wc3_sim::save::intern_static_name` so the `&'static str` identity is
+  preserved. Round-trip tests cover tags 6-13.
+- **AUD-030-N2** — `apps/bench` constructed `wc3_render::Scene` without the new
+  `eye` field (E0063); forwarded from the game scene.
+
+## AUD-031 — error-model boundaries
+
+`docs/audit/ERROR_MODEL.md` defines the three boundaries (external parsers →
+typed recoverable errors; JASS → diagnostics + `NativeStatus`; UI headless →
+recorded/unsupported). Cheap enforcement added: `Engine::unimplemented_natives()`
+and the `GAME_JASS_UNIMPLEMENTED natives=… calls=… top=…` boot log — before
+this the `Runtime::unimplemented` map was collected and never read outside the
+VM, so an unimplemented native returned a typed default with no product-visible
+trace. Test: `wc3-re --lib unknown_native`.
+
+## AUD-032 — globals and session isolation
+
+`docs/audit/GLOBALS.md` classifies every `static`/`OnceLock`/`LazyLock`/
+`AtomicPtr`/`thread_local!` hit as immutable process-wide data, process-wide
+cache/telemetry, session state or test-only. One genuine session leak fixed:
+the JASS seat default (`DEFAULT_LOCAL_PLAYER` / `..._ANY`) is set process-wide
+by a campaign mission before boot and was never reset, so a later melee map
+inherited seat 2 and silently dropped every unguarded
+`GetLocalPlayer() == Player(0)` block. `reset_local_player_default()` + a reset
+in `attach_map_runtime` for non-campaign maps fixes it; the campaign path keeps
+its set-before-boot ordering. Campaign `REGISTRY`/`ACTIVE` are documented as
+requiring `clear_active_campaign()` when the menu wires the campaign (no
+production caller today).
+
+## Lane gates
+
+See `docs/audit/status-infra.md` for commands, outputs and the environment
+incident (shared `target/` hit 99 MB free; stale `incremental`/`examples`
+reclaimed, truncated `.rmeta` producers re-cleaned).

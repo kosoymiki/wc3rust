@@ -34,3 +34,6 @@ wc3-render = { path = "../wc3-render" }
 wc3-input = { path = "../wc3-input" }
 wc3-bink = { path = "../wc3-bink", optional = true }
 libc.workspace = true
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

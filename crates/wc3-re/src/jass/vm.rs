@@ -529,6 +529,19 @@ pub fn set_local_player_any_default(any: bool) {
     DEFAULT_LOCAL_PLAYER_ANY.store(any, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Restores the process-wide seat defaults (`Player(0)`, no wildcard).
+///
+/// The defaults exist because a map script's `main` runs during boot, before
+/// the engine can hand the runtime a seat. That makes them *session* state: a
+/// campaign mission sets the human seat (Human01's is 2, not 0), and a later
+/// melee map must not inherit it — with the wrong seat every unguarded
+/// `GetLocalPlayer() == Player(0)` block is silently skipped. Callers that boot
+/// a non-campaign world call this before `Engine::boot` (AUD-032).
+pub fn reset_local_player_default() {
+    DEFAULT_LOCAL_PLAYER.store(0, std::sync::atomic::Ordering::Relaxed);
+    DEFAULT_LOCAL_PLAYER_ANY.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CameraState {
     pub target_x: f64,
@@ -1698,6 +1711,52 @@ fn compare_values(left: &Value, right: &Value) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-032: the seat default is process-wide, so it must be restorable.
+    /// A campaign mission sets seat 2 + wildcard; the next melee boot resets it.
+    #[test]
+    fn local_player_default_is_session_state_and_resets() {
+        // Serialise with any other test that touches the process-wide default.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+
+        Runtime::set_default_local_player(2);
+        set_local_player_any_default(true);
+        let world = World::default();
+        assert_eq!(world.local_player, 2);
+        assert!(world.local_player_any);
+
+        reset_local_player_default();
+        assert_eq!(Runtime::default_local_player(), 0);
+        let fresh = World::default();
+        assert_eq!(
+            fresh.local_player, 0,
+            "a melee world must not inherit seat 2"
+        );
+        assert!(!fresh.local_player_any);
+    }
+
+    /// AUD-031: a native this build does not execute must be diagnosable.
+    /// The VM returns the declared default (script compatibility), so the
+    /// `unimplemented` map is the record that the call did nothing.
+    #[test]
+    fn an_unknown_native_is_recorded_in_the_diagnostics() {
+        let source = r#"
+function main takes nothing returns nothing
+    call TotallyUnknownNativeBJ(1)
+endfunction
+native TotallyUnknownNativeBJ takes integer i returns nothing
+"#;
+        let program = parse_named(source, "unknown-native").unwrap();
+        let mut runtime = Runtime::new(program, 7);
+        runtime.run_main().unwrap();
+        assert_eq!(
+            runtime.unimplemented.get("totallyunknownnativebj"),
+            Some(&1),
+            "diagnostics: {:?}",
+            runtime.unimplemented
+        );
+    }
 
     #[test]
     fn runs_arithmetic_and_strings() {

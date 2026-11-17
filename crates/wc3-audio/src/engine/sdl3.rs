@@ -9,7 +9,7 @@
 //! (`SDL_ResumeAudioStreamDevice`) because a stream opened this way starts
 //! paused.
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 use super::{AudioBackend, AudioConfig};
 use crate::AudioError;
@@ -75,7 +75,8 @@ impl Api {
                 ));
             }
             let sym = |name: &str| -> Result<*mut c_void, AudioError> {
-                let cname = CString::new(name).map_err(|_| AudioError::Backend("bad symbol".into()))?;
+                let cname =
+                    CString::new(name).map_err(|_| AudioError::Backend("bad symbol".into()))?;
                 let ptr = libc::dlsym(handle, cname.as_ptr());
                 if ptr.is_null() {
                     Err(AudioError::Backend(format!("missing SDL3 symbol {name}")))
@@ -161,7 +162,9 @@ impl Sdl3Backend {
         unsafe {
             if (api.init_subsystem)(SDL_INIT_AUDIO) == 0 {
                 let err = api.error();
-                return Err(AudioError::Backend(format!("SDL_InitSubSystem(audio): {err}")));
+                return Err(AudioError::Backend(format!(
+                    "SDL_InitSubSystem(audio): {err}"
+                )));
             }
             let spec = SdlAudioSpec {
                 format: SDL_AUDIO_F32,
@@ -178,19 +181,24 @@ impl Sdl3Backend {
             if stream.is_null() {
                 let err = api.error();
                 (api.quit_subsystem)(SDL_INIT_AUDIO);
-                return Err(AudioError::Backend(format!("SDL_OpenAudioDeviceStream: {err}")));
+                return Err(AudioError::Backend(format!(
+                    "SDL_OpenAudioDeviceStream: {err}"
+                )));
             }
             // Streams opened this way start paused; resume before the first block.
             if (api.resume)(stream) == 0 {
                 let err = api.error();
                 (api.destroy_stream)(stream);
                 (api.quit_subsystem)(SDL_INIT_AUDIO);
-                return Err(AudioError::Backend(format!("SDL_ResumeAudioStreamDevice: {err}")));
+                return Err(AudioError::Backend(format!(
+                    "SDL_ResumeAudioStreamDevice: {err}"
+                )));
             }
             Ok(Self {
                 api,
                 stream,
-                bytes_per_ms: config.sample_rate as f64 * config.channels as f64
+                bytes_per_ms: config.sample_rate as f64
+                    * config.channels as f64
                     * std::mem::size_of::<f32>() as f64
                     / 1000.0,
                 latency_ms: config.effective_buffer_ms(),
@@ -213,10 +221,55 @@ impl Sdl3Backend {
     }
 }
 
+/// Largest byte count handed to one `SDL_PutAudioStreamData` call.
+///
+/// SDL takes a `c_int` byte count; a caller-supplied block larger than this is
+/// split into [`chunk_lengths`] so no single FFI call can approach the ABI
+/// width or park the device queue for a long transfer. 1 MiB is 128x the stock
+/// mixer block (1024 frames x 2 channels x 4 bytes = 8 KiB), so the normal
+/// render path issues exactly one call per block.
+pub const MAX_PUT_BYTES: usize = 1 << 20;
+
+/// Bytes for `samples` interleaved `f32` samples, checked for the SDL ABI.
+///
+/// `samples.len() * size_of::<f32>()` is caller-controlled arithmetic and the
+/// result is narrowed to `c_int` for FFI: both steps are explicit so an
+/// oversized slice returns [`AudioError::Backend`] *before* the unsafe call
+/// instead of wrapping or truncating (AUD-020).
+fn put_bytes(samples: usize) -> Result<c_int, AudioError> {
+    let bytes = samples
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            AudioError::Backend(format!(
+                "audio block of {samples} samples overflows the byte count"
+            ))
+        })?;
+    c_int::try_from(bytes).map_err(|_| {
+        AudioError::Backend(format!(
+            "audio block of {bytes} bytes exceeds the c_int FFI limit ({})",
+            c_int::MAX
+        ))
+    })
+}
+
+/// Sample counts of the individual FFI transfers for a `samples`-long block.
+///
+/// At most [`MAX_PUT_BYTES`] per transfer; a zero-length block yields no
+/// transfers. Pure arithmetic so the split can be tested without a device.
+fn chunk_lengths(samples: usize) -> impl Iterator<Item = usize> {
+    let chunk = MAX_PUT_BYTES / std::mem::size_of::<f32>();
+    (0..samples)
+        .step_by(chunk)
+        .map(move |start| (samples - start).min(chunk))
+}
+
 impl AudioBackend for Sdl3Backend {
     fn write(&mut self, samples: &[f32]) -> Result<usize, AudioError> {
         if self.closed || self.stream.is_null() {
             return Err(AudioError::Backend("SDL3 stream is closed".into()));
+        }
+        if samples.is_empty() {
+            return Ok(0);
         }
         // Non-blocking contract: `SDL_PutAudioStreamData` blocks when the
         // stream buffer is full (device paused/suspended), and a blocked write
@@ -228,23 +281,24 @@ impl AudioBackend for Sdl3Backend {
         {
             return Ok(0);
         }
-        let bytes = samples.len() * std::mem::size_of::<f32>();
-        super::shutdown_log("sdl_put_begin");
-        let ok = unsafe {
-            (self.api.put_data)(
-                self.stream,
-                samples.as_ptr() as *const c_void,
-                bytes as c_int,
-            )
-        };
-        super::shutdown_log("sdl_put_end");
-        if ok == 0 {
-            return Err(AudioError::Backend(format!(
-                "SDL_PutAudioStreamData: {}",
-                self.api.error()
-            )));
+        let mut written = 0usize;
+        for len in chunk_lengths(samples.len()) {
+            let chunk = &samples[written..written + len];
+            let bytes = put_bytes(chunk.len())?;
+            super::shutdown_log("sdl_put_begin");
+            let ok =
+                unsafe { (self.api.put_data)(self.stream, chunk.as_ptr() as *const c_void, bytes) };
+            super::shutdown_log("sdl_put_end");
+            if ok == 0 {
+                return Err(AudioError::Backend(format!(
+                    "SDL_PutAudioStreamData: {} (after {written} of {} samples)",
+                    self.api.error(),
+                    samples.len()
+                )));
+            }
+            written += len;
         }
-        Ok(samples.len())
+        Ok(written)
     }
 
     fn latency_ms(&self) -> u32 {
@@ -315,5 +369,80 @@ impl AudioBackend for Sdl3Backend {
 impl Drop for Sdl3Backend {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stock mixer block: 1024 frames x 2 channels (`AudioConfig::default`).
+    const STOCK_BLOCK_SAMPLES: usize = 2048;
+
+    #[test]
+    fn zero_samples_need_zero_bytes() {
+        assert_eq!(put_bytes(0).expect("0 bytes always fit"), 0);
+        assert_eq!(
+            chunk_lengths(0).count(),
+            0,
+            "an empty block issues no FFI call"
+        );
+    }
+
+    #[test]
+    fn a_stock_mixer_block_matches_the_sdl_byte_count() {
+        // 2048 f32 samples = 8192 bytes, one transfer well inside c_int.
+        assert_eq!(put_bytes(STOCK_BLOCK_SAMPLES).expect("stock block"), 8192);
+        assert_eq!(
+            chunk_lengths(STOCK_BLOCK_SAMPLES).collect::<Vec<_>>(),
+            vec![2048]
+        );
+    }
+
+    #[test]
+    fn the_c_int_boundary_is_accepted_and_the_next_sample_is_rejected() {
+        // 536_870_911 samples * 4 = 2_147_483_644 <= c_int::MAX.
+        let boundary_samples = (c_int::MAX as usize) / std::mem::size_of::<f32>();
+        assert_eq!(boundary_samples, 536_870_911);
+        assert_eq!(
+            put_bytes(boundary_samples).expect("the largest byte count c_int can carry"),
+            2_147_483_644
+        );
+        // One more sample crosses c_int::MAX (2_147_483_648 bytes).
+        let err = put_bytes(boundary_samples + 1).expect_err("c_int cannot carry 2^31 bytes");
+        assert!(
+            err.to_string().contains("c_int FFI limit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_sample_count_that_overflows_the_byte_multiplication_is_an_error() {
+        // No allocation: the helper only multiplies the length.
+        let err = put_bytes(usize::MAX).expect_err("usize::MAX samples cannot be sized");
+        assert!(
+            err.to_string().contains("overflows the byte count"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn blocks_above_the_documented_maximum_are_split_not_truncated() {
+        let chunk = MAX_PUT_BYTES / std::mem::size_of::<f32>();
+        assert_eq!(chunk, 262_144);
+        assert_eq!(chunk_lengths(chunk).collect::<Vec<_>>(), vec![chunk]);
+        assert_eq!(chunk_lengths(chunk + 1).collect::<Vec<_>>(), vec![chunk, 1]);
+        assert_eq!(
+            chunk_lengths(3 * chunk + 1).collect::<Vec<_>>(),
+            vec![chunk, chunk, chunk, 1]
+        );
+        // Every transfer is representable in c_int, which is the point of the
+        // split: the maximum chunk passes the same check as the stock block.
+        assert!(put_bytes(chunk).is_ok());
+        assert_eq!(
+            chunk_lengths(3 * chunk + 1).sum::<usize>(),
+            3 * chunk + 1,
+            "splitting must not drop samples"
+        );
     }
 }

@@ -202,11 +202,15 @@ fn map_path_is_campaign(assets: &Assets) -> bool {
         .debug
         .iter()
         .find_map(|line| line.strip_prefix("map="))
-        .is_some_and(|path| {
-            path.replace('/', "\\")
-                .to_ascii_lowercase()
-                .contains("\\campaign\\")
-        })
+        .is_some_and(|path| map_file_is_campaign(Path::new(path)))
+}
+
+/// Path form of [`map_path_is_campaign`] (same `Maps\Campaign` rule).
+fn map_file_is_campaign(path: &Path) -> bool {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .contains("\\campaign\\")
 }
 
 /// Menu race choice → the sim's race enum. `Random` is deterministic per seed
@@ -1613,6 +1617,15 @@ impl Game {
         let Some(map) = map else {
             return;
         };
+        // Session isolation (AUD-032): the JASS seat default is process-wide
+        // because the script's `main` runs during boot, and a campaign mission
+        // sets it before `Game::new` (Human01's human seat is 2, not 0). A
+        // melee map must not inherit that seat: `GetLocalPlayer() == Player(0)`
+        // would be false and every unguarded script block would be dropped.
+        // Campaign maps keep the defaults the campaign installed.
+        if !map_file_is_campaign(&map) {
+            wc3_re::jass::vm::reset_local_player_default();
+        }
         let root = self
             .assets
             .debug
@@ -1632,6 +1645,27 @@ impl Game {
         config.seed = self.seed;
         match wc3_re::engine::Engine::boot(config) {
             Ok(mut engine) => {
+                // AUD-031: a native this build does not execute returns the
+                // declared default so the script keeps running; the diagnostic
+                // list is the only observable record that it did nothing.
+                if let Some(runtime) = engine.runtime.as_ref()
+                    && !runtime.unimplemented.is_empty()
+                {
+                    let total: u64 = runtime.unimplemented.values().sum();
+                    let top = engine
+                        .unimplemented_natives()
+                        .iter()
+                        .take(8)
+                        .map(|(name, count)| format!("{name}:{count}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    self.log(format!(
+                        "GAME_JASS_UNIMPLEMENTED natives={} calls={} top={}",
+                        runtime.unimplemented.len(),
+                        total,
+                        top
+                    ));
+                }
                 engine.config.map = Some(map);
                 self.engine = Some(engine);
             }

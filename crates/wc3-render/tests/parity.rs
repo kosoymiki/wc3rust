@@ -154,6 +154,7 @@ fn fixture_scene() -> Scene {
         // of the near plane) and scale the 80-unit quad to the full viewport.
         view_proj: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.5))
             * Mat4::from_scale(Vec3::new(0.025, 0.025, 1.0)),
+        eye: Vec3::ZERO,
         viewport: Vec2::new(WIDTH as f32, HEIGHT as f32),
         units: vec![UnitDraw {
             model: 0,
@@ -320,6 +321,7 @@ fn static_batch_matches_the_unit_path() {
 
     let scene = Scene {
         view_proj: fixture_scene().view_proj,
+        eye: Vec3::ZERO,
         viewport: Vec2::new(WIDTH as f32, HEIGHT as f32),
         units: vec![UnitDraw {
             model: 0,

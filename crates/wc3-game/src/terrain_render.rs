@@ -838,10 +838,29 @@ struct Camera {
 // clamped per channel like the fixed-function pipeline. Terrain, cliffs, water
 // and shore all use this one function so a warm sun tints the lit slopes
 // instead of multiplying the whole frame.
+// Highlight shoulder, byte-identical in shape to the mesh shader
+// (`wc3-render/src/mesh.rs`, `fn shoulder`): below the knee the curve is the
+// identity, above it approaches 1.0 exponentially instead of clipping. Terrain
+// runs the raw DNC terrain light (`sun 1.3`, `ambient 0.2`), which passed 1.0 at
+// `N.L = 0.615` — flat noon ground sat at 0.988 and any sun-facing slope turned
+// into a white shape. Models already use this curve, so keeping the terrain on
+// the old clamp made a unit darker than the slope it stands on.
+fn shoulder(value: vec3<f32>) -> vec3<f32> {
+    let knee = camera.sun.w;
+    if (knee <= 0.0 || knee >= 1.0) {
+        return clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let knee3 = vec3<f32>(knee);
+    let span = vec3<f32>(1.0 - knee);
+    let under = min(value, knee3);
+    let over = max(value - knee3, vec3<f32>(0.0));
+    return clamp(under + span * (vec3<f32>(1.0) - exp(-over / span)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 fn surface_light(n: vec3<f32>) -> vec3<f32> {
     let l = normalize(camera.light.xyz);
     let ndl = clamp(dot(normalize(n), l), 0.0, 1.0);
-    return clamp(camera.ambient.rgb + camera.sun.rgb * ndl, vec3<f32>(0.0), vec3<f32>(1.0));
+    return shoulder(camera.ambient.rgb + camera.sun.rgb * ndl);
 }
 
 // Map fog: linear distance ramp scaled by the map's `war3map.w3i` density.
@@ -5632,5 +5651,75 @@ mod tests {
             "blue-white additive sheen: b-r = {:.2}",
             stats.blue_excess
         );
+    }
+}
+
+#[cfg(test)]
+mod light_curve_tests {
+    use super::TERRAIN_SHADER;
+
+    /// The terrain shader must run the same highlight curve as the mesh shader,
+    /// driven by the knee the game writes into `sun.w`. Two tonal curves in one
+    /// frame make a unit darker than the ground it stands on (packet B §1).
+    #[test]
+    fn terrain_shader_uses_the_shared_highlight_shoulder() {
+        assert!(
+            TERRAIN_SHADER.contains("fn shoulder(value: vec3<f32>)"),
+            "terrain shader lost the shoulder function"
+        );
+        assert!(
+            TERRAIN_SHADER.contains("return shoulder(camera.ambient.rgb + camera.sun.rgb * ndl)"),
+            "surface_light must call shoulder(), not clamp the raw sum"
+        );
+        assert!(
+            TERRAIN_SHADER.contains("let knee = camera.sun.w;"),
+            "the knee must come from the camera uniform"
+        );
+        assert!(
+            !TERRAIN_SHADER.contains("return clamp(camera.ambient.rgb + camera.sun.rgb * ndl"),
+            "the old hard clamp is still in the shader"
+        );
+    }
+
+    /// The knee is a real interval, and the curve must be the identity below it:
+    /// that is what keeps the authored shadow/rib contrast (39.2 % of the Great
+    /// Hall clipped before the mesh fix).
+    #[test]
+    fn shoulder_is_identity_below_the_knee_and_monotonic_above() {
+        let knee = wc3_render::mesh::LIGHT_KNEE;
+        assert!(knee > 0.1 && knee < 0.95, "knee {knee} outside the sane band");
+        let mut previous = 0.0f32;
+        let mut value = 0.0f32;
+        while value <= 2.0 {
+            let out = wc3_render::mesh::shoulder_cpu(value, knee);
+            assert!(out >= previous - 1e-6, "shoulder must be monotonic at {value}");
+            assert!((0.0..=1.0).contains(&out), "shoulder left [0,1] at {value}");
+            if value <= knee {
+                assert!((out - value).abs() < 1e-6, "identity broken at {value}");
+            }
+            previous = out;
+            value += 0.05;
+        }
+    }
+}
+
+#[cfg(test)]
+mod wgsl_parse_tests {
+    use super::TERRAIN_SHADER;
+
+    /// Parse the terrain WGSL exactly as wgpu will. A shader typo otherwise only
+    /// surfaces on the device as a pipeline-creation validation error, after a
+    /// full APK build and install.
+    #[test]
+    fn terrain_shader_parses_and_validates() {
+        let module = naga::front::wgsl::parse_str(TERRAIN_SHADER)
+            .expect("terrain WGSL must parse");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        );
+        validator
+            .validate(&module)
+            .expect("terrain WGSL must pass naga validation");
     }
 }

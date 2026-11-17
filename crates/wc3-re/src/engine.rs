@@ -134,9 +134,28 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Unimplemented natives the executed script called, most-called first.
+    ///
+    /// `Runtime::unimplemented` is the diagnostic for a native this build does
+    /// not execute. The VM still returns the native's declared default so a
+    /// retail script keeps running, so this list — not the return value — is
+    /// the observable record that the call did nothing (AUD-031).
+    pub fn unimplemented_natives(&self) -> Vec<(&str, u64)> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Vec::new();
+        };
+        let mut rows: Vec<(&str, u64)> = runtime
+            .unimplemented
+            .iter()
+            .map(|(name, count)| (name.as_str(), *count))
+            .collect();
+        rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+        rows.truncate(24);
+        rows
+    }
+
     /// Boot in the order observed in `Game.dll!GameMain`/`fcn.6f004200`.
-    pub fn boot(mut config: EngineConfig) -> Result<Self> {
-        let mut engine = Self {
+    pub fn boot(mut config: EngineConfig) -> Result<Self> {        let mut engine = Self {
             state: EngineState::Booting,
             storm: StormFs::new(),
             objects: None,

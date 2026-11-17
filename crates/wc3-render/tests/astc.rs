@@ -366,6 +366,8 @@ fn astc_texture_in_the_mesh_pipeline() {
         // WebGPU clip space: z in [0, 1] (see tests/parity.rs).
         view_proj: Mat4::from_translation(Vec3::new(0.0, 0.0, 0.5))
             * Mat4::from_scale(Vec3::new(0.025, 0.025, 1.0)),
+        // `Scene::empty` uses the world origin; the haze only needs a finite eye.
+        eye: Vec3::ZERO,
         viewport: Vec2::new(WIDTH as f32, HEIGHT as f32),
         units: vec![UnitDraw {
             model: 0,

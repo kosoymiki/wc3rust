@@ -49,6 +49,8 @@ fn render_daynight_curve() {
         FogSettings {
             base_color: [0.2, 0.1, 0.05],
             density: 0.5,
+            start: 900.0,
+            end: 4000.0,
         },
     );
     let sample = mapped.sample(12.0);

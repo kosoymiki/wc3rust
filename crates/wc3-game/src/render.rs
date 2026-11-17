@@ -710,7 +710,13 @@ impl Renderer {
                 sample.sun_direction[2],
                 0.0,
             ],
-            sun: sample.terrain.sun_uniform(),
+            // `sun.w` is the highlight knee for the terrain shader, exactly as
+            // it already is for the mesh camera: one constant, both passes.
+            sun: {
+                let mut sun = sample.terrain.sun_uniform();
+                sun[3] = wc3_render::mesh::LIGHT_KNEE;
+                sun
+            },
             ambient: sample.terrain.ambient_uniform(),
             day,
             fog: [

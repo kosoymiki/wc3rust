@@ -154,6 +154,15 @@ pub const SAVE_FORMAT_VERSION: u16 = 7;
 /// thousands of destructables, which is two orders of magnitude below the cap:
 /// this is a hostile-input bound, not a gameplay limit.
 pub const MAX_ID_SPACE: u32 = 1 << 20;
+/// Hard ceiling on one save file, envelope included.
+///
+/// A save holds one map's simulation state: the only dense structure sized from
+/// a counter is the unit id index, bounded at 4 MiB by [`MAX_ID_SPACE`], and
+/// every section's element count is bounded by the payload bytes that follow
+/// it. 64 MiB is ~100x a busy match on a 1024x1024 map and matches the network
+/// message cap, so it is a hostile-input bound, not a gameplay limit. Checked
+/// before the file is read into memory and before the payload is sliced.
+pub const MAX_SAVE_BYTES: u64 = 64 << 20;
 /// Bytes before the payload: magic + version + flags + payload length.
 const HEADER_LEN: usize = 12;
 /// Checksum appended after the payload.
@@ -239,6 +248,12 @@ pub enum SaveError {
     InvalidValue { field: &'static str, detail: String },
     /// Bytes remained after the end marker.
     TrailingBytes(usize),
+    /// A save file, or a declared payload, is above [`MAX_SAVE_BYTES`].
+    ///
+    /// The loader reads a save into memory before parsing it, so the file size
+    /// itself is the first allocation an untrusted path can drive; reject it
+    /// before the read/slice and name the limit (AUD-025).
+    Oversize { len: u64, limit: u64 },
     /// Filesystem failure while loading/saving a path.
     Io(String),
 }
@@ -266,6 +281,9 @@ impl fmt::Display for SaveError {
                 f,
                 "payload checksum mismatch: stored {expected:#x}, computed {actual:#x}"
             ),
+            Self::Oversize { len, limit } => {
+                write!(f, "save is {len} bytes, above the {limit}-byte limit")
+            }
             Self::BadTag { section, tag } => {
                 write!(f, "unknown tag {tag:#x} in section {section}")
             }
@@ -679,6 +697,16 @@ fn pool() -> &'static BTreeMap<&'static str, ()> {
         }
         set
     })
+}
+
+/// Resolve `name` to the canonical `&'static str` from the shipped data tables.
+///
+/// Decoders (save sections, replay commands) need the *identical* static string
+/// a live command carries: `Command::LearnAbility` borrows `&'static str`, so a
+/// decoded replay cannot allocate its own. `None` means the id is not part of
+/// this build's data and the input is corrupt for this binary.
+pub fn intern_static_name(name: &str) -> Option<&'static str> {
+    pool().get_key_value(name).map(|(key, _)| *key)
 }
 
 /// Number of valid `def_index` values (roster + creeps + shops + extras).
@@ -5331,6 +5359,12 @@ fn seal_version(payload: &[u8], version: u16) -> Vec<u8> {
 }
 
 fn open_envelope(bytes: &[u8]) -> SaveResult<(&[u8], u16)> {
+    if bytes.len() as u64 > MAX_SAVE_BYTES {
+        return Err(SaveError::Oversize {
+            len: bytes.len() as u64,
+            limit: MAX_SAVE_BYTES,
+        });
+    }
     let mut r = R::new(bytes);
     let magic = r.take(4)?;
     if magic != SAVE_MAGIC {
@@ -5438,16 +5472,53 @@ impl Sim {
     }
 
     /// Writes a save file (owner-only permissions are the caller's policy).
+    ///
+    /// Refuses to write a file the loader would reject: a save above
+    /// [`MAX_SAVE_BYTES`] cannot be read back, so writing it would leave an
+    /// unusable checkpoint behind. The loader enforces the same constant.
     pub fn save_to_path(&self, path: impl AsRef<Path>) -> SaveResult<()> {
         let bytes = self.to_save_bytes();
+        if bytes.len() as u64 > MAX_SAVE_BYTES {
+            return Err(SaveError::Oversize {
+                len: bytes.len() as u64,
+                limit: MAX_SAVE_BYTES,
+            });
+        }
         std::fs::write(path.as_ref(), bytes)
             .map_err(|error| SaveError::Io(format!("{}: {error}", path.as_ref().display())))
     }
 
     /// Reads a save file.
+    ///
+    /// The file size is checked against [`MAX_SAVE_BYTES`] *before* the read:
+    /// a hostile multi-gigabyte file is an error, not a 4 GiB allocation. The
+    /// read is bounded by `take(MAX_SAVE_BYTES + 1)` as well, so a file that
+    /// grows between `metadata` and the read is still refused.
     pub fn from_save_path(path: impl AsRef<Path>) -> SaveResult<Sim> {
-        let bytes = std::fs::read(path.as_ref())
-            .map_err(|error| SaveError::Io(format!("{}: {error}", path.as_ref().display())))?;
+        use std::io::Read as _;
+        let path = path.as_ref();
+        let file = std::fs::File::open(path)
+            .map_err(|error| SaveError::Io(format!("{}: {error}", path.display())))?;
+        let declared = file
+            .metadata()
+            .map_err(|error| SaveError::Io(format!("{}: {error}", path.display())))?
+            .len();
+        if declared > MAX_SAVE_BYTES {
+            return Err(SaveError::Oversize {
+                len: declared,
+                limit: MAX_SAVE_BYTES,
+            });
+        }
+        let mut bytes = Vec::with_capacity(declared as usize);
+        file.take(MAX_SAVE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| SaveError::Io(format!("{}: {error}", path.display())))?;
+        if bytes.len() as u64 > MAX_SAVE_BYTES {
+            return Err(SaveError::Oversize {
+                len: bytes.len() as u64,
+                limit: MAX_SAVE_BYTES,
+            });
+        }
         Self::from_save(&bytes)
     }
 
