@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wc3-core",
+    "crates/wc3-formats",
+    "crates/wc3-mpq",
+    "crates/wc3-bink",
+    "crates/wc3-assetdb",
+    "crates/wc3-path",
+    "crates/wc3-sim",
+    "crates/wc3-jass",
+    "crates/wc3-data",
+    "crates/wc3-replay",
+    "crates/wc3-input",
+    "crates/wc3-audio",
+    "crates/wc3-anim",
+    "crates/wc3-render",
+    "crates/wc3-game",
+    "crates/wc3-re",
+    "crates/wc3-platform",
+    "crates/wc3-gpu",
+    "crates/wc3-adrenotools",
+    "crates/wc3-vulkan-loader",
+    "crates/wc3-turnip-vendor",
+    "crates/wc3-adrenotools-main-hook",
+    "crates/wc3-adrenotools-fopen-hook",
+    "crates/wc3-adrenotools-gsl-hook",
+    "apps/smoke",
+    "apps/driver-probe",
+    "apps/android-native",
+    "apps/headless",
+    "apps/bench",
+    "tools/mdx-gltf",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+glam = "0.30"
+wgpu = "30.0.1"
+pollster = "0.4"
+libc = "0.2"
+flate2 = "1"
+bzip2 = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,21 @@
+[package]
+name = "herofolends-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Herofolends-RS Android P0 entry point: SDL3 window + wgpu/Vulkan surface"
+
+[lib]
+name = "main"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+pollster = "0.4"
+raw-window-handle = "0.6"
+wgpu = "30.0.1"
+glam.workspace = true
+wc3-game = { path = "../../crates/wc3-game" }
+wc3-render = { path = "../../crates/wc3-render" }
+wc3-input = { path = "../../crates/wc3-input" }
+wc3-sim = { path = "../../crates/wc3-sim" }

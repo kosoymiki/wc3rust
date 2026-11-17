@@ -1,0 +1,36 @@
+[package]
+name = "wc3-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Playable WC3-style RTS slice: real MDX/BLP assets, commands, AI, HUD and touch input"
+
+[features]
+default = []
+# Own decoder (`crates/wc3-bink`): enables `Game::play_movie_decoded` and the
+# `cinematic::bink_decoder` adapter. Never an external codec.
+movie_decoder = ["dep:wc3-bink"]
+
+[dependencies]
+glam.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+ab_glyph = "0.2"
+png = "0.18"
+serde_json = "1"
+bytemuck = { version = "1", features = ["derive"] }
+
+wc3-core = { path = "../wc3-core" }
+wc3-formats = { path = "../wc3-formats" }
+wc3-mpq = { path = "../wc3-mpq" }
+wc3-re = { path = "../wc3-re" }
+wc3-assetdb = { path = "../wc3-assetdb" }
+wc3-audio = { path = "../wc3-audio" }
+wc3-data = { path = "../wc3-data" }
+wc3-path = { path = "../wc3-path" }
+wc3-sim = { path = "../wc3-sim" }
+wc3-anim = { path = "../wc3-anim" }
+wc3-render = { path = "../wc3-render" }
+wc3-input = { path = "../wc3-input" }
+wc3-bink = { path = "../wc3-bink", optional = true }
+libc.workspace = true

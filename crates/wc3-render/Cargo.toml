@@ -1,0 +1,22 @@
+[package]
+name = "wc3-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canonical wgpu/Vulkan renderer: static geometry, GPU skinning, state-sorted draws, UI stream, frame instrumentation"
+
+[dependencies]
+wgpu = { workspace = true }
+pollster = { workspace = true }
+glam = { workspace = true }
+bytemuck = { version = "1", features = ["derive"] }
+wc3-formats = { path = "../wc3-formats" }
+wc3-anim = { path = "../wc3-anim" }
+
+# The terrain close-up example drives the game-layer renderer (which depends on
+# this crate): a dev-dependency cycle is allowed by Cargo and lets the headless
+# map-edge / water / cliff frames reproduce the operator artifact from this
+# crate without a second binary target in wc3-game.
+[dev-dependencies]
+png = "0.18"
+wc3-game = { path = "../wc3-game" }

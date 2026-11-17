@@ -1,0 +1,20 @@
+[package]
+name = "wc3-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WAV/MP3 decoding, spatial mixer, AudioEngine with play/stop/volume/3D pan and music"
+
+[dependencies]
+glam = { workspace = true }
+nanomp3 = "0.2"
+libc = { workspace = true }
+
+[features]
+default = ["sdl"]
+sdl = []
+
+[dev-dependencies]
+sha2 = "0.10"
+wc3-formats = { path = "../wc3-formats" }
+wc3-mpq = { path = "../wc3-mpq" }

@@ -1,0 +1,13 @@
+[package]
+name = "wc3-turnip-vendor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vendor-driver shim: exposes a full Vulkan API over the Turnip ICD"
+
+[lib]
+name = "turnip_vendor"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"

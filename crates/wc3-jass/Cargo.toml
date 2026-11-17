@@ -1,0 +1,10 @@
+[package]
+name = "wc3-jass"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JASS2 lexer, parser, interpreter, triggers and native registry"
+
+[dependencies]
+wc3-core = { path = "../wc3-core" }
+wc3-re = { path = "../wc3-re" }

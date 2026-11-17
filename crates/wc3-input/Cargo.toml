@@ -1,0 +1,11 @@
+[package]
+name = "wc3-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Touch router, gestures, RTS camera math and minimap mapping"
+
+[dependencies]
+glam = { workspace = true }
+wc3-core = { path = "../wc3-core" }
+wc3-path = { path = "../wc3-path" }

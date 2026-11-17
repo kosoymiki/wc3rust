@@ -1,0 +1,9 @@
+[package]
+name = "wc3-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Facade only: the renderer itself is `wc3-render` (BASE.md §2, one renderer).
+wc3-render = { path = "../wc3-render" }

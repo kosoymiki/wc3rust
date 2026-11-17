@@ -1,0 +1,18 @@
+[package]
+name = "mdx-gltf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "QA tool: convert WC3 MDX models to glTF 2.0 for visual checks (canonical wc3-formats parser)"
+
+[workspace]
+
+[dependencies]
+wc3-formats = { path = "../../../crates/wc3-formats" }
+
+[[bin]]
+name = "mdx-gltf"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 1

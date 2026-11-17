@@ -1,0 +1,22 @@
+[package]
+name = "wc3-re"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Warcraft III reverse-engineering port: resource access layer, JASS/trigger VM, object data, engine/host models"
+
+
+[dependencies]
+wc3-mpq = { path = "../wc3-mpq" }
+wc3-formats = { path = "../wc3-formats" }
+wc3-data = { path = "../wc3-data" }
+flate2 = "1"
+bzip2 = "0.5"
+sha2 = "0.10"
+
+[[bin]]
+name = "wc3re"
+path = "src/bin/wc3re.rs"
+
+[dev-dependencies]
+glam = { workspace = true }

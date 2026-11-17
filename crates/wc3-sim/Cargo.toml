@@ -1,0 +1,18 @@
+[package]
+name = "wc3-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic fixed-tick RTS simulation: ECS, orders, combat, abilities, economy"
+
+[dependencies]
+glam = { workspace = true }
+wc3-core = { path = "../wc3-core" }
+wc3-path = { path = "../wc3-path" }
+wc3-re = { path = "../wc3-re" }
+wc3-data = { path = "../wc3-data" }
+wc3-input = { path = "../wc3-input" }
+
+[dev-dependencies]
+wc3-formats = { path = "../wc3-formats" }
+wc3-mpq = { path = "../wc3-mpq" }

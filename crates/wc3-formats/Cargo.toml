@@ -1,0 +1,11 @@
+[package]
+name = "wc3-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WC3 binary formats: MDX, BLP, SLK, W3E/W3I, object data, maps"
+
+[dependencies]
+glam = { workspace = true }
+jpeg-decoder = "0.3"
+wc3-mpq = { path = "../wc3-mpq" }

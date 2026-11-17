@@ -1,0 +1,11 @@
+[package]
+name = "wc3-anim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MDX animation sampler, geoset animation, particles and ribbons"
+
+[dependencies]
+glam = { workspace = true }
+wc3-formats = { path = "../wc3-formats" }
+

@@ -1,0 +1,9 @@
+[package]
+name = "wc3-adrenotools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Clean-room Rust port of libadrenotools: Android linker namespace driver loading, ELF soname patching, dlopen/fopen/GSL hooks, BCn enabler"
+
+[dependencies]
+libc = "0.2"

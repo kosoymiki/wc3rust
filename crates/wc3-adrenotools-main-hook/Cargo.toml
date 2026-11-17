@@ -1,0 +1,14 @@
+[package]
+name = "wc3-adrenotools-main-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust dlopen interposer for wc3-adrenotools (libmain_hook.so)"
+
+[lib]
+name = "main_hook"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+wc3-adrenotools = { path = "../wc3-adrenotools" }

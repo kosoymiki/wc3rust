@@ -1,0 +1,25 @@
+[package]
+name = "herofolends-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "herofolends-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "herofolends-gpu-bench"
+path = "src/gpu_bench.rs"
+
+[dependencies]
+glam = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+wc3-game = { path = "../../crates/wc3-game" }
+wc3-render = { path = "../../crates/wc3-render" }
+wc3-mpq = { path = "../../crates/wc3-mpq" }
+wc3-re = { path = "../../crates/wc3-re" }
+wc3-formats = { path = "../../crates/wc3-formats" }
+wc3-path = { path = "../../crates/wc3-path" }
+wc3-sim = { path = "../../crates/wc3-sim" }

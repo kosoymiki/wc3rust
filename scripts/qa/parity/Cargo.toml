@@ -1,0 +1,25 @@
+[package]
+name = "h2-parity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Headless feature-parity gates for the WC3 feature surface (QA owner)"
+
+# Standalone crate: QA owns scripts/qa/**, the engine crates stay read-only
+# path dependencies of the main workspace.
+[workspace]
+
+[dependencies]
+wc3-sim = { path = "../../../crates/wc3-sim" }
+wc3-data = { path = "../../../crates/wc3-data" }
+wc3-formats = { path = "../../../crates/wc3-formats" }
+wc3-audio = { path = "../../../crates/wc3-audio", default-features = false }
+wc3-jass = { path = "../../../crates/wc3-jass" }
+wc3-re = { path = "../../../crates/wc3-re" }
+
+[[bin]]
+name = "h2-parity"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 1

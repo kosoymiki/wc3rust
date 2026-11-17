@@ -1,0 +1,14 @@
+[package]
+name = "wc3-bink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-contained Bink video/audio decoder (Bink 1 + BinkAudio) for Warcraft III movies"
+
+# The decoder has NO dependencies: no ffmpeg, no FFI, no external codec.
+# `cargo tree -p wc3-bink` shows only this crate. Everything below is
+# dev-only and used by the extraction/report examples and the oracle tests.
+[dependencies]
+
+[dev-dependencies]
+sha2 = "0.10"

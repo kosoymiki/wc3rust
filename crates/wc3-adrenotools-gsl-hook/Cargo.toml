@@ -1,0 +1,14 @@
+[package]
+name = "wc3-adrenotools-gsl-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust GSL allocator interposer for wc3-adrenotools (libgsl_alloc_hook.so)"
+
+[lib]
+name = "gsl_alloc_hook"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+wc3-adrenotools = { path = "../wc3-adrenotools" }

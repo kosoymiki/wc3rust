@@ -1,0 +1,20 @@
+[package]
+name = "herofolends-headless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "herofolends-headless"
+path = "src/main.rs"
+
+[dependencies]
+glam = { workspace = true }
+wc3-mpq = { path = "../../crates/wc3-mpq" }
+wc3-re = { path = "../../crates/wc3-re" }
+wc3-formats = { path = "../../crates/wc3-formats" }
+wc3-assetdb = { path = "../../crates/wc3-assetdb" }
+wc3-path = { path = "../../crates/wc3-path" }
+wc3-sim = { path = "../../crates/wc3-sim" }
+wc3-jass = { path = "../../crates/wc3-jass" }
+wc3-replay = { path = "../../crates/wc3-replay" }

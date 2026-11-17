@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L9,3 z" fill="#38bdf8"/>
+  </marker>
+</defs>
+<rect width="100%" height="100%" fill="#0b1220"/>
+<text x="40" y="52" font-family="monospace" font-size="30" font-weight="700" fill="#e5edf8" text-anchor="start">ARCHITECTURE — layers and data flow</text>
+<text x="40" y="82" font-family="monospace" font-size="15" font-weight="400" fill="#94a3b8" text-anchor="start">Herofolends-RS — clean-room Rust/Vulkan WC3-compatible RTS · plan 2026-11-12</text>
+<rect x="80" y="120" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="143" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">APPS</text>
+<text x="250" y="143" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">SDL3 window/input/audio · Android/Windows/Linux · CLI tools</text>
+<rect x="80" y="190" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="213" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">LAUNCHER + UI</text>
+<text x="250" y="213" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">data folder check · profiles · campaign/maps · wgpu UI · safe areas</text>
+<rect x="80" y="260" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="283" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">INPUT / TOUCH</text>
+<text x="250" y="283" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">pointer router → gesture recognizer → RTS adapter → semantic commands</text>
+<rect x="80" y="330" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="353" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">SIMULATION</text>
+<text x="250" y="353" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">fixed 20/30 Hz · ECS · orders · pathfinding · combat · fog · replay</text>
+<rect x="80" y="400" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="423" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">SCRIPTING</text>
+<text x="250" y="423" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">JASS2 VM · triggers · map scripts (sandboxed)</text>
+<rect x="80" y="470" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="493" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">SCENE</text>
+<text x="250" y="493" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">instances · meshes · materials · animations · particles · culling</text>
+<rect x="80" y="540" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="563" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">RENDERER</text>
+<text x="250" y="563" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">wgpu/Vulkan pipelines · shadows · terrain · water · UI · pipeline cache</text>
+<rect x="80" y="610" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="633" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">ASSET DB</text>
+<text x="250" y="633" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">MPQ/CASC/loose → MDX/BLP/SLK → glTF/KTX2 → GPU cache</text>
+<rect x="80" y="680" width="1120" height="54" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5" opacity="1.0"/>
+<text x="100" y="703" font-family="monospace" font-size="17" font-weight="700" fill="#38bdf8" text-anchor="start">PLATFORM</text>
+<text x="250" y="703" font-family="monospace" font-size="14" font-weight="400" fill="#e5edf8" text-anchor="start">SDL3 · system Vulkan · Turnip via libadrenotools (optional) · fallback</text>
+<line x1="640" y1="174" x2="640" y2="190" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="244" x2="640" y2="260" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="314" x2="640" y2="330" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="384" x2="640" y2="400" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="454" x2="640" y2="470" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="524" x2="640" y2="540" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="594" x2="640" y2="610" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="640" y1="664" x2="640" y2="680" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1180" y="742" font-family="monospace" font-size="13" font-weight="400" fill="#94a3b8" text-anchor="end">runtime boundary: no direct file/GPU access from sim</text>
+</svg>

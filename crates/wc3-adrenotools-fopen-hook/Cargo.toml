@@ -1,0 +1,14 @@
+[package]
+name = "wc3-adrenotools-fopen-hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust fopen redirect interposer for wc3-adrenotools (libfile_redirect_hook.so)"
+
+[lib]
+name = "file_redirect_hook"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+wc3-adrenotools = { path = "../wc3-adrenotools" }

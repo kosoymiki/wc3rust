@@ -1,0 +1,12 @@
+[package]
+name = "wc3-mpq"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MPQ archive reader (StormLib-compatible core) for Warcraft III data"
+
+[dependencies]
+flate2 = { workspace = true }
+
+[dev-dependencies]
+sha2 = "0.10"

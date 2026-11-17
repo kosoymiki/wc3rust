@@ -1,0 +1,73 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# h2-cargo — single-slot cargo wrapper for the shared 11 GB device.
+#
+# Why: two OOM kills happened when several agents ran `cargo test` at once.
+# Compilation is already serialised by cargo's own lock, but *test binaries*
+# from separate invocations run concurrently, and one wc3-game test process
+# peaks at 2-3.7 GB RSS (measured: `malformed_inputs` 3.71 GB). With two of
+# those plus a rustc, available RAM (2.4 GB) is gone and the kernel OOM-kills
+# a process mid-run.
+#
+# Contract:
+#   * one cargo at a time across the whole device (flock, 0600 lock file);
+#   * wait until MemAvailable >= MIN_AVAIL_KB before starting;
+#   * stale-lock recovery: if the lock is held but no cargo/rustc exists, break it;
+#   * heavy test runs are capped (RUST_TEST_THREADS) and never incremental.
+#
+# Usage: scripts/h2-cargo <cargo args...>   (identical to `cargo` otherwise)
+set -u
+LOCK=/data/data/com.termux/files/usr/tmp/h2-cargo.lock
+LOG=/data/data/com.termux/files/usr/tmp/h2-cargo.log
+MIN_AVAIL_KB=${H2_CARGO_MIN_AVAIL_KB:-3200000}   # ~3.2 GB
+WAIT_MAX_S=${H2_CARGO_WAIT_MAX_S:-900}
+
+mkdir -p "$(dirname "$LOCK")"
+: >> "$LOCK"; chmod 600 "$LOCK" 2>/dev/null || true
+
+avail_kb() { awk '/MemAvailable/{print $2}' /proc/meminfo; }
+
+wait_memory() {
+  local waited=0
+  while :; do
+    local a; a=$(avail_kb)
+    [ "$a" -ge "$MIN_AVAIL_KB" ] && return 0
+    [ "$waited" -ge "$WAIT_MAX_S" ] && {
+      echo "h2-cargo: memory still low after ${WAIT_MAX_S}s (avail=${a}kB < ${MIN_AVAIL_KB}kB), proceeding" >> "$LOG"
+      return 0
+    }
+    echo "h2-cargo: waiting for memory avail=${a}kB < ${MIN_AVAIL_KB}kB" >> "$LOG"
+    sleep 5; waited=$((waited + 5))
+  done
+}
+
+# Stale-lock recovery: a SIGKILLed cargo leaves the file locked only while a
+# process holds the fd; if nothing of ours runs, do not block forever.
+if ! command -v flock >/dev/null; then
+  echo "h2-cargo: flock missing; falling back to a pidfile spin" >&2
+fi
+
+exec 9>>"$LOCK"
+if ! flock -n 9; then
+  echo "h2-cargo: waiting for the single cargo slot ($*)" >> "$LOG"
+  # Wait up to WAIT_MAX_S for the slot; afterwards proceed anyway so a wedged
+  # holder cannot block the whole device forever.
+  if ! flock -w "$WAIT_MAX_S" 9; then
+    echo "h2-cargo: slot busy >${WAIT_MAX_S}s, proceeding without it ($*)" >> "$LOG"
+  fi
+fi
+
+wait_memory
+
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
+export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0}
+# Heavy suites: keep test binaries from stacking (each can be 2-3.7 GB).
+case " $* " in
+  *" test "*|*"--tests"*) export RUST_TEST_THREADS=${RUST_TEST_THREADS:-2} ;;
+esac
+
+start=$(date +%s)
+echo "h2-cargo begin $(date +%H:%M:%S) avail=$(avail_kb)kB :: $*" >> "$LOG"
+cargo "$@"
+rc=$?
+echo "h2-cargo end   $(date +%H:%M:%S) rc=$rc $(( $(date +%s) - start ))s :: $*" >> "$LOG"
+exit $rc

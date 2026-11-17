@@ -1,0 +1,17 @@
+[package]
+name = "wc3-assetdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Asset database: bounded caches, providers, catalogs and dependency graph"
+
+[dependencies]
+wc3-mpq = { path = "../wc3-mpq" }
+wc3-formats = { path = "../wc3-formats" }
+wc3-audio = { path = "../wc3-audio" }
+glam = { workspace = true }
+sha2 = "0.10"
+
+[dev-dependencies]
+png = "0.18"
+jpeg-decoder = "0.3"

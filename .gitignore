@@ -1,0 +1,74 @@
+# Build outputs (top-level and every nested cargo target, e.g. crates/wc3-re/target,
+# scripts/qa/*/target) — these are hundreds of MB of artefacts, never source.
+/target/
+target/
+/build/
+build/
+**/*.rlib
+**/*.rmeta
+**/*.o
+**/*.a
+*.apk
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Third-party toolchains and donor copies: fetched/generated, not our source.
+/third_party/sdl3/
+/third_party/sdl3-min/
+/third_party/sdl3-build/
+/third_party/sdl3-min-build/
+/third_party/stormlib-build/
+/third_party/stormlib-build2/
+/third_party/turnip/
+/donors/
+
+# Operator's game data and everything derived from it: never committed.
+*.mpq
+*.w3x
+*.w3m
+*.w3n
+*.mp3
+*.wav
+*.flac
+*.avi
+*.bik
+*.mdx
+*.mdl
+*.blp
+*.dds
+*.tga
+*.pk3
+*.sav
+*.state
+
+# analysis/ is 4 GB of extracted assets and captures; keep only the written
+# reports (markdown) that document decisions and measurements.
+/analysis/**
+!/analysis/**/
+!/analysis/**/*.md
+
+# Scratch, logs, agent output.
+*.log
+*.out
+*.bak
+*.bak-*
+*.tmp
+*.orig
+*.rej
+/tmp/
+/scratch/
+ae_trace_crash.log
+
+# CMake/NDK build trees and compiled helpers.
+/third_party/*build*/
+/third_party/sdl3-android-build/
+*.pch
+*.pdb
+*.bin
+*.dat
+/tools/storm_dbg
+/tools/adrenotools_probe
+/tools/storm_probe
+/tools/vk_probe

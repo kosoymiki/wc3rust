@@ -1,0 +1,10 @@
+[package]
+name = "wc3-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay format, command log, checksums and lockstep session"
+
+[dependencies]
+glam = { workspace = true }
+wc3-sim = { path = "../wc3-sim" }
