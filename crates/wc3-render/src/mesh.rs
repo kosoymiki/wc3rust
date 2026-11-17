@@ -636,8 +636,8 @@ fn contact_scale(world_y: f32) -> f32 {
         return 1.0;
     }
     let t = clamp((world_y - draw.contact.x) / max(draw.contact.y, 0.001), 0.0, 1.0);
-    let smooth = t * t * (3.0 - 2.0 * t);
-    return mix(draw.contact.z, 1.0, smooth);
+    let eased = t * t * (3.0 - 2.0 * t);
+    return mix(draw.contact.z, 1.0, eased);
 }
 
 /// Atmospheric fog: linear distance ramp from `fog_range.x` to `fog_range.y`,
@@ -2701,7 +2701,9 @@ mod tests {
         // weights 8 = 60 bytes (two texture-coordinate sets, as the engine's
         // two texture units require).
         assert_eq!(std::mem::size_of::<MeshVertex>(), 60);
-        assert_eq!(std::mem::size_of::<DrawParams>(), 96);
+        // Per-draw uniform: world 64 + tint 16 + flags 16 + contact 16 = 112,
+        // which is also what the WGSL `Draw` struct costs (`draw_uniform_matches_wgsl`).
+        assert_eq!(std::mem::size_of::<DrawParams>(), 112);
         assert_eq!(VERTEX_STRIDE, 60);
     }
 

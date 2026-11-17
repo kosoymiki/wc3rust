@@ -1651,6 +1651,13 @@ fn run() -> Result<(), String> {
                     last_frame_at = Instant::now();
                     log("P0_SURFACE_WATCHDOG recreated after 1.5 s without a frame");
                 }
+                // A starved queue must not stop the match: the acquire timeout
+                // (2 s, third_party/wgpu-hal) returns here, so advance the sim
+                // while the surface is being rebuilt.
+                game.update(1.0 / 60.0);
+                for line in game.take_log() {
+                    log(&line);
+                }
                 continue;
             }
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
