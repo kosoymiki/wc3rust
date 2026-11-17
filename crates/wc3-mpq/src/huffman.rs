@@ -5,8 +5,15 @@
 //! links instead of C# object references so the parent/child/next/prev cycles
 //! do not leak.
 
-#[derive(Debug)]
-pub struct HuffmanError;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HuffmanError {
+    /// The stream is malformed: unknown compression type, truncated bit stream
+    /// or an impossible tree walk.
+    Malformed,
+    /// The stream expands past the output budget handed to the decoder. The
+    /// MPQ layer turns this into [`crate::MpqError::Oversize`].
+    SizeLimit,
+}
 
 const HUFFMAN_PRIME: [&[u8]; 9] = [
     &[
@@ -303,11 +310,11 @@ impl Tree {
     fn decode(&self, head: usize, bits: &mut Bits<'_>) -> Result<i32, HuffmanError> {
         let mut node = head;
         while let Some(child0) = self.nodes[node].child0 {
-            let bit = bits.read(1).ok_or(HuffmanError)?;
+            let bit = bits.read(1).ok_or(HuffmanError::Malformed)?;
             node = if bit == 0 {
                 child0
             } else {
-                self.nodes[child0].prev.ok_or(HuffmanError)?
+                self.nodes[child0].prev.ok_or(HuffmanError::Malformed)?
             };
         }
         Ok(self.nodes[node].value)
@@ -351,13 +358,19 @@ impl<'a> Bits<'a> {
     }
 }
 
-/// Decompress a Huffman stream. `data[0]` is the WC3 Huffman compression type
-/// (1..=8); the remaining bytes are the adaptive-Huffman bit stream.
-pub fn decompress(data: &[u8]) -> Result<Vec<u8>, HuffmanError> {
-    let comptype = *data.first().ok_or(HuffmanError)? as usize;
+/// Decompress a Huffman stream with a hard output budget.
+///
+/// `max_output` bounds the produced bytes (the MPQ layer passes the unit's
+/// declared size); the stream is rejected with [`HuffmanError::SizeLimit`]
+/// rather than buffering an unbounded expansion.
+pub fn decompress_limited(data: &[u8], max_output: usize) -> Result<Vec<u8>, HuffmanError> {
+    let comptype = *data.first().ok_or(HuffmanError::Malformed)? as usize;
     if comptype == 0 || comptype >= HUFFMAN_PRIME.len() {
-        return Err(HuffmanError);
+        return Err(HuffmanError::Malformed);
     }
+    // The historical 8 MiB ceiling stays as a second backstop: no real WC3
+    // Huffman sector approaches it, and both bounds are enforced.
+    let budget = max_output.min(8 * 1024 * 1024);
     let (mut tree, mut tail) = Tree::build_list(HUFFMAN_PRIME[comptype]);
     let head = tree.build_tree(tail);
     let mut bits = Bits::new(&data[1..]);
@@ -367,15 +380,25 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, HuffmanError> {
         match value {
             256 => return Ok(out),
             257 => {
-                let byte = bits.read(8).ok_or(HuffmanError)? as u8;
+                let byte = bits.read(8).ok_or(HuffmanError::Malformed)? as u8;
                 out.push(byte);
                 tail = tree.insert_node(tail, byte as i32);
             }
             other if (0..=255).contains(&other) => out.push(other as u8),
-            _ => return Err(HuffmanError),
+            _ => return Err(HuffmanError::Malformed),
         }
-        if out.len() > 8 * 1024 * 1024 {
-            return Err(HuffmanError);
+        if out.len() > budget {
+            return Err(HuffmanError::SizeLimit);
         }
     }
+}
+
+/// Decompress a Huffman stream. `data[0]` is the WC3 Huffman compression type
+/// (1..=8); the remaining bytes are the adaptive-Huffman bit stream.
+///
+/// Standalone callers get [`MAX_FILE_SIZE`](crate::MAX_FILE_SIZE) as the output
+/// budget (capped at the historical 8 MiB); the MPQ read path calls
+/// [`decompress_limited`] with the declared unit size instead.
+pub fn decompress(data: &[u8]) -> Result<Vec<u8>, HuffmanError> {
+    decompress_limited(data, crate::MAX_FILE_SIZE as usize)
 }

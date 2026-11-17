@@ -99,6 +99,37 @@ pub const MPQ_COMPRESSION_HUFFMANN_ADPCM_STEREO: u32 = 0x81;
 /// hash-table probe loop and any zero-fill.
 const MAX_TABLE_ENTRIES: u32 = 8 << 20;
 
+/// Hard ceiling on one decoded MPQ file: the declared `size` and
+/// `compressed_size` of a block, and therefore any buffer the reader allocates
+/// for it.
+///
+/// The archive format itself allows `u32::MAX`, which is 4 GiB of address space
+/// from a 16-byte block-table entry — the input is untrusted (maps and archives
+/// are user-supplied), so the reader refuses anything above this ceiling with
+/// [`MpqError::SizeLimitExceeded`] before allocating.
+///
+/// 512 MiB is far above every shipped Warcraft III entry (measured by
+/// `largest_shipped_entry_is_below_the_cap`: the largest block is 10 416 294 B
+/// in `War3x.mpq`, 6 591 551 B in `War3.mpq` and 1 236 952 B in
+/// `War3xlocal.mpq`, out of 287 MB / 418 MB / 51 MB archives). It leaves room
+/// for custom-map payloads while keeping a single allocation survivable on a
+/// phone.
+pub const MAX_FILE_SIZE: u64 = 512 << 20;
+
+/// Hard ceiling on one decoded sector / single-unit output.
+///
+/// The MPQ header stores the sector size as a shift that `open` validates to
+/// `<= 15`, so `512 << 15` = 16 MiB is the largest sector any archive can
+/// declare; a decode stage that wants more than that is malformed.
+pub const MAX_SECTOR_SIZE: usize = 512 << 15;
+
+/// Upper bound on the `(sector_count + 1) * 4` offset table.
+///
+/// `MAX_FILE_SIZE / 512` sectors is the most a legal file can have (the
+/// smallest sector shift is 0), so the table itself stays below 4 MiB and the
+/// count can never overflow `usize` on a 32-bit Android target.
+pub(crate) const MAX_SECTORS: usize = (MAX_FILE_SIZE / 512) as usize;
+
 /// Canonical Warcraft III file names probed when a map archive has no
 /// `(listfile)`. Order matters only for reporting; every entry is a pure hash
 /// lookup against the archive hash table.
@@ -160,6 +191,19 @@ pub enum MpqError {
     Deleted(String),
     UnsupportedCompression(u32),
     Corrupt(&'static str),
+    /// A declared size (block `size`/`compressed_size`, sector table, decoded
+    /// output) exceeds the reader's hard resource limit.
+    ///
+    /// `requested` is what the archive asked for, `limit` the ceiling from
+    /// [`MAX_FILE_SIZE`] / [`MAX_SECTOR_SIZE`]. The reader rejects the entry
+    /// before allocating, so a hostile header cannot drive an OOM.
+    SizeLimitExceeded { requested: u64, limit: u64 },
+    /// A codec stage produced more bytes than the unit declared (`expected`).
+    ///
+    /// Decoding is bounded by the declared size, so the stream is rejected at
+    /// the cap instead of being buffered; a valid MPQ unit never exceeds its
+    /// block-table `size`.
+    Oversize { expected: u64 },
     /// An index was supplied for an archive whose block table has changed.
     StaleIndex,
 }
@@ -176,6 +220,14 @@ impl fmt::Display for MpqError {
                 write!(f, "unsupported MPQ compression bits 0x{codec:04x}")
             }
             Self::Corrupt(why) => write!(f, "corrupt MPQ: {why}"),
+            Self::SizeLimitExceeded { requested, limit } => write!(
+                f,
+                "MPQ size limit exceeded: {requested} bytes requested, hard limit {limit}"
+            ),
+            Self::Oversize { expected } => write!(
+                f,
+                "MPQ decompressed unit exceeds its declared size of {expected} bytes"
+            ),
             Self::StaleIndex => write!(
                 f,
                 "MPQ index does not match this archive (block table changed)"
@@ -906,7 +958,7 @@ impl MpqArchive {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => out.extend_from_slice(&chunk[..n]),
-                Err(err) => return Err(MpqError::Corrupt(leak_static(err))),
+                Err(err) => return Err(restore_sector_error(err)),
             }
         }
         Ok(out)
@@ -940,7 +992,7 @@ impl MpqArchive {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => out.extend_from_slice(&chunk[..n]),
-                Err(err) => return Err(MpqError::Corrupt(leak_static(err))),
+                Err(err) => return Err(restore_sector_error(err)),
             }
         }
         Ok(())
@@ -969,6 +1021,10 @@ impl MpqArchive {
         if block.flags & MPQ_FILE_EXISTS == 0 {
             return Err(MpqError::FileNotFound(normalized.to_string()));
         }
+        // Validate the declared sizes before any caller reserves a buffer:
+        // `size` and `compressed_size` come straight from the block table and a
+        // crafted entry can name 4 GiB. See [`MAX_FILE_SIZE`].
+        check_block_sizes(block)?;
         Ok(())
     }
 
@@ -988,7 +1044,7 @@ impl MpqArchive {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => out.extend_from_slice(&chunk[..n]),
-                Err(err) => return Err(MpqError::Corrupt(leak_static(err))),
+                Err(err) => return Err(restore_sector_error(err)),
             }
         }
         Ok((out, reader.codecs()))
@@ -1026,6 +1082,23 @@ impl MpqArchive {
     }
 }
 
+/// Validate the declared sizes of one block-table entry against the hard
+/// resource limits before anybody allocates for it.
+///
+/// `size` and `compressed_size` are untrusted `u32`s from the archive; the
+/// block table itself is only 16 bytes per entry, so a hostile 16-byte entry
+/// would otherwise be able to request a 4 GiB buffer.
+fn check_block_sizes(block: BlockEntry) -> Result<(), MpqError> {
+    let requested = (block.size as u64).max(block.compressed_size as u64);
+    if requested > MAX_FILE_SIZE {
+        return Err(MpqError::SizeLimitExceeded {
+            requested,
+            limit: MAX_FILE_SIZE,
+        });
+    }
+    Ok(())
+}
+
 /// Decode one unit by flags and tag; see [`MpqArchive::decompress_into`].
 fn decompress_unit(
     data: &[u8],
@@ -1036,6 +1109,15 @@ fn decompress_unit(
     usage: &mut CodecUsage,
 ) -> Result<(), MpqError> {
     out.clear();
+    // `expected` is the unit's declared output size and doubles as the hard
+    // decode budget: no stage may append more than this. It is validated here
+    // so a caller cannot pass an unchecked size from the block table.
+    if expected as u64 > MAX_FILE_SIZE {
+        return Err(MpqError::SizeLimitExceeded {
+            requested: expected as u64,
+            limit: MAX_FILE_SIZE,
+        });
+    }
     let compressed = flags & MPQ_FILE_COMPRESS != 0;
     let implode = flags & MPQ_FILE_IMPLODE != 0;
     if !compressed && !implode {
@@ -1044,8 +1126,12 @@ fn decompress_unit(
         return Ok(());
     }
     if implode && !compressed {
-        let bytes = pkware::explode(data)
-            .map_err(|_| MpqError::Corrupt("PKWARE explode failed"))?;
+        let bytes = pkware::explode_limited(data, expected).map_err(|err| match err {
+            pkware::ExplodeError::SizeLimit => MpqError::Oversize {
+                expected: expected as u64,
+            },
+            pkware::ExplodeError::Malformed => MpqError::Corrupt("PKWARE explode failed"),
+        })?;
         out.extend_from_slice(&bytes[..bytes.len().min(expected)]);
         usage.merge(CodecUsage(CodecUsage::PKWARE));
         return Ok(());
@@ -1071,6 +1157,15 @@ fn decompress_unit(
     let tag = data[0] as u32;
     let payload = &data[1..];
     decode_v0_mask(tag, payload, expected, out, usage)?;
+    // Symmetric size check: the declared size is a hard limit in both
+    // directions. A short unit is tolerated only for the stored fallback
+    // (`out == payload`, i.e. the codec declined and the bytes were copied);
+    // an over-long unit is never valid and used to be accepted silently.
+    if out.len() > expected {
+        return Err(MpqError::Oversize {
+            expected: expected as u64,
+        });
+    }
     if out.len() < expected && out.len() != payload.len() {
         return Err(MpqError::Corrupt(
             "decompressed sector shorter than expected",
@@ -1124,13 +1219,23 @@ fn decode_v0_mask(
     Ok(())
 }
 
-/// Decode a single codec stage. All five Warcraft III codecs are
-/// size-agnostic; the expected output length only sizes the buffer.
+/// Decode a single codec stage.
+///
+/// Every Warcraft III codec is size-agnostic (the stream carries no output
+/// length), so `expected` — the unit's declared output size from the block
+/// table — is enforced as a hard budget: each decoder stops at `expected + 1`
+/// bytes and the stage is rejected with [`MpqError::Oversize`] if it wants
+/// more. Without that cap a 26-byte zlib stream can inflate to 4 KiB (or a
+/// few MiB to gigabytes) and grow the process past the declared size.
 fn decode_one(codec: u32, payload: &[u8], expected: usize) -> Result<Vec<u8>, MpqError> {
     match codec {
         MPQ_COMPRESSION_ZLIB => {
-            let mut out = Vec::with_capacity(expected);
-            let mut decoder = flate2::read::ZlibDecoder::new(payload);
+            // `take(expected + 1)`: `read_to_end` can never hand the decoder
+            // more than one byte past the declared size, so the failure mode is
+            // a typed error, not an unbounded allocation.
+            let budget = (expected as u64).saturating_add(1);
+            let mut decoder = flate2::read::ZlibDecoder::new(payload).take(budget);
+            let mut out = Vec::with_capacity(expected.min(64 * 1024));
             if let Err(err) = decoder.read_to_end(&mut out) {
                 if out.is_empty() {
                     // Sectors that do not compress are stored verbatim.
@@ -1138,23 +1243,56 @@ fn decode_one(codec: u32, payload: &[u8], expected: usize) -> Result<Vec<u8>, Mp
                 }
                 return Err(MpqError::Io(err));
             }
+            if out.len() > expected {
+                return Err(MpqError::Oversize {
+                    expected: expected as u64,
+                });
+            }
             Ok(out)
         }
-        MPQ_COMPRESSION_PKWARE => pkware::explode(payload)
-            .map_err(|_| MpqError::Corrupt("PKWARE explode failed")),
-        MPQ_COMPRESSION_HUFFMANN => huffman::decompress(payload)
-            .map_err(|_| MpqError::Corrupt("Huffman decode failed")),
-        MPQ_COMPRESSION_ADPCM_MONO => Ok(adpcm::decompress(payload, 1)),
-        MPQ_COMPRESSION_ADPCM_STEREO => Ok(adpcm::decompress(payload, 2)),
+        MPQ_COMPRESSION_PKWARE => pkware::explode_limited(payload, expected).map_err(|err| {
+            match err {
+                pkware::ExplodeError::SizeLimit => MpqError::Oversize {
+                    expected: expected as u64,
+                },
+                pkware::ExplodeError::Malformed => MpqError::Corrupt("PKWARE explode failed"),
+            }
+        }),
+        MPQ_COMPRESSION_HUFFMANN => huffman::decompress_limited(payload, expected).map_err(
+            |err| match err {
+                huffman::HuffmanError::SizeLimit => MpqError::Oversize {
+                    expected: expected as u64,
+                },
+                huffman::HuffmanError::Malformed => MpqError::Corrupt("Huffman decode failed"),
+            },
+        ),
+        // ADPCM output is derived from the input length (at most one i16 per
+        // payload byte plus one header sample per channel), so it cannot
+        // amplify; the caller still checks the result against `expected`.
+        MPQ_COMPRESSION_ADPCM_MONO => adpcm::decompress(payload, 1),
+        MPQ_COMPRESSION_ADPCM_STEREO => adpcm::decompress(payload, 2),
         other => Err(MpqError::UnsupportedCompression(other)),
     }
 }
 
-/// Sector readers report `io::Error`; the public error type wants `&'static str`.
-/// Payload corruption after a successful `pread` is always structural, so a
-/// fixed message is accurate and keeps `MpqError` allocation-free.
-fn leak_static(err: io::Error) -> &'static str {
-    match err.kind() {
+/// Sector readers report `io::Error`; the public error type wants a structured
+/// [`MpqError`]. `MpqFileReader::read` wraps the original error inside the
+/// `io::Error`, so the typed cause (`Oversize`, `SizeLimitExceeded`,
+/// `Corrupt`) survives the `Read` boundary; anything else is mapped to the
+/// same fixed message this crate used before.
+fn restore_sector_error(err: io::Error) -> MpqError {
+    let kind = err.kind();
+    match err.into_inner() {
+        Some(inner) => match inner.downcast::<MpqError>() {
+            Ok(mpq) => *mpq,
+            Err(_) => MpqError::Corrupt(leak_kind(kind)),
+        },
+        None => MpqError::Corrupt(leak_kind(kind)),
+    }
+}
+
+fn leak_kind(kind: io::ErrorKind) -> &'static str {
+    match kind {
         io::ErrorKind::UnexpectedEof => "archive ended inside a sector",
         io::ErrorKind::InvalidData => "corrupt sector payload",
         _ => "sector read failed",
@@ -1432,5 +1570,552 @@ mod tests {
             asked as f64 / (1024.0 * 1024.0),
             archive.storm_cache_bytes()
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // AUD-003 — decompression output is bounded by the declared size.
+    // ---------------------------------------------------------------------
+
+    /// Compress with the same zlib flavour Storm uses (RFC 1950 wrapper).
+    fn zlib(plain: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(plain).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// A v0 compression unit: the codec bit mask byte followed by the payload.
+    fn unit(tag: u32, payload: &[u8]) -> Vec<u8> {
+        let mut data = vec![tag as u8];
+        data.extend_from_slice(payload);
+        data
+    }
+
+    fn decode(data: &[u8], expected: usize) -> Result<Vec<u8>, MpqError> {
+        let mut out = Vec::new();
+        let mut usage = CodecUsage::default();
+        decompress_unit(data, MPQ_FILE_COMPRESS, expected, data.len(), &mut out, &mut usage)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn aud003_zlib_output_exactly_expected_is_accepted() {
+        let plain = vec![b'm'; 512];
+        let sector = unit(MPQ_COMPRESSION_ZLIB, &zlib(&plain));
+        assert_eq!(decode(&sector, plain.len()).expect("exact size"), plain);
+
+        // The last sector of a file is shorter than the sector size; the unit
+        // is still accepted when its output matches the declared remainder.
+        let tail = vec![b't'; 137];
+        let sector = unit(MPQ_COMPRESSION_ZLIB, &zlib(&tail));
+        assert_eq!(decode(&sector, tail.len()).expect("short tail"), tail);
+    }
+
+    #[test]
+    fn aud003_zlib_output_one_byte_over_declared_is_rejected() {
+        let plain = vec![b'x'; 4096];
+        let sector = unit(MPQ_COMPRESSION_ZLIB, &zlib(&plain));
+        // Declare one byte less than the stream actually contains.
+        let err = decode(&sector, plain.len() - 1).expect_err("expected+1 must fail");
+        assert!(
+            matches!(err, MpqError::Oversize { expected } if expected == plain.len() as u64 - 1),
+            "unexpected error: {err}"
+        );
+        // One byte over is the boundary: the same stream with the correct size
+        // still decodes.
+        assert_eq!(decode(&sector, plain.len()).unwrap().len(), plain.len());
+    }
+
+    #[test]
+    fn aud003_zlib_output_far_over_declared_is_rejected() {
+        // 32 MiB of zeros compress to a few hundred KiB: a ~100x amplification
+        // that a crafted sector can pair with a tiny declared size. The decoder
+        // must stop at the declared size (`take(expected + 1)`) instead of
+        // materialising the whole expansion.
+        let huge = vec![0u8; 32 * 1024 * 1024];
+        let compressed = zlib(&huge);
+        assert!(
+            compressed.len() < 512 * 1024,
+            "zlib stream is {} B for {} B of input",
+            compressed.len(),
+            huge.len()
+        );
+        let sector = unit(MPQ_COMPRESSION_ZLIB, &compressed);
+        // The declared size stays above the compressed unit (so the unit is a
+        // real decode, not a stored sector) and far below the 32 MiB expansion.
+        let expected = 1024 * 1024;
+        let err = decode(&sector, expected).expect_err("far oversize must fail");
+        assert!(
+            matches!(err, MpqError::Oversize { expected: reported } if reported as usize == expected),
+            "unexpected error: {err}"
+        );
+        // The same stream with the correct declared size is accepted, so the
+        // rejection is about the declaration, not about the data.
+        let decoded = decode(&sector, huge.len()).expect("declared size honoured");
+        assert_eq!(decoded.len(), huge.len());
+        assert!(decoded.iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn aud003_multi_codec_chain_decodes_each_stage_within_budget() {
+        // A real WC3 chain shape: zlib, then ADPCM-mono (the archive census
+        // reads `zlib+adpcm-mono+huffman` files). The zlib stream expands the
+        // ADPCM payload, which the ADPCM stage turns into PCM.
+        let mut adpcm_stream = vec![0u8; 6];
+        adpcm_stream[1] = 0; // shift 0
+        adpcm_stream.extend((0..4096).map(|i| (i % 0x7f) as u8));
+        let pcm = adpcm::decompress(&adpcm_stream, 1).expect("standalone decode");
+        let sector = unit(
+            MPQ_COMPRESSION_ZLIB | MPQ_COMPRESSION_ADPCM_MONO,
+            &zlib(&adpcm_stream),
+        );
+        let chained = decode(&sector, pcm.len()).expect("chain decodes");
+        assert_eq!(chained, pcm, "chain output matches the standalone decoder");
+        assert_eq!(chained.len(), pcm.len());
+
+        // Any stage that would exceed the declared output is rejected. The
+        // declared size must stay below the unit length so the stored-sector
+        // fast path does not apply.
+        let err = decode(&sector, pcm.len() - 1).expect_err("chain oversize");
+        assert!(matches!(err, MpqError::Oversize { .. }), "{err}");
+        let err = decode(&sector, 2048).expect_err("chain far oversize");
+        assert!(matches!(err, MpqError::Oversize { .. }), "{err}");
+    }
+
+    #[test]
+    fn aud003_malformed_mask_is_rejected_before_decoding() {
+        // Bits outside the five WC3 handlers (bzip2 0x10 here) must fail the
+        // whole unit up front; the zlib bit alone would otherwise decode.
+        let plain = vec![b'a'; 4096];
+        let sector = unit(MPQ_COMPRESSION_ZLIB | MPQ_COMPRESSION_BZIP2, &zlib(&plain));
+        assert!(sector.len() < plain.len(), "unit must be a real decode");
+        let err = decode(&sector, plain.len()).expect_err("mask with bzip2 must fail");
+        assert!(
+            matches!(err, MpqError::UnsupportedCompression(tag)
+                if tag == MPQ_COMPRESSION_ZLIB | MPQ_COMPRESSION_BZIP2),
+            "unexpected error: {err}"
+        );
+        // The same unit without the unsupported bit decodes.
+        let ok = unit(MPQ_COMPRESSION_ZLIB, &zlib(&plain));
+        assert_eq!(decode(&ok, plain.len()).unwrap(), plain);
+    }
+
+    #[test]
+    fn aud003_stored_sector_fallback_is_preserved() {
+        // A sector whose compressed length is not smaller than the declared
+        // output is stored verbatim (declared_len >= expected).
+        let plain = b"not compressed at all";
+        let out = decode(plain, plain.len()).expect("stored sector must read");
+        assert_eq!(out, plain);
+
+        // Non-zlib bytes behind a zlib tag with a larger declared size: the
+        // decoder declines immediately and the payload is copied verbatim
+        // (StormLib's stored fallback; the unit ends up `out == payload`).
+        let garbage = unit(MPQ_COMPRESSION_ZLIB, b"plain bytes, not deflate");
+        let out = decode(&garbage, 40).expect("stored fallback");
+        assert_eq!(out, b"plain bytes, not deflate");
+    }
+
+    #[test]
+    fn aud003_zero_sector_is_sparse_without_allocation_above_the_declaration() {
+        let mut out = Vec::new();
+        let mut usage = CodecUsage::default();
+        decompress_unit(&[], MPQ_FILE_COMPRESS, 8192, 0, &mut out, &mut usage)
+            .expect("zero sector");
+        assert_eq!(out, vec![0u8; 8192]);
+        assert!(usage.has(CodecUsage::ZERO));
+    }
+
+    #[test]
+    fn aud003_declared_size_above_the_cap_is_rejected() {
+        // The declared-size guard rejects before any decode/allocation, so the
+        // unit is refused with a typed error rather than driving an OOM.
+        let mut out = Vec::new();
+        let mut usage = CodecUsage::default();
+        let err = decompress_unit(
+            b"x",
+            MPQ_FILE_COMPRESS,
+            (MAX_FILE_SIZE + 1) as usize,
+            1,
+            &mut out,
+            &mut usage,
+        )
+        .expect_err("over-cap unit must be rejected");
+        assert!(
+            matches!(err, MpqError::SizeLimitExceeded { requested, limit }
+                if requested == MAX_FILE_SIZE + 1 && limit == MAX_FILE_SIZE),
+            "unexpected error: {err}"
+        );
+
+        // Block-table guard: exactly at the cap is allowed, one byte over is
+        // not (no allocation happens in either call).
+        let entry = |size: u32| BlockEntry {
+            offset: 0,
+            compressed_size: size,
+            size,
+            flags: MPQ_FILE_EXISTS,
+        };
+        check_block_sizes(entry(MAX_FILE_SIZE as u32)).expect("cap boundary is legal");
+        assert!(matches!(
+            check_block_sizes(entry(MAX_FILE_SIZE as u32 + 1)),
+            Err(MpqError::SizeLimitExceeded { .. })
+        ));
+    }
+
+    // ------------------------- synthetic archives -------------------------
+
+    struct TestEntry {
+        name: Option<&'static str>,
+        data: Vec<u8>,
+        size: u32,
+        compressed_size: u32,
+        flags: u32,
+    }
+
+    /// Encrypt one MPQ table (`decrypt_words` inverted): the same seed walk
+    /// with the plaintext word producing the ciphertext.
+    fn encrypt_words(data: &mut [u32], key: u32) {
+        let table = crypt_table();
+        let mut seed1 = key;
+        let mut seed2: u32 = 0xEEEE_EEEE;
+        for word in data.iter_mut() {
+            seed2 = seed2.wrapping_add(table[0x400 + (seed1 & 0xFF) as usize]);
+            let plain = *word;
+            *word = plain ^ seed1.wrapping_add(seed2);
+            seed1 = ((!seed1 << 21).wrapping_add(0x1111_1111)) | (seed1 >> 11);
+            seed2 = plain
+                .wrapping_add(seed2)
+                .wrapping_add(seed2 << 5)
+                .wrapping_add(3);
+        }
+    }
+
+    /// Minimal MPQ v0 writer: header, encrypted hash/block tables, payloads.
+    /// Test-only; it exists to drive the reader through real archive layouts
+    /// (sector tables, stored sectors, over-cap block entries).
+    fn build_archive(sector_shift: u16, entries: &[TestEntry]) -> Vec<u8> {
+        let hash_count: u32 = 16;
+        let hash_pos = 32u32;
+        let block_pos = hash_pos + hash_count * 16;
+        let data_pos = block_pos + entries.len() as u32 * 16;
+        let mut cursor = data_pos;
+        let mut offsets = Vec::with_capacity(entries.len());
+        for entry in entries {
+            offsets.push(cursor);
+            cursor = cursor
+                .checked_add(entry.data.len() as u32)
+                .expect("test archive too large");
+        }
+
+        let mut hash = vec![0u32; (hash_count * 4) as usize];
+        for slot in 0..hash_count as usize {
+            hash[slot * 4 + 3] = 0xFFFF_FFFF; // empty slot marker
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            let Some(name) = entry.name else { continue };
+            let upper = name.to_ascii_uppercase();
+            let mut slot = (hash_string(upper.as_bytes(), 0) & (hash_count - 1)) as usize;
+            while hash[slot * 4 + 3] != 0xFFFF_FFFF {
+                slot = (slot + 1) % hash_count as usize;
+            }
+            hash[slot * 4] = hash_string(upper.as_bytes(), 1);
+            hash[slot * 4 + 1] = hash_string(upper.as_bytes(), 2);
+            hash[slot * 4 + 2] = 0; // locale + platform neutral
+            hash[slot * 4 + 3] = index as u32;
+        }
+
+        let mut block = vec![0u32; entries.len() * 4];
+        for (index, entry) in entries.iter().enumerate() {
+            block[index * 4] = offsets[index];
+            block[index * 4 + 1] = entry.compressed_size;
+            block[index * 4 + 2] = entry.size;
+            block[index * 4 + 3] = entry.flags;
+        }
+
+        let mut out = vec![0u8; cursor as usize];
+        out[0..4].copy_from_slice(MPQ_MAGIC);
+        out[4..8].copy_from_slice(&32u32.to_le_bytes());
+        out[8..12].copy_from_slice(&(cursor).to_le_bytes());
+        out[12..14].copy_from_slice(&0u16.to_le_bytes());
+        out[14..16].copy_from_slice(&sector_shift.to_le_bytes());
+        out[16..20].copy_from_slice(&hash_pos.to_le_bytes());
+        out[20..24].copy_from_slice(&block_pos.to_le_bytes());
+        out[24..28].copy_from_slice(&hash_count.to_le_bytes());
+        out[28..32].copy_from_slice(&(entries.len() as u32).to_le_bytes());
+
+        encrypt_words(&mut hash, hash_string(b"(hash table)", 3));
+        encrypt_words(&mut block, hash_string(b"(block table)", 3));
+        for (i, word) in hash.iter().enumerate() {
+            out[(hash_pos as usize + i * 4)..(hash_pos as usize + i * 4 + 4)]
+                .copy_from_slice(&word.to_le_bytes());
+        }
+        for (i, word) in block.iter().enumerate() {
+            out[(block_pos as usize + i * 4)..(block_pos as usize + i * 4 + 4)]
+                .copy_from_slice(&word.to_le_bytes());
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            let start = offsets[index] as usize;
+            out[start..start + entry.data.len()].copy_from_slice(&entry.data);
+        }
+        out
+    }
+
+    /// Compress `plain` into MPQ sectors (storing a sector when compression
+    /// does not shrink it), returning the block payload and declared size.
+    fn zlib_sectors(plain: &[u8], sector_size: usize) -> (Vec<u8>, u32) {
+        let count = plain.len().div_ceil(sector_size);
+        let mut sectors: Vec<Vec<u8>> = Vec::with_capacity(count);
+        for index in 0..count {
+            let start = index * sector_size;
+            let end = (start + sector_size).min(plain.len());
+            let chunk = &plain[start..end];
+            let unit = unit(MPQ_COMPRESSION_ZLIB, &zlib(chunk));
+            sectors.push(if unit.len() < chunk.len() {
+                unit
+            } else {
+                chunk.to_vec()
+            });
+        }
+        let table_bytes = (count + 1) * 4;
+        let mut data = vec![0u8; table_bytes];
+        let mut offset = table_bytes;
+        for (index, sector) in sectors.iter().enumerate() {
+            data[index * 4..index * 4 + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(sector);
+            offset += sector.len();
+        }
+        data[count * 4..count * 4 + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+        (data, plain.len() as u32)
+    }
+
+    fn open_archive(tag: &str, bytes: &[u8]) -> (PathBuf, MpqArchive) {
+        let path = std::env::temp_dir().join(format!(
+            "wc3-mpq-audit-{}-{tag}.mpq",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write test archive");
+        let archive = MpqArchive::open(&path).expect("open test archive");
+        (path, archive)
+    }
+
+    #[test]
+    fn aud003_oversize_sector_in_a_real_archive_is_a_typed_error() {
+        // One 4096-byte sector is declared, but its zlib stream really holds
+        // 8192 bytes. The archive must report `Oversize`, not return a corrupt
+        // buffer.
+        let sector = unit(MPQ_COMPRESSION_ZLIB, &zlib(&vec![b'a'; 8192]));
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&8u32.to_le_bytes());
+        data[4..8].copy_from_slice(&(8 + sector.len() as u32).to_le_bytes());
+        data.extend_from_slice(&sector);
+        let entries = vec![TestEntry {
+            name: Some("oversize.bin"),
+            compressed_size: data.len() as u32,
+            data,
+            size: 4096,
+            flags: MPQ_FILE_EXISTS | MPQ_FILE_COMPRESS,
+        }];
+        let bytes = build_archive(3, &entries);
+        let (path, archive) = open_archive("oversize-sector", &bytes);
+        let err = archive.read("oversize.bin").expect_err("must reject oversize");
+        assert!(
+            matches!(err, MpqError::Oversize { expected: 4096 }),
+            "unexpected error: {err}"
+        );
+        // The streaming path must fail the same way (no silent truncation).
+        let mut reader = archive.stream("oversize.bin").expect("stream");
+        let mut sink = Vec::new();
+        let streamed = std::io::Read::read_to_end(&mut reader, &mut sink);
+        assert!(streamed.is_err(), "stream must reject the oversize sector");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn aud003_block_entry_above_the_file_size_cap_is_rejected_before_allocating() {
+        // A 16-byte block-table entry declaring 4 GiB: the reader must refuse
+        // it up front (`SizeLimitExceeded`) rather than reserve 4 GiB.
+        let entries = vec![TestEntry {
+            name: Some("huge.bin"),
+            data: b"tiny".to_vec(),
+            size: u32::MAX,
+            compressed_size: u32::MAX,
+            flags: MPQ_FILE_EXISTS | MPQ_FILE_COMPRESS,
+        }];
+        let bytes = build_archive(3, &entries);
+        let (path, archive) = open_archive("over-cap", &bytes);
+        let err = archive.read("huge.bin").expect_err("over-cap block rejected");
+        assert!(
+            matches!(err, MpqError::SizeLimitExceeded { requested, limit }
+                if requested == u32::MAX as u64 && limit == MAX_FILE_SIZE),
+            "unexpected error: {err}"
+        );
+        // `stream` and `read_block` reach the same guard.
+        assert!(matches!(
+            archive.stream("huge.bin"),
+            Err(MpqError::SizeLimitExceeded { .. })
+        ));
+        assert!(matches!(
+            archive.read_block(0),
+            Err(MpqError::SizeLimitExceeded { .. })
+        ));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn aud003_large_but_legitimate_archive_decodes_cover_to_cover() {
+        // 8 MiB, 2048 sectors of 4 KiB: exercises the sector offset table
+        // (2049 entries), the per-sector budget and the full-file assembly.
+        let size = 8 * 1024 * 1024;
+        let plain: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let (payload, declared) = zlib_sectors(&plain, 4096);
+        assert!(
+            (declared as u64) < MAX_FILE_SIZE,
+            "fixture must stay below the hard cap"
+        );
+        let entries = vec![TestEntry {
+            name: Some("large.bin"),
+            compressed_size: payload.len() as u32,
+            data: payload,
+            size: declared,
+            flags: MPQ_FILE_EXISTS | MPQ_FILE_COMPRESS,
+        }];
+        let bytes = build_archive(3, &entries);
+        let (path, archive) = open_archive("large", &bytes);
+        let read = archive.read("large.bin").expect("large file reads");
+        assert_eq!(read.len(), plain.len());
+        assert_eq!(read, plain, "byte-identical round trip");
+
+        // Random access through the streaming reader must agree with `read`.
+        let mut reader = archive.stream("large.bin").expect("stream");
+        let mut streamed = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut streamed).expect("stream read");
+        assert_eq!(streamed, plain);
+        assert!(reader.codecs().has(CodecUsage::ZLIB));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn aud003_stored_sectors_in_a_compressed_file_read_verbatim() {
+        // `MPQ_FILE_COMPRESS` on a multi-sector file whose sectors are not
+        // smaller than the declared output: every sector is stored verbatim
+        // (`declared_len >= expected`, StormLib copies the bytes).
+        let plain: Vec<u8> = (0..9000).map(|i| (i % 251) as u8).collect();
+        let sector_size = 4096usize;
+        let count = plain.len().div_ceil(sector_size);
+        let mut data = vec![0u8; (count + 1) * 4];
+        let mut offset = (count + 1) * 4;
+        for index in 0..count {
+            let start = index * sector_size;
+            let end = (start + sector_size).min(plain.len());
+            data[index * 4..index * 4 + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&plain[start..end]);
+            offset += end - start;
+        }
+        data[count * 4..count * 4 + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+
+        let entries = vec![TestEntry {
+            name: Some("stored.bin"),
+            compressed_size: data.len() as u32,
+            data,
+            size: plain.len() as u32,
+            flags: MPQ_FILE_EXISTS | MPQ_FILE_COMPRESS,
+        }];
+        let bytes = build_archive(3, &entries);
+        let (path, archive) = open_archive("stored", &bytes);
+        let read = archive.read("stored.bin").expect("stored read");
+        assert_eq!(read, plain);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn aud003_zero_length_sector_streams_zeros() {
+        // A compressed multi-sector block where the middle sector has a zero
+        // compressed length: that sector is a sparse run of zeros
+        // (StormLib `SFileReadFile.cpp:203-206`).
+        let mut plain = vec![0xAAu8; 9000];
+        plain[4096..8192].fill(0); // the sparse sector's content
+        let first = unit(MPQ_COMPRESSION_ZLIB, &zlib(&plain[0..4096]));
+        let last = unit(MPQ_COMPRESSION_ZLIB, &zlib(&plain[8192..9000]));
+        let table_bytes = 4 * 4;
+        let mut data = vec![0u8; table_bytes];
+        let mut offset = table_bytes;
+        let write_offset = |index: usize, value: u32, data: &mut Vec<u8>| {
+            data[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        write_offset(0, offset as u32, &mut data);
+        data.extend_from_slice(&first);
+        offset += first.len();
+        // Sector 1 is a zero-length range: offsets[1] == offsets[2].
+        write_offset(1, offset as u32, &mut data);
+        write_offset(2, offset as u32, &mut data);
+        data.extend_from_slice(&last);
+        offset += last.len();
+        write_offset(3, offset as u32, &mut data);
+
+        let entries = vec![TestEntry {
+            name: Some("sparse.bin"),
+            compressed_size: data.len() as u32,
+            data,
+            size: plain.len() as u32,
+            flags: MPQ_FILE_EXISTS | MPQ_FILE_COMPRESS,
+        }];
+        let bytes = build_archive(3, &entries);
+        let (path, archive) = open_archive("sparse", &bytes);
+        let read = archive.read("sparse.bin").expect("sparse read");
+        assert_eq!(read.len(), plain.len());
+        assert_eq!(read, plain, "sparse sector must be zeros");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The hard cap must stay above every shipped Warcraft III entry — the
+    /// limit is a safety net, not a compatibility cut. Measured on the local
+    /// install; the test prints the observed maximum.
+    #[test]
+    fn largest_shipped_entry_is_below_the_cap() {
+        let candidates = [
+            std::env::var_os("WC3_MPQ")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq")
+                }),
+            PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3x.mpq"),
+            PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3xlocal.mpq"),
+        ];
+        let mut checked = 0usize;
+        for path in candidates {
+            if !path.is_file() {
+                continue;
+            }
+            let archive = MpqArchive::open(&path).expect("open shipped archive");
+            let mut max = (0u32, String::new());
+            for index in 0..archive.block_count() as u32 {
+                let Some((_, _, size, flags)) = archive.block_entry(index) else {
+                    continue;
+                };
+                if flags & MPQ_FILE_EXISTS == 0 {
+                    continue;
+                }
+                if size > max.0 {
+                    max = (size, MpqArchive::pseudo_name(index, "bin"));
+                }
+            }
+            println!(
+                "MPQ_MAX_BLOCK {}: {} bytes ({})",
+                path.display(),
+                max.0,
+                max.1
+            );
+            assert!(
+                max.0 as u64 <= MAX_FILE_SIZE,
+                "{} declares a {}-byte entry above the {MAX_FILE_SIZE}-byte cap",
+                path.display(),
+                max.0
+            );
+            checked += 1;
+        }
+        if checked == 0 {
+            eprintln!("skipping: no shipped archive fixture available");
+        }
     }
 }

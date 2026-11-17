@@ -35,8 +35,15 @@ const CH_CODE_ASC: [u16; 256] = [
     1168, 4064, 2016, 3040, 992, 3552, 1504, 2528, 480, 184, 98, 3808, 1760, 34, 2784, 736, 3296, 1248, 2272, 224, 3936, 1888, 2912, 864, 3424, 1376, 4672, 2400, 352, 3680, 1632, 2656, 15, 592, 56, 608, 80, 3168, 912, 216, 66, 2, 88, 432, 124, 41, 60, 152, 92, 9, 28, 108, 44, 76, 24, 12, 116, 232, 104, 1120, 144, 52, 176, 1808, 2144, 49, 84, 17, 33, 23, 20, 168, 40, 1, 784, 304, 62, 100, 30, 46, 36, 1296, 14, 54, 22, 68, 48, 200, 464, 208, 272, 72, 1552, 336, 96, 136, 4000, 7, 38, 6, 58, 27, 26, 42, 10, 11, 528, 4, 19, 50, 3, 29, 18, 400, 13, 21, 5, 25, 8, 120, 240, 112, 656, 1040, 16, 1952, 2976, 928, 576, 7232, 3136, 5184, 1088, 6208, 2112, 4160, 64, 8064, 3968, 6016, 1920, 7040, 2944, 4992, 896, 7552, 3456, 5504, 1408, 6528, 2432, 4480, 384, 7808, 3712, 5760, 1664, 6784, 2688, 4736, 640, 7296, 3200, 5248, 1152, 6272, 2176, 4224, 128, 7936, 3840, 5888, 1792, 6912, 2816, 4864, 3488, 1440, 2464, 416, 3744, 1696, 2720, 672, 3232, 1184, 2208, 160, 3872, 1824, 2848, 800, 3360, 1312, 2336, 288, 3616, 1568, 2592, 544, 3104, 1056, 2080, 32, 4032, 1984, 3008, 960, 3520, 1472, 2496, 448, 3776, 1728, 2752, 704, 3264, 1216, 2240, 192, 3904, 1856, 2880, 832, 768, 3392, 7424, 3328, 5376, 1344, 1280, 6400, 2304, 2368, 4352, 256, 7680, 3584, 320, 5632, 1536, 6656, 3648, 1600, 2624, 2560, 4608, 512, 7168, 3072, 5120, 1024, 6144, 2048, 4096, 0,
 ];
 
-#[derive(Debug)]
-pub struct ExplodeError;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplodeError {
+    /// The stream is malformed: truncated, bad mode/dictionary bits, or a
+    /// back-reference that reaches before the start of the output.
+    Malformed,
+    /// The stream expands past the output budget handed to the decoder. The
+    /// MPQ layer turns this into [`crate::MpqError::Oversize`].
+    SizeLimit,
+}
 
 struct State<'a> {
     data: &'a [u8],
@@ -56,20 +63,23 @@ struct State<'a> {
     out_buff: [u8; 0x2400],
     output_pos: usize,
     out: Vec<u8>,
+    /// Hard output budget; the decoder stops with [`ExplodeError::SizeLimit`]
+    /// instead of growing without bound.
+    max_output: usize,
 }
 
 impl<'a> State<'a> {
-    fn new(data: &'a [u8]) -> Result<Self, ExplodeError> {
+    fn new(data: &'a [u8], max_output: usize) -> Result<Self, ExplodeError> {
         if data.len() <= 4 {
-            return Err(ExplodeError);
+            return Err(ExplodeError::Malformed);
         }
         let ctype = data[0];
         let dsize_bits = data[1] as u32;
         if !(4..=6).contains(&dsize_bits) {
-            return Err(ExplodeError);
+            return Err(ExplodeError::Malformed);
         }
         if ctype != CMP_BINARY && ctype != CMP_ASCII {
-            return Err(ExplodeError);
+            return Err(ExplodeError::Malformed);
         }
         Ok(Self {
             data,
@@ -89,6 +99,7 @@ impl<'a> State<'a> {
             out_buff: [0; 0x2400],
             output_pos: 0x1000,
             out: Vec::new(),
+            max_output,
         })
     }
 
@@ -244,7 +255,7 @@ impl<'a> State<'a> {
         distance + 1
     }
 
-    fn expand(&mut self) -> u32 {
+    fn expand(&mut self) -> Result<u32, ExplodeError> {
         let result;
         loop {
             let next_literal = self.decode_lit();
@@ -256,12 +267,12 @@ impl<'a> State<'a> {
                 let mut rep_length = next_literal - 0xFE;
                 let minus_dist = self.decode_dist(rep_length);
                 if minus_dist == 0 {
-                    return 0x306;
+                    return Ok(0x306);
                 }
                 let mut target = self.output_pos;
                 let minus = minus_dist as usize;
                 if minus > target {
-                    return 0x306;
+                    return Ok(0x306);
                 }
                 while rep_length > 0 {
                     self.out_buff[target] = self.out_buff[target - minus];
@@ -275,6 +286,12 @@ impl<'a> State<'a> {
             }
             if self.output_pos >= 0x2000 {
                 self.append_flush();
+                // The budget is checked at every 4 KiB flush, so a stream that
+                // expands without bound stops one chunk past the declared size
+                // instead of growing the heap.
+                if self.out.len() > self.max_output {
+                    return Err(ExplodeError::SizeLimit);
+                }
             }
         }
         let tail_start = 0x1000;
@@ -282,7 +299,10 @@ impl<'a> State<'a> {
             let tail = self.out_buff[tail_start..self.output_pos].to_vec();
             self.out.extend_from_slice(&tail);
         }
-        result
+        if self.out.len() > self.max_output {
+            return Err(ExplodeError::SizeLimit);
+        }
+        Ok(result)
     }
 
     fn append_flush(&mut self) {
@@ -296,17 +316,20 @@ impl<'a> State<'a> {
     }
 }
 
-/// Decompress a PKWARE DCL (implode) stream. The MPQ sector byte 0x08 has
-/// already been stripped by the caller; `data` starts with the PKWARE mode and
-/// dictionary-size bytes.
-pub fn explode(data: &[u8]) -> Result<Vec<u8>, ExplodeError> {
-    let mut state = State::new(data)?;
+/// Decompress a PKWARE DCL (implode) stream with a hard output budget.
+///
+/// `max_output` bounds the produced bytes; a stream that expands past it is
+/// rejected with [`ExplodeError::SizeLimit`] instead of growing the heap. The
+/// MPQ layer passes the unit's declared size, so a crafted 1000:1 stream cannot
+/// out-allocate the block table entry.
+pub fn explode_limited(data: &[u8], max_output: usize) -> Result<Vec<u8>, ExplodeError> {
+    let mut state = State::new(data, max_output)?;
     if state.ctype != CMP_BINARY {
         state.gen_asc_tabs();
     }
     State::gen_decode_tabs(&mut state.length_codes, &LEN_CODE, &LEN_BITS);
     State::gen_decode_tabs(&mut state.dist_pos_codes, &DIST_CODE, &DIST_BITS);
-    let result = state.expand();
+    let result = state.expand()?;
     // StormLib's explode() reports CMP_ABORT when the bit reader reaches the
     // end of the input right after the final symbol (0x306) while still
     // producing the complete output. Certified archives hit this on `PKWARE`
@@ -315,9 +338,20 @@ pub fn explode(data: &[u8]) -> Result<Vec<u8>, ExplodeError> {
     // decoded length against the block table, so accepting a non-empty output
     // for 0x306 is safe and keeps the sector readable.
     if result != 0x305 && !(result == 0x306 && !state.out.is_empty()) {
-        return Err(ExplodeError);
+        return Err(ExplodeError::Malformed);
     }
     Ok(state.out)
+}
+
+/// Decompress a PKWARE DCL (implode) stream. The MPQ sector byte 0x08 has
+/// already been stripped by the caller; `data` starts with the PKWARE mode and
+/// dictionary-size bytes.
+///
+/// Standalone callers get [`MAX_FILE_SIZE`](crate::MAX_FILE_SIZE) as the output
+/// budget; the MPQ read path calls [`explode_limited`] with the declared unit
+/// size instead.
+pub fn explode(data: &[u8]) -> Result<Vec<u8>, ExplodeError> {
+    explode_limited(data, crate::MAX_FILE_SIZE as usize)
 }
 
 #[cfg(test)]

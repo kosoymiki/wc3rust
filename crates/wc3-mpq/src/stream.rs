@@ -113,6 +113,10 @@ pub struct MpqFileReader<'a> {
 
 impl<'a> MpqFileReader<'a> {
     pub(crate) fn new(archive: &'a MpqArchive, block: BlockEntry, key: u32, name: &str) -> Result<Self, MpqError> {
+        // Single chokepoint for every decode path: reject a block whose
+        // declared sizes exceed the reader's hard limit before any allocation
+        // happens below (`vec![0; compressed]`, sector-count arithmetic).
+        crate::check_block_sizes(block)?;
         // `MPQ_FILE_IMPLODE` is a solo tag-less PKWARE stream, so a file that
         // carries only that flag still needs the decode path rather than a
         // direct copy.
@@ -182,16 +186,25 @@ impl<'a> MpqFileReader<'a> {
         // Compressed, multi-sector: only the sector offset table is read up
         // front (4 bytes per sector), then sectors are decoded on demand.
         let sector_count = (block.size as usize).div_ceil(reader.sector_size);
-        if sector_count > 1_000_000 {
-            return Err(MpqError::Corrupt("implausible sector count"));
+        if sector_count > crate::MAX_SECTORS {
+            return Err(MpqError::SizeLimitExceeded {
+                requested: sector_count as u64,
+                limit: crate::MAX_SECTORS as u64,
+            });
         }
         // The engine allocates and reads exactly `(sectorCount + 1) * 4` bytes
         // and never touches a `MPQ_FILE_SECTOR_CRC` dword (`0x1501cdcd..0x1501cde8`,
         // `0x15018646`); StormLib's extra CRC entry (`SBaseCommon.cpp:1258-1268`)
         // is a later addition and reading one dword less is byte-identical for
         // the offsets that are used.
-        let table_bytes = (sector_count + 1) * 4;
-        if (block.compressed_size as usize) < (sector_count + 1) * 4 {
+        //
+        // Checked arithmetic: `sector_count` is bounded above, but the
+        // multiplication must not be able to wrap on a 32-bit target.
+        let table_bytes = sector_count
+            .checked_add(1)
+            .and_then(|entries| entries.checked_mul(4))
+            .ok_or(MpqError::Corrupt("sector offset table size overflow"))?;
+        if (block.compressed_size as usize) < table_bytes {
             return Err(MpqError::Corrupt("sector offset table truncated"));
         }
         let mut table = vec![0u8; table_bytes];
@@ -350,7 +363,7 @@ impl Read for MpqFileReader<'_> {
                 ));
             }
             self.ensure_sector(sector)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
             let sector_start = sector as u64 * self.sector_size as u64;
             let within = (self.pos - sector_start) as usize;
             let available = self.sector_buf.len().saturating_sub(within);

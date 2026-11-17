@@ -30,7 +30,8 @@ fn mpqex_codecs_are_wc3_mpq_reexports() {
         wc3_re::mpqex::pkware::explode;
     let _: fn(&[u8]) -> Result<Vec<u8>, wc3_mpq::huffman::HuffmanError> =
         wc3_re::mpqex::huffman::decompress;
-    let _: fn(&[u8], usize) -> Vec<u8> = wc3_re::mpqex::adpcm::decompress;
+    let _: fn(&[u8], usize) -> Result<Vec<u8>, wc3_mpq::MpqError> =
+        wc3_re::mpqex::adpcm::decompress;
 }
 
 #[test]
