@@ -136,18 +136,37 @@ impl SdlEvent {
 type SdlEventFilter = unsafe extern "C" fn(*mut c_void, *mut SdlEvent) -> bool;
 
 /// SDL 3.5.0 does not queue the app lifecycle events; they are delivered only
-/// to `SDL_AddEventWatch` callbacks (`src/events/SDL_events.c:2031-2055` in the
-/// pinned donor). The watcher runs on the SDL event thread, so it only appends
-/// the event type to this small queue; the render loop drains it in order.
+/// to `SDL_AddEventWatch` callbacks (`donors/SDL/src/events/SDL_events.c:2039-2055`
+/// in the pinned donor, commit 4ca1b1c). The Java activity callbacks only
+/// enqueue a lifecycle record (`SDL_android.c:2738-2794`, `nativePause` at
+/// 1559-1565); `SDL_PumpEventsInternal` asserts the main thread
+/// (`SDL_events.c:1549-1552`) and drains that queue in `Android_PumpEvents`
+/// (`SDL_events.c:1570`, `SDL_androidevents.c:214-236` -> 179-200), which calls
+/// `SDL_OnApplicationWillEnterBackground` (`SDL_video.c:6266-6281`) ->
+/// `SDL_PushEvent` -> `SDL_CallEventWatchers` (`SDL_events.c:1849-1870`). The
+/// watcher therefore runs on the thread that calls `SDL_PollEvent`; it only
+/// appends to this small queue, and the render loop drains it in order.
 static LIFECYCLE_QUEUE: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
-/// The live `Game`, registered after construction. It is only dereferenced
-/// inside the event watcher while the render loop is blocked in
-/// `SDL_PumpEvents`, which is exactly SDL's documented lifecycle-handling
-/// point. Cleared before the game is dropped.
+/// The live `Game`, registered after construction. The watcher borrows it only
+/// on the main thread, where `SDL_PumpEvents` synchronously invokes the
+/// callback; `SDL_RemoveEventWatch` cannot overlap an in-flight callback
+/// because dispatch holds `SDL_event_lock` for the whole callback list
+/// (`donors/SDL/src/events/SDL_eventwatch.c:42-80`) and removal takes the same
+/// lock (`112-134`). The pointer is cleared after `SDL_RemoveEventWatch` and
+/// before the game is dropped.
+///
+/// Not every SDL push happens on the main thread (`nativeFocusChanged` runs on
+/// the Java UI thread), so the save branch checks `SDL_IsMainThread` and defers
+/// to the loop when the callback is not on the main thread. `AtomicPtr` only
+/// publishes the address; the exclusion comes from the SDL lock + main-thread
+/// contract documented above.
 static GAME_FOR_CHECKPOINT: AtomicPtr<Game> = AtomicPtr::new(ptr::null_mut());
 /// True when the watcher already wrote the save for the current transition.
 static WATCHER_SAVED: AtomicBool = AtomicBool::new(false);
+/// Set by the watcher when a save-point event arrived on a non-main thread.
+/// The loop consumes it after the pump and writes the checkpoint itself.
+static PENDING_CHECKPOINT: AtomicBool = AtomicBool::new(false);
 /// Tick of the last successful checkpoint write. A second save request for the
 /// same tick (watcher + lifecycle effect, or two pause events in one frame)
 /// produces identical bytes and is skipped instead of storming the disk.
@@ -166,12 +185,19 @@ unsafe extern "C" fn on_sdl_event(_userdata: *mut c_void, event: *mut SdlEvent) 
         queue.push(event_type);
     }
     if event_type == sdl_event::WILL_ENTER_BACKGROUND || event_type == sdl_event::TERMINATING {
-        let game = GAME_FOR_CHECKPOINT.load(Ordering::Acquire);
-        if !game.is_null() {
-            // SAFETY: the watcher runs on the SDL main thread while the render
-            // loop is inside SDL_PumpEvents, so nothing else borrows the game.
-            save_checkpoint(unsafe { &*game });
-            WATCHER_SAVED.store(true, Ordering::Release);
+        // SAFETY: SDL_IsMainThread has no preconditions and is safe from any
+        // thread. The lifecycle save events are pumped on the main thread; a
+        // callback from any other push site must not borrow the game.
+        if unsafe { SDL_IsMainThread() } {
+            let game = GAME_FOR_CHECKPOINT.load(Ordering::Acquire);
+            if !game.is_null() {
+                // SAFETY: the watcher runs on the main thread inside
+                // SDL_PumpEvents, so nothing else borrows the game.
+                save_checkpoint(unsafe { &*game });
+                WATCHER_SAVED.store(true, Ordering::Release);
+            }
+        } else {
+            PENDING_CHECKPOINT.store(true, Ordering::Release);
         }
     }
     true
@@ -244,6 +270,7 @@ unsafe extern "C" {
     fn SDL_GetAndroidActivity() -> *mut c_void;
     fn SDL_PollEvent(event: *mut SdlEvent) -> bool;
     fn SDL_PumpEvents();
+    fn SDL_IsMainThread() -> bool;
     fn SDL_SetHint(name: *const c_char, value: *const c_char) -> bool;
     fn SDL_HasProperty(properties: u32, name: *const c_char) -> bool;
     fn SDL_GetError() -> *const c_char;
@@ -1196,10 +1223,11 @@ fn run() -> Result<(), String> {
     // backend initialises):
     //  - BLOCK_ON_PAUSE=1 (default, set explicitly): SDL blocks native pumping
     //    while paused and pauses the audio devices. The WILL_ENTER_BACKGROUND
-    //    event is still delivered to the watcher *before* the block, and the
-    //    watcher writes the checkpoint through `GAME_FOR_CHECKPOINT` — the
-    //    documented SDL pattern ("do any life cycle handling in an event
-    //    filter while the event was being queued").
+    //    event is delivered to the watcher *before* the block, and the watcher
+    //    writes the checkpoint through `GAME_FOR_CHECKPOINT` on the main thread
+    //    (a non-main callback only sets `PENDING_CHECKPOINT`) — the documented
+    //    SDL pattern ("do any life cycle handling in an event filter while the
+    //    event was being queued").
     //  - LOW_LATENCY_AUDIO=1: the shipped default for games (AAudio low-latency
     //    path); set explicitly so the log proves the mode.
     //  - ALLOW_RECREATE_ACTIVITY=0: the SDL default (terminate, start fresh);
@@ -1221,8 +1249,9 @@ fn run() -> Result<(), String> {
     // SAFETY: SDL is initialised; the filter only touches the lifecycle queue
     // and, for the save points, the game registered after construction.
     let watch_installed = unsafe { SDL_AddEventWatch(on_sdl_event, ptr::null_mut()) };
+    let on_main_thread = unsafe { SDL_IsMainThread() };
     log(&format!(
-        "GAME_LIFECYCLE watch={watch_installed} block_on_pause=1 low_latency_audio=1 recreate_activity=0"
+        "GAME_LIFECYCLE watch={watch_installed} main_thread={on_main_thread} block_on_pause=1 low_latency_audio=1 recreate_activity=0"
     ));
     // SAFETY: SDL is initialised.
     let driver = unsafe { CStr::from_ptr(SDL_GetCurrentVideoDriver()) }
@@ -1391,8 +1420,8 @@ fn run() -> Result<(), String> {
     // takes, so the starting HUD is not built from the 2.0 fallback density.
     apply_window_metrics(&mut game, window, &mut last_metrics);
     restore_checkpoint(&mut game);
-    // The pointer is cleared before the game is dropped and is only read by
-    // the event watcher while the loop is blocked in SDL_PumpEvents.
+    // The pointer is cleared before the game is dropped and is only
+    // dereferenced by the event watcher when SDL_IsMainThread() is true.
     GAME_FOR_CHECKPOINT.store(&mut game as *mut Game, Ordering::Release);
     let mut renderer = Renderer::new(
         &device,
@@ -1583,10 +1612,11 @@ fn run() -> Result<(), String> {
                 input.apply(&mut sink, input_event);
             }
         }
-        if effects.save_checkpoint {
+        if effects.save_checkpoint || PENDING_CHECKPOINT.swap(false, Ordering::AcqRel) {
             // The watcher writes the checkpoint synchronously on the pause
             // event (before SDL blocks); only save here if it could not (e.g.
-            // a lifecycle event before the game was registered).
+            // a lifecycle event before the game was registered, or a callback
+            // that arrived on a non-main thread).
             let watcher_saved = WATCHER_SAVED.swap(false, Ordering::AcqRel);
             if !watcher_saved {
                 save_checkpoint(&game);

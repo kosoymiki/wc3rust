@@ -12,13 +12,17 @@ use std::io;
 use std::path::Path;
 
 /// One mapped region of the current process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
     pub start: usize,
     pub end: usize,
     pub readable: bool,
     pub writable: bool,
     pub executable: bool,
+    /// File backing the mapping (`/apex/.../libdl.so`), or `None` for
+    /// anonymous mappings. The linker bootstrap uses the basename as a
+    /// fail-closed fingerprint of the bionic layout.
+    pub path: Option<String>,
 }
 
 impl Region {
@@ -35,7 +39,11 @@ impl Region {
 pub fn parse(text: &str) -> Vec<Region> {
     let mut regions = Vec::new();
     for line in text.lines() {
-        let Some((range, rest)) = line.split_once(' ') else {
+        let mut fields = line.split_whitespace();
+        let Some(range) = fields.next() else {
+            continue;
+        };
+        let Some(perms) = fields.next() else {
             continue;
         };
         let Some((start_hex, end_hex)) = range.split_once('-') else {
@@ -50,16 +58,21 @@ pub fn parse(text: &str) -> Vec<Region> {
         if start >= end {
             continue;
         }
-        let perms = rest.as_bytes();
+        let perms = perms.as_bytes();
         if perms.len() < 3 {
             continue;
         }
+        // offset, device and inode precede the optional path.
+        let _offset = fields.next();
+        let _device = fields.next();
+        let _inode = fields.next();
         regions.push(Region {
             start,
             end,
             readable: perms[0] == b'r',
             writable: perms[1] == b'w',
             executable: perms[2] == b'x',
+            path: fields.next().map(str::to_owned),
         });
     }
     regions
@@ -117,6 +130,9 @@ mod tests {
         assert!(!regions[0].executable);
         assert!(regions[1].executable);
         assert!(regions[2].writable);
+        assert_eq!(regions[0].path.as_deref(), Some("/system/bin/app"));
+        assert_eq!(regions[3].path.as_deref(), Some("/system/lib64/libfoo.so"));
+        assert_eq!(regions[5].path.as_deref(), Some("[anon:test]"));
         assert!(containing(&regions, 0x55d0b01500).is_some());
         assert!(containing(&regions, 0x55d0c00000).is_none());
     }

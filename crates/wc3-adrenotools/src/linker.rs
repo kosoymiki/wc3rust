@@ -136,29 +136,89 @@ fn symbols() -> Option<&'static Symbols> {
         .as_ref()
 }
 
+/// Oldest Android release with the hidden `__loader_*` namespace entry points
+/// (`__loader_dlopen`, `__loader_android_*`): Android 9 / API 28.
+///
+/// The scan below never trusts the version alone. It verifies the resolved
+/// address against `/proc/self/maps` and rejects any layout it does not
+/// recognise, so a future linker can only make the Turnip path unavailable
+/// (`DriverError::LinkerUnavailable`), never call an arbitrary address.
+pub const MIN_SUPPORTED_API: libc::c_int = 28;
+
+/// Newest Android release on which the `dlopen` wrapper layout and the PLT
+/// stub were verified on hardware (Android 16 / API 36, bionic
+/// `libdl.so` at `/apex/com.android.runtime/lib64/bionic/libdl.so`).
+///
+/// Newer releases are accepted only when the same runtime fingerprint checks
+/// pass; they are not gated by the version number.
+pub const MAX_VERIFIED_API: libc::c_int = 36;
+
+/// Bionic's `dlopen` wrapper is a 36-byte function today. The scan is bounded
+/// so a layout change cannot walk into the next function's branches and mistake
+/// an unrelated call for `__loader_dlopen`.
+const DLOPEN_SCAN_BYTES: usize = 256;
+
+/// Why a linker layout was rejected. Every error leaves the process with the
+/// original page protections: reading uses [`ReadableWindow`], and the scan
+/// never asks for write or execute permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoaderScanError {
+    NotMapped,
+    NotExecutable,
+    NotReadable,
+    NoLoaderCall,
+    TargetNotMapped,
+    TargetNotExecutable,
+    TargetNotLinker,
+    UnsupportedLayout(&'static str),
+}
+
+impl std::fmt::Display for LoaderScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotMapped => f.write_str("address is not mapped"),
+            Self::NotExecutable => f.write_str("source address is not executable"),
+            Self::NotReadable => f.write_str("source address cannot be made readable"),
+            Self::NoLoaderCall => f.write_str("no loader call found in the dlopen wrapper"),
+            Self::TargetNotMapped => f.write_str("BL target is not mapped"),
+            Self::TargetNotExecutable => f.write_str("BL target is not executable"),
+            Self::TargetNotLinker => f.write_str("BL target is not a linker mapping"),
+            Self::UnsupportedLayout(what) => write!(f, "unsupported linker layout: {what}"),
+        }
+    }
+}
+
 fn page_size() -> usize {
     // SAFETY: sysconf has no preconditions.
     let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if value <= 0 { 4096 } else { value as usize }
 }
 
-/// Make `[addr, addr+len)` readable, writable and executable.
-fn make_rwx(addr: usize, len: usize) -> io::Result<()> {
+fn region_prot(region: &proc_maps::Region) -> libc::c_int {
+    let mut prot = 0;
+    if region.readable {
+        prot |= libc::PROT_READ;
+    }
+    if region.writable {
+        prot |= libc::PROT_WRITE;
+    }
+    if region.executable {
+        prot |= libc::PROT_EXEC;
+    }
+    prot
+}
+
+/// Change protection of `[addr, addr+len)`; `len` may be 0.
+fn mprotect_range(addr: usize, len: usize, prot: libc::c_int) -> io::Result<()> {
     let ps = page_size();
     let start = addr & !(ps - 1);
     let end = addr
         .checked_add(len)
-        .and_then(|v| v.checked_add(ps - 1))
-        .map(|v| v & !(ps - 1))
+        .and_then(|value| value.checked_add(ps - 1))
+        .map(|value| value & !(ps - 1))
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: the range is page aligned and describes this process's memory.
-    let rc = unsafe {
-        libc::mprotect(
-            start as *mut libc::c_void,
-            end - start,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        )
-    };
+    // SAFETY: the range is page aligned and inside a mapped region.
+    let rc = unsafe { libc::mprotect(start as *mut libc::c_void, end - start, prot) };
     if rc == 0 {
         Ok(())
     } else {
@@ -166,38 +226,249 @@ fn make_rwx(addr: usize, len: usize) -> io::Result<()> {
     }
 }
 
-/// Walk `dlopen`'s body to the first `BL` and return its target
-/// (`__loader_dlopen`).
+/// Read permission for the minimal pages the scan touches.
 ///
-/// # Safety
-/// `dlopen_addr` must point at executable code.
-unsafe fn find_loader_dlopen(dlopen_addr: usize) -> Option<*const libc::c_void> {
-    let regions = proc_maps::read_self().ok()?;
-    let region = proc_maps::containing(&regions, dlopen_addr)?;
-    if !region.executable {
-        return None;
+/// Android maps the linker `r-x`, so the normal path performs no `mprotect` at
+/// all and the permission map is unchanged. Only an execute-only (`--x`) text
+/// mapping gets `READ` added, and [`Drop`] restores the exact original flags on
+/// every exit path, including early returns from errors.
+struct ReadableWindow {
+    start: usize,
+    len: usize,
+    original: libc::c_int,
+    active: bool,
+}
+
+impl ReadableWindow {
+    fn new(
+        region: &proc_maps::Region,
+        addr: usize,
+        end: usize,
+    ) -> Result<Self, LoaderScanError> {
+        let ps = page_size();
+        let start = addr & !(ps - 1);
+        let end = end.min(region.end);
+        if start < region.start || end <= start {
+            return Err(LoaderScanError::NotMapped);
+        }
+        let page_end = end
+            .checked_add(ps - 1)
+            .map(|value| value & !(ps - 1))
+            .ok_or(LoaderScanError::NotMapped)?
+            .min(region.end);
+        let original = region_prot(region);
+        if region.readable {
+            return Ok(Self {
+                start,
+                len: page_end - start,
+                original,
+                active: false,
+            });
+        }
+        mprotect_range(start, page_end - start, original | libc::PROT_READ)
+            .map_err(|_| LoaderScanError::NotReadable)?;
+        Ok(Self {
+            start,
+            len: page_end - start,
+            original,
+            active: true,
+        })
     }
-    // Some devices map executables `--x`; the donor protects one page, the port
-    // protects the whole containing mapping so every scanned word is readable.
-    make_rwx(region.start, region.end - region.start).ok()?;
+}
+
+impl Drop for ReadableWindow {
+    fn drop(&mut self) {
+        if self.active {
+            // Best effort: the process fails closed if the restore is refused,
+            // but an execute-only page that accepted +READ above accepts the
+            // original flags again.
+            let _ = mprotect_range(self.start, self.len, self.original);
+        }
+    }
+}
+
+fn file_name(path: Option<&str>) -> Option<&str> {
+    let path = path?;
+    Some(path.rsplit('/').next().unwrap_or(path))
+}
+
+/// Mapping that contains the public `dlopen` wrapper.
+fn is_dlopen_mapping(path: Option<&str>) -> bool {
+    matches!(
+        file_name(path),
+        Some("libdl.so" | "libdl_android.so" | "linker64" | "linker")
+    )
+}
+
+/// Mapping that can contain `__loader_dlopen` or a PLT stub for it.
+fn is_linker_mapping(path: Option<&str>) -> bool {
+    matches!(
+        file_name(path),
+        Some("ld-android.so" | "libdl_android.so" | "linker64" | "linker")
+    )
+}
+
+/// Walk at most [`DLOPEN_SCAN_BYTES`] of the `dlopen` wrapper and return the
+/// first `BL` target that is either a linker mapping or a PLT stub in the same
+/// library. Other mapped targets (logging helpers, stack protector, unrelated
+/// libraries) are skipped; the scan stops at `RET`.
+fn scan_branch_target(
+    dlopen_addr: usize,
+    source: &proc_maps::Region,
+    regions: &[proc_maps::Region],
+    read: impl Fn(usize) -> u32,
+) -> Result<usize, LoaderScanError> {
+    let end = dlopen_addr
+        .checked_add(DLOPEN_SCAN_BYTES)
+        .ok_or(LoaderScanError::NoLoaderCall)?
+        .min(source.end);
     let mut pc = dlopen_addr;
-    while pc + 4 <= region.end {
-        // SAFETY: the page is readable after make_rwx, and pc+4 <= region.end.
-        let word = unsafe { ptr::read_unaligned(pc as *const u32) };
+    while pc + 4 <= end {
+        let word = read(pc);
+        if crate::aarch64::is_ret(word) {
+            break;
+        }
         if let Some(target) = crate::aarch64::decode_bl_target(pc, word)
-            && proc_maps::containing(&regions, target).is_some()
+            && let Some(region) = proc_maps::containing(regions, target)
+            && region.executable
         {
-            return Some(target as *const libc::c_void);
+            if is_linker_mapping(region.path.as_deref()) {
+                return Ok(target);
+            }
+            // `lld` routes the hidden linker import through a PLT stub in the
+            // caller's own library (observed on Android 16: `libdl.so+0x1298`,
+            // `imp.__loader_dlopen`). The caller verifies the stub shape.
+            if region.start == source.start {
+                return Ok(target);
+            }
         }
         pc += 4;
     }
-    None
+    Err(LoaderScanError::NoLoaderCall)
+}
+
+/// Decode the standard `lld` PLT entry:
+/// `adrp x16, page; ldr x17, [x16, #off]; add x16, x16, #off; br x17`.
+///
+/// Returns the GOT slot address when the four instructions match exactly, or
+/// `None` when the target does not look like a PLT stub.
+fn decode_plt_stub(stub: usize, words: [u32; 4]) -> Option<usize> {
+    let [adrp, ldr, add, br] = words;
+    if adrp & 0x9F00_0000 != 0x9000_0000 {
+        return None;
+    }
+    if ldr & 0xFFC0_0000 != 0xF940_0000 {
+        return None;
+    }
+    if add & 0xFF00_0000 != 0x9100_0000 {
+        return None;
+    }
+    if br & 0xFFFF_FC1F != 0xD61F_0000 {
+        return None;
+    }
+    let pages = (((adrp >> 5) & 0x7FFFF) << 2) | ((adrp >> 29) & 0x3);
+    let pages = ((pages as i64) << 43) >> 43;
+    let base = ((stub as i64 & !0xFFF) + (pages << 12)) as usize;
+    let offset = ((ldr >> 10) & 0xFFF) as usize * 8;
+    Some(base.wrapping_add(offset))
+}
+
+/// Verify that a candidate is a live linker entry point.
+///
+/// A PLT stub is accepted only if it has the exact four-instruction shape and
+/// its GOT slot is either still lazily unresolved or points into a linker
+/// mapping. Any other mapping fails closed.
+fn validate_loader_target(
+    target: usize,
+    source: &proc_maps::Region,
+    regions: &[proc_maps::Region],
+) -> Result<(), LoaderScanError> {
+    let region = proc_maps::containing(regions, target).ok_or(LoaderScanError::TargetNotMapped)?;
+    if !region.executable {
+        return Err(LoaderScanError::TargetNotExecutable);
+    }
+    if is_linker_mapping(region.path.as_deref()) {
+        return Ok(());
+    }
+    if region.start != source.start {
+        return Err(LoaderScanError::TargetNotLinker);
+    }
+    // Read the four stub instructions through the same read-only guard.
+    let window = ReadableWindow::new(source, target, target + 16)?;
+    let words = {
+        let read = |addr: usize| unsafe { ptr::read_unaligned(addr as *const u32) };
+        [read(target), read(target + 4), read(target + 8), read(target + 12)]
+    };
+    drop(window);
+    let slot = decode_plt_stub(target, words).ok_or(LoaderScanError::UnsupportedLayout(
+        "dlopen call is neither a linker mapping nor a PLT stub",
+    ))?;
+    let slot_region = proc_maps::containing(regions, slot)
+        .ok_or(LoaderScanError::UnsupportedLayout("PLT GOT slot is not mapped"))?;
+    if !slot_region.readable {
+        return Err(LoaderScanError::UnsupportedLayout("PLT GOT slot is not readable"));
+    }
+    // Unresolved lazy slots are zero. When the linker has already filled the
+    // slot, it must point into a linker mapping; never accept an interposer.
+    // SAFETY: the slot is inside a readable mapping (checked above).
+    let resolved = unsafe { ptr::read_unaligned(slot as *const u64) } as usize;
+    if resolved != 0 && !is_linker_mapping(proc_maps::containing(regions, resolved).and_then(|r| r.path.as_deref())) {
+        return Err(LoaderScanError::TargetNotLinker);
+    }
+    Ok(())
+}
+
+/// Resolve `__loader_dlopen` without ever granting write or execute permission.
+///
+/// Order:
+/// 1. `dlsym(libdl, "__loader_dlopen")` when the platform exports it (Android
+///    16 does); the address must fall in a linker mapping.
+/// 2. Otherwise decode the first loader `BL` of the `dlopen` wrapper (bionic
+///    API 28..36 layout) and validate its target.
+///
+/// # Safety
+/// `libdl` must be a live handle and `dlopen_addr` must point at its `dlopen`.
+unsafe fn find_loader_dlopen(
+    libdl: *mut libc::c_void,
+    dlopen_addr: usize,
+) -> Result<*const libc::c_void, LoaderScanError> {
+    let regions = proc_maps::read_self().map_err(|_| LoaderScanError::NotMapped)?;
+    let source = proc_maps::containing(&regions, dlopen_addr).ok_or(LoaderScanError::NotMapped)?;
+    if !source.executable {
+        return Err(LoaderScanError::NotExecutable);
+    }
+    if !is_dlopen_mapping(source.path.as_deref()) {
+        return Err(LoaderScanError::UnsupportedLayout(
+            "dlopen is not inside libdl.so/linker64",
+        ));
+    }
+
+    // SAFETY: libdl is a live handle; the name is a NUL-terminated C string.
+    let direct = unsafe { libc::dlsym(libdl, c"__loader_dlopen".as_ptr()) } as usize;
+    if direct != 0 {
+        validate_loader_target(direct, source, &regions)?;
+        return Ok(direct as *const libc::c_void);
+    }
+
+    let end = dlopen_addr
+        .checked_add(DLOPEN_SCAN_BYTES)
+        .ok_or(LoaderScanError::NoLoaderCall)?
+        .min(source.end);
+    let window = ReadableWindow::new(source, dlopen_addr, end)?;
+    let target = {
+        let read = |addr: usize| unsafe { ptr::read_unaligned(addr as *const u32) };
+        scan_branch_target(dlopen_addr, source, &regions, read)?
+    };
+    drop(window);
+    validate_loader_target(target, source, &regions)?;
+    Ok(target as *const libc::c_void)
 }
 
 /// # Safety
 /// Runs at most once; mutates process-wide linker state.
 unsafe fn resolve() -> Option<Symbols> {
-    if device_api_level() < 28 {
+    let api = device_api_level();
+    if api < MIN_SUPPORTED_API {
         return None;
     }
 
@@ -215,8 +486,16 @@ unsafe fn resolve() -> Option<Symbols> {
         return None;
     }
 
-    // SAFETY: dlopen_addr points into libdl's executable mapping.
-    let loader_dlopen_ptr = unsafe { find_loader_dlopen(dlopen_addr)? };
+    // SAFETY: dlopen_addr points into libdl's executable mapping; libdl is live.
+    let loader_dlopen_ptr = match unsafe { find_loader_dlopen(libdl, dlopen_addr) } {
+        Ok(target) => target,
+        Err(error) => {
+            crate::hooks::trace(format_args!(
+                "linker layout rejected (api={api}, supported {MIN_SUPPORTED_API}..={MAX_VERIFIED_API}): {error}"
+            ));
+            return None;
+        }
+    };
     // SAFETY: target is a real function taking (filename, flags, caller).
     let loader_dlopen: LoaderDlopen = unsafe { std::mem::transmute(loader_dlopen_ptr) };
 
@@ -521,6 +800,28 @@ const SYS_MEMFD_CREATE: libc::c_long = 279;
 mod tests {
     use super::*;
 
+    fn region(
+        start: usize,
+        end: usize,
+        readable: bool,
+        writable: bool,
+        executable: bool,
+        path: &str,
+    ) -> proc_maps::Region {
+        proc_maps::Region {
+            start,
+            end,
+            readable,
+            writable,
+            executable,
+            path: Some(path.to_string()),
+        }
+    }
+
+    fn reader(base: usize, words: Vec<u32>) -> impl Fn(usize) -> u32 {
+        move |pc| words[(pc - base) / 4]
+    }
+
     #[test]
     fn dlext_layout_matches_bionic() {
         assert_eq!(std::mem::size_of::<DlextInfo>(), 48);
@@ -532,6 +833,142 @@ mod tests {
         let api = device_api_level();
         // Termux runs on Android 9+; 0 would mean the property probe is broken.
         assert!(api >= 28, "unexpected API level {api}");
+    }
+
+    /// AUD-015 regression: resolving the loader must leave the permission map
+    /// of the `dlopen` mapping untouched (`r-x`, never `rwx`). The harness also
+    /// prints the before/after table used as evidence in the status document.
+    #[test]
+    fn aud015_scanning_leaves_mapping_protections_unchanged() {
+        let libdl = unsafe { libc::dlopen(c"libdl.so".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        assert!(!libdl.is_null(), "libdl.so must be loadable");
+        let dlopen_addr = unsafe { libc::dlsym(libdl, c"dlopen".as_ptr()) } as usize;
+        assert_ne!(dlopen_addr, 0, "dlopen must resolve");
+        let before_regions = proc_maps::read_self().expect("maps");
+        let before = proc_maps::containing(&before_regions, dlopen_addr)
+            .expect("dlopen mapped")
+            .clone();
+        let found = unsafe { find_loader_dlopen(libdl, dlopen_addr) };
+        let after_regions = proc_maps::read_self().expect("maps");
+        let after = proc_maps::containing(&after_regions, dlopen_addr)
+            .expect("dlopen mapped")
+            .clone();
+        eprintln!(
+            "AUD015_PERMISSIONS before r={} w={} x={} after r={} w={} x={} path={:?} target={found:?}",
+            before.readable,
+            before.writable,
+            before.executable,
+            after.readable,
+            after.writable,
+            after.executable,
+            before.path
+        );
+        assert!(found.is_ok(), "the linker scan must resolve a target: {found:?}");
+        assert_eq!(
+            (before.readable, before.writable, before.executable),
+            (after.readable, after.writable, after.executable),
+            "resolving __loader_dlopen must not change the dlopen mapping protections"
+        );
+        assert!(!after.writable, "linker text must never become writable");
+    }
+
+    #[test]
+    fn aud015_scan_accepts_a_linker_branch() {
+        let source = region(0x1000, 0x1100, true, false, true, "/lib/libdl.so");
+        let linker = region(0x2000, 0x2100, true, false, true, "/lib/ld-android.so");
+        let base = 0x1000;
+        let words = vec![
+            0xD503_233F,                     // paciasp
+            crate::aarch64::encode_bl(0x1004, 0x2008).unwrap(),
+            0xD65F_03C0,                     // ret
+        ];
+        let target = scan_branch_target(base, &source, &[source.clone(), linker], reader(base, words));
+        assert_eq!(target, Ok(0x2008));
+    }
+
+    #[test]
+    fn aud015_scan_skips_foreign_and_non_executable_targets() {
+        let source = region(0x1000, 0x1100, true, false, true, "/lib/libdl.so");
+        let foreign = region(0x2000, 0x2100, true, false, true, "/lib/liblog.so");
+        let data = region(0x3000, 0x3100, true, true, false, "/lib/data");
+        let base = 0x1000;
+        let words = vec![
+            crate::aarch64::encode_bl(0x1000, 0x2008).unwrap(),
+            crate::aarch64::encode_bl(0x1004, 0x3008).unwrap(),
+            0xD65F_03C0,
+        ];
+        let regions = [source.clone(), foreign, data];
+        let target = scan_branch_target(base, &source, &regions, reader(base, words));
+        assert_eq!(target, Err(LoaderScanError::NoLoaderCall));
+    }
+
+    #[test]
+    fn aud015_scan_stops_at_ret_and_at_the_window_bound() {
+        let source = region(0x1000, 0x2000, true, false, true, "/lib/libdl.so");
+        let linker = region(0x3000, 0x3100, true, false, true, "/lib/ld-android.so");
+        let base = 0x1000;
+        // A BL after RET must not be considered.
+        let words = vec![
+            0xD65F_03C0,
+            crate::aarch64::encode_bl(0x1004, 0x3008).unwrap(),
+        ];
+        let regions = [source.clone(), linker.clone()];
+        assert_eq!(
+            scan_branch_target(base, &source, &regions, reader(base, words.clone())),
+            Err(LoaderScanError::NoLoaderCall)
+        );
+        // A BL outside DLOPEN_SCAN_BYTES must not be reached either.
+        let far = 0x1000 + DLOPEN_SCAN_BYTES;
+        let far_word = crate::aarch64::encode_bl(far, 0x3008).unwrap();
+        let mut words = vec![0xD503_233F; DLOPEN_SCAN_BYTES / 4];
+        words.push(far_word);
+        assert_eq!(
+            scan_branch_target(base, &source, &regions, reader(base, words)),
+            Err(LoaderScanError::NoLoaderCall)
+        );
+    }
+
+    #[test]
+    fn aud015_same_mapping_target_is_returned_for_plt_validation() {
+        let source = region(0x1000, 0x1200, true, false, true, "/lib/libdl.so");
+        let base = 0x1000;
+        let words = vec![
+            crate::aarch64::encode_bl(0x1000, 0x1020).unwrap(),
+            0xD65F_03C0,
+        ];
+        let target = scan_branch_target(base, &source, &[source.clone()], reader(base, words));
+        assert_eq!(target, Ok(0x1020));
+    }
+
+    /// The exact stub observed in Android 16 bionic `libdl.so` at `+0x1298`
+    /// (`imp.__loader_dlopen`): adrp x16,0x2000 / ldr x17,[x16,#0x140] /
+    /// add x16,x16,#0x140 / br x17. The GOT slot is 0x2140.
+    #[test]
+    fn aud015_decodes_the_android16_plt_stub() {
+        let words = [0xB000_0010, 0xF940_A211, 0x9105_0210, 0xD61F_0220];
+        assert_eq!(decode_plt_stub(0x1298, words), Some(0x2140));
+        // Same mapping but not a PLT stub: reject.
+        let words = [0xD503_233F, 0xF940_A211, 0x9105_0210, 0xD61F_0220];
+        assert_eq!(decode_plt_stub(0x1298, words), None);
+        let words = [0xB000_0010, 0xF940_A211, 0x9105_0210, 0xD65F_03C0];
+        assert_eq!(decode_plt_stub(0x1298, words), None);
+    }
+
+    #[test]
+    fn aud015_linker_mapping_fingerprint() {
+        assert!(is_linker_mapping(Some(
+            "/apex/com.android.runtime/bin/linker64"
+        )));
+        assert!(is_linker_mapping(Some(
+            "/apex/com.android.runtime/lib64/bionic/ld-android.so"
+        )));
+        assert!(is_linker_mapping(Some("/system/lib64/libdl_android.so")));
+        assert!(!is_linker_mapping(Some("/system/lib64/liblog.so")));
+        assert!(!is_linker_mapping(None));
+        assert!(is_dlopen_mapping(Some(
+            "/apex/com.android.runtime/lib64/bionic/libdl.so"
+        )));
+        assert!(!is_dlopen_mapping(Some("/data/app/libfoo.so")));
     }
 
     #[test]

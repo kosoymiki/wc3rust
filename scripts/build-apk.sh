@@ -5,7 +5,33 @@
 #          SDL_main -> wgpu Vulkan surface) + libiconv/libc++_shared (SDL deps).
 # Java:    SDL3's SDLActivity layer, compiled with javac + d8.
 # Package: aapt2 -> zip -> zipalign -> apksigner.
+#
+# Build types (AUD-014): this project is packaged by aapt2, not Gradle, so the
+# build type selects aapt2's `--debug-mode`, the packaging equivalent of the
+# Gradle `debug` build type. The main manifest must never hardcode
+# `android:debuggable`: `release` links without the flag (attribute absent =
+# false) and `debug` links with it. The compiled APK is asserted after linking
+# and the release security summary re-reads the APK (AUD-029).
+#
+# Usage: scripts/build-apk.sh [--release|--debug]
+# Env:   ANDROID_JAR  path to android.jar (auto-detected for Termux builds)
 set -euo pipefail
+
+BUILD_TYPE=release
+for arg in "$@"; do
+  case "$arg" in
+    --release) BUILD_TYPE=release ;;
+    --debug) BUILD_TYPE=debug ;;
+    -h|--help)
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $arg (expected --release or --debug)" >&2
+      exit 2
+      ;;
+  esac
+done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -26,8 +52,14 @@ fi
 APP="$ROOT/apps/android/app/src/main"
 SDL_LIB="$ROOT/third_party/sdl3-android-build/libSDL3.so"
 MAIN_LIB="$ROOT/target/release/libmain.so"
-BUILD="$ROOT/build/android-p0"
+BUILD="$ROOT/build/android-p0/$BUILD_TYPE"
 KEYSTORE="$ROOT/apps/android/debug.keystore"
+
+# The debug flag belongs to the build type, never to the source manifest.
+if grep -q 'android:debuggable' "$APP/AndroidManifest.xml"; then
+  echo "main AndroidManifest.xml must not set android:debuggable; use --debug/--release" >&2
+  exit 2
+fi
 
 for tool in aapt2 javac d8 zipalign apksigner zip keytool; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
@@ -46,14 +78,34 @@ fi
 rm -rf "$BUILD"
 mkdir -p "$BUILD/classes" "$BUILD/dex" "$BUILD/apk/lib/arm64-v8a"
 
-echo "== aapt2 compile/link"
+echo "== aapt2 compile/link ($BUILD_TYPE)"
 aapt2 compile --dir "$APP/res" -o "$BUILD/res.zip"
-aapt2 link -o "$BUILD/base.apk" \
-  -I "$ANDROID_JAR" \
-  --manifest "$APP/AndroidManifest.xml" \
-  -R "$BUILD/res.zip" \
-  --auto-add-overlay \
-  --min-sdk-version 24 --target-sdk-version 35
+LINK_ARGS=(
+  -o "$BUILD/base.apk"
+  -I "$ANDROID_JAR"
+  --manifest "$APP/AndroidManifest.xml"
+  -R "$BUILD/res.zip"
+  --auto-add-overlay
+  --min-sdk-version 24
+  --target-sdk-version 35
+)
+if [[ "$BUILD_TYPE" == debug ]]; then
+  LINK_ARGS+=(--debug-mode)
+fi
+aapt2 link "${LINK_ARGS[@]}"
+
+# Read the flag back from the linked artifact (AUD-014): the merged manifest is
+# the only source of truth, not the XML on disk.
+MANIFEST_TREE="$(aapt2 dump xmltree --file AndroidManifest.xml "$BUILD/base.apk")"
+if [[ "$BUILD_TYPE" == debug ]]; then
+  grep -q ':debuggable([^)]*)=true' <<<"$MANIFEST_TREE" \
+    || { echo "debug build lost android:debuggable in the merged manifest" >&2; exit 2; }
+else
+  if grep -q ':debuggable(' <<<"$MANIFEST_TREE"; then
+    echo "release build must not contain android:debuggable" >&2
+    exit 2
+  fi
+fi
 
 echo "== javac"
 mapfile -t JAVA_SOURCES < <(find "$APP/java" -name '*.java')
@@ -103,3 +155,11 @@ apksigner verify --verbose "$BUILD/herofolends-p0.apk" | head -6
 
 echo "APK: $BUILD/herofolends-p0.apk"
 ls -lh "$BUILD/herofolends-p0.apk"
+
+# AUD-029: the release security summary is generated from the signed APK and
+# printed to stdout (CI log) as well as written under dist/.
+echo "== release security summary ($BUILD_TYPE)"
+python3 "$ROOT/scripts/release_security_summary.py" \
+  --apk "$BUILD/herofolends-p0.apk" \
+  --build-type "$BUILD_TYPE" \
+  --dist "$ROOT/dist"

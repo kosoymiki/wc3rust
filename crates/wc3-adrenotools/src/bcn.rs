@@ -177,6 +177,7 @@ fn mprotect(addr: usize, len: usize, prot: libc::c_int) -> io::Result<()> {
 }
 
 const PROT_RX: libc::c_int = libc::PROT_READ | libc::PROT_EXEC;
+const PROT_RW: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
 const PROT_RWX: libc::c_int = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
 
 /// Read a `u32` from executable memory.
@@ -218,12 +219,14 @@ fn find_word(start: usize, end: usize, needle: u32) -> Option<usize> {
 fn map_fixed_noreplace(addr: usize, len: usize) -> io::Result<*mut libc::c_void> {
     // MAP_FIXED_NOREPLACE was added in Linux 4.17; Android 9 kernels predate it.
     const MAP_FIXED_NOREPLACE: libc::c_int = 0x10_0000;
-    // SAFETY: anonymous private mapping at a page-aligned address.
+    // SAFETY: anonymous private mapping at a page-aligned address. The page is
+    // writable while the patch is assembled and becomes RX before anything can
+    // branch to it, so the process never holds an RWX page.
     let mapped = unsafe {
         libc::mmap(
             addr as *mut libc::c_void,
             len,
-            PROT_RWX,
+            PROT_RW,
             libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
             -1,
             0,
@@ -241,7 +244,7 @@ fn map_fixed_noreplace(addr: usize, len: usize) -> io::Result<*mut libc::c_void>
             libc::mmap(
                 addr as *mut libc::c_void,
                 len,
-                PROT_RWX,
+                PROT_RW,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
                 -1,
                 0,
@@ -269,7 +272,7 @@ pub unsafe fn patch_bcn(function: *mut libc::c_void) -> Result<(), BcnError> {
         return Err(BcnError::NullFunction);
     }
     let regions = proc_maps::read_self().map_err(BcnError::Maps)?;
-    let region = *proc_maps::containing(&regions, function).ok_or(BcnError::NotMapped)?;
+    let region = proc_maps::containing(&regions, function).ok_or(BcnError::NotMapped)?;
     if !region.executable {
         return Err(BcnError::NotExecutable);
     }
@@ -280,7 +283,7 @@ pub unsafe fn patch_bcn(function: *mut libc::c_void) -> Result<(), BcnError> {
     // SAFETY: bl_pc was found in a readable mapping.
     let bl_word = unsafe { read_word(bl_pc) };
     let conv = aarch64::decode_bl_target(bl_pc, bl_word).ok_or(BcnError::NoBranch)?;
-    let conv_region = *proc_maps::containing(&regions, conv).ok_or(BcnError::TargetNotMapped)?;
+    let conv_region = proc_maps::containing(&regions, conv).ok_or(BcnError::TargetNotMapped)?;
     if !conv_region.executable {
         return Err(BcnError::TargetNotExecutable);
     }
@@ -338,6 +341,10 @@ pub unsafe fn patch_bcn(function: *mut libc::c_void) -> Result<(), BcnError> {
         }
     }
 
+    // The patch page holds only data until this point; seal it RX before any
+    // branch can target it (W^X: the process never maps it RWX).
+    mprotect(page, ps, PROT_RX).map_err(BcnError::Mprotect)?;
+
     let branch_to_patch =
         aarch64::encode_b(clear_result, page).map_err(BcnError::BranchOutOfRange)?;
 
@@ -345,6 +352,8 @@ pub unsafe fn patch_bcn(function: *mut libc::c_void) -> Result<(), BcnError> {
     mprotect(clear_result, 4, PROT_RWX).map_err(BcnError::Mprotect)?;
     // SAFETY: the word is inside the protected page and 4-byte aligned.
     unsafe { std::ptr::write_volatile(clear_result as *mut u32, branch_to_patch) };
+    // Drop write access again: the patched word is immutable from here on.
+    mprotect(clear_result, 4, PROT_RX).map_err(BcnError::Mprotect)?;
 
     // SAFETY: both ranges are mapped and executable/executable-after-write.
     unsafe {

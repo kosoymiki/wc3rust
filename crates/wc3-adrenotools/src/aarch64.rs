@@ -105,6 +105,11 @@ pub fn decode_bl_target(pc: usize, word: u32) -> Option<usize> {
     usize::try_from(target).ok()
 }
 
+/// `RET Xn` — `1101011001011111000000 Rn 00000`. The default `RET` is `RET X30`.
+pub fn is_ret(word: u32) -> bool {
+    word & 0xFFFF_FC1F == 0xD65F_0000
+}
+
 /// Invalidate the instruction cache for `[start, end)` and synchronise.
 ///
 /// The donor only issues `ISB` after writing the BCn patch. `ISB` orders
@@ -190,5 +195,13 @@ mod tests {
     fn sign_extends_negative_offsets() {
         assert_eq!(sign_extend_imm26(0x03FF_FFFF), -1);
         assert_eq!(sign_extend_imm26(0x0000_0002), 2);
+    }
+
+    #[test]
+    fn recognizes_ret_variants_only() {
+        assert!(is_ret(0xD65F_03C0)); // ret x30
+        assert!(is_ret(0xD65F_0000)); // ret x0
+        assert!(!is_ret(0xD63F_0000)); // blr x0
+        assert!(!is_ret(0xD65F_03C1));
     }
 }
