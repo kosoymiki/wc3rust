@@ -7,8 +7,9 @@
 //! * depth is read back to reconstruct the world position of every pixel, so the
 //!   mask follows terrain height and never paints over the HUD;
 //! * unexplored cells are opaque black ([`UNEXPLORED_DARKNESS`], luminance 0);
-//! * explored-but-not-visible cells are darkened to
-//!   [`EXPLORED_DARKNESS`] (45 % of the lit value, inside WC3's 35…55 % band);
+//! * explored-but-not-visible cells keep [`EXPLORED_REMAINING`] (45 %) of the
+//!   lit pixel as seen on an sRGB target — the veil alpha is
+//!   [`EXPLORED_DARKNESS`], compensated for linear-space blending;
 //! * visible cells are left untouched (the shader discards);
 //! * the state grid is blurred with a 2-cell box before upload, so the boundary
 //!   is a soft gradient instead of a per-cell staircase (bilinear sampling of a
@@ -21,10 +22,27 @@
 
 /// Darkness of a never-seen cell: opaque black.
 pub const UNEXPLORED_DARKNESS: f32 = 1.0;
-/// Darkness of an explored-but-not-visible cell: 45 % of the lit value.
-pub const EXPLORED_DARKNESS: f32 = 0.55;
+/// Fraction of the lit pixel an explored-but-not-visible cell keeps **as seen**
+/// on screen (WC3's 35…55 % band).
+pub const EXPLORED_REMAINING: f32 = 0.45;
+/// Veil alpha that produces [`EXPLORED_REMAINING`] on an sRGB target.
+///
+/// The world pass writes linear light and the target is `*Srgb`, so blending
+/// happens in linear space: a 0.55 alpha leaves 0.45 *linear*, which encodes to
+/// 0.69 — the explored band read almost as bright as the visible one on the
+/// device (measured 0.672 of the lit frame). `1 - 0.45^2.2 = 0.834` restores
+/// the authored perceptual 45 %.
+pub const EXPLORED_DARKNESS: f32 = 0.834;
 /// Radius of the state blur in cells (2 -> 5x5 box, ~2-cell gradient).
 pub const EDGE_BLUR_CELLS: i32 = 2;
+
+/// Fraction of the lit pixel a viewer sees under a veil alpha `darkness`.
+///
+/// Encodes the sRGB target: the blend is linear, the frame is not, so the
+/// perceptual remainder is `(1 - alpha)^(1/2.2)`.
+pub fn remaining_ratio(darkness: f32) -> f32 {
+    (1.0 - darkness.clamp(0.0, 1.0)).powf(1.0 / 2.2)
+}
 
 /// Per-player fog grid. `cells` values: 0 unexplored, 1 explored, 2 visible.
 #[derive(Clone, Debug)]
@@ -217,7 +235,13 @@ impl FogRenderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        // Fail at bind-group creation with `BindingSizeTooSmall`
+                        // (named, recoverable) instead of at the first draw with
+                        // "bound with size N where the shader expects M" — the
+                        // class of abort that killed build 0f037ea2.
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<FogParams>() as u64,
+                        ),
                     },
                     count: None,
                 },
@@ -414,6 +438,18 @@ impl FogRenderer {
 mod tests {
     use super::*;
 
+    /// `render.uniform.fog`: the Rust `FogParams` and the WGSL `FogParams` the
+    /// fog shader declares must be the same 96 B, or the pass aborts at draw time
+    /// ("bound with size N where the shader expects M", `analysis/crash-20261117.txt`).
+    #[test]
+    fn fog_uniform_matches_the_wgsl_struct() {
+        assert_eq!(std::mem::size_of::<FogParams>(), 96);
+        assert_eq!(
+            crate::mesh::wgsl_struct_size(FOG_SHADER, "FogParams"),
+            std::mem::size_of::<FogParams>()
+        );
+    }
+
     /// Mechanic `rendering.fog`: the mask keeps the three WC3 states distinct and
     /// the world-to-cell lookup is bounds-safe.
     /// Mechanic `rendering.fog-edge`: the fog boundary is a gradient, not a
@@ -421,14 +457,16 @@ mod tests {
     /// between visible and unexplored must produce intermediate values.
     #[test]
     fn fog_edge_is_a_gradient() {
-        // 5x1: cells 2 2 0 0 0  (visible, visible, unexplored...)
-        let mask = FogMask::new(5, 1, 128.0, vec![2, 2, 0, 0, 0]);
+        // 9x1: cells 2 2 2 2 2 0 0 0 0  (visible … then unexplored).
+        // The grid has to be wider than the 2-cell blur radius, or even the
+        // leftmost cell averages in the dark side and reads as 0.33 dark.
+        let mask = FogMask::new(9, 1, 128.0, vec![2, 2, 2, 2, 2, 0, 0, 0, 0]);
         let grid = darkness_grid(&mask);
-        assert_eq!(grid.len(), 5);
+        assert_eq!(grid.len(), 9);
         assert!(grid.iter().all(|v| (0.0..=1.0).contains(v)));
-        // Left of the edge stays visible-ish, right of it is fully dark.
-        assert!(grid[0] < 0.3, "visible cell must stay bright: {}", grid[0]);
-        assert!(grid[4] > 0.7, "unexplored cell must stay dark: {}", grid[4]);
+        // Far left of the edge stays visible, far right of it is fully dark.
+        assert!(grid[0] < 0.05, "visible cell must stay bright: {}", grid[0]);
+        assert!(grid[8] > 0.7, "unexplored cell must stay dark: {}", grid[8]);
         // The edge itself is a blend, never a single 0 -> 1 jump.
         let blended = grid.iter().filter(|v| **v > 0.05 && **v < 0.95).count();
         assert!(

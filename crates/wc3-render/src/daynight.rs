@@ -288,11 +288,11 @@ impl FogSettings {
 }
 
 /// How much of the haze colour the far plane reaches (0..=1).
-pub const ATMOSPHERE_DENSITY: f32 = 0.65;
+pub const ATMOSPHERE_DENSITY: f32 = 0.55;
 /// Distance (world units) where the atmosphere starts to build up.
-pub const ATMOSPHERE_START: f32 = 1100.0;
+pub const ATMOSPHERE_START: f32 = 1200.0;
 /// Distance (world units) where the atmosphere reaches its full density.
-pub const ATMOSPHERE_END: f32 = 3800.0;
+pub const ATMOSPHERE_END: f32 = 4200.0;
 
 impl Default for FogSettings {
     fn default() -> Self {
@@ -512,6 +512,23 @@ pub struct DayNightSample {
 }
 
 impl DayNightSample {
+    /// Same hour, fog, sun direction and flags, but flat white surface light.
+    ///
+    /// This is the ungraded reference for `render.color.no-yellow-cast`: the
+    /// frame keeps the same atmosphere (otherwise the haze would dominate the
+    /// comparison) and only the DNC light is replaced by a neutral lamp.
+    pub fn neutral_light(mut self) -> Self {
+        let flat = SurfaceLight {
+            sun: [0.0; 3],
+            ambient: [1.0; 3],
+            grade: [1.0, 1.0, 1.0, 1.0],
+            luminance: 1.0,
+        };
+        self.terrain = flat;
+        self.unit = flat;
+        self
+    }
+
     /// `GAME_LIGHT hour=… ambient=… sun_dir=… fog=…` — one line per game hour,
 /// written by the renderer so a device log can be checked against the curve.
     pub fn light_line(&self) -> String {
@@ -570,17 +587,18 @@ pub struct DayNightCurve {
     fog: FogSettings,
     /// Apply the default atmospheric haze when the map has no fog block.
     atmosphere: bool,
-    /// Per-channel gain that makes the noon flat-surface light exactly white.
+    /// Per-channel gain that makes the noon light exactly white on **both**
+    /// terms of the DNC model.
     ///
-    /// The shipped DNC noon is *not* neutral: `KLBC` is
-    /// `(0.980, 0.840, 0.840)` sRGB, so the raw flat light is
-    /// `(0.985, 0.928, 0.928)` linear — a pink cast that reads as the
-    /// operator's «жуткий жёлтый фильтр» once the terrain lamp multiplies it.
-    /// Normalising the noon light to white removes the constant cast and leaves
-    /// the hour-to-hour ratio untouched: 18:00 stays warm because its ratio
-    /// differs from noon, midnight stays warm-dark, and noon is neutral by
-    /// construction.
-    white_balance: [f32; 3],
+    /// The shipped DNC noon is not neutral: `KLAC` is white but `KLBC` is
+    /// `(0.980, 0.840, 0.840)` sRGB, so the raw light is `sun · N·L + pink
+    /// ambient` — a warm cast on every surface that does not face the sun, and
+    /// the operator's «жуткий жёлтый фильтр». Two separate gains (one for the
+    /// light track, one for the ambient track) make noon white for *every*
+    /// normal, while the hour-to-hour ratios stay authored: 20:00 is still
+    /// orange, midnight still a warm moon.
+    sun_balance: [f32; 3],
+    ambient_balance: [f32; 3],
     /// Max component of the white-balanced `sun + ambient` at noon.
     noon_max: f32,
     /// Luminance of the white-balanced flat light at noon (1.0 by construction).
@@ -598,20 +616,29 @@ impl DayNightCurve {
             preset,
             fog,
             atmosphere: false,
-            white_balance: [1.0; 3],
+            sun_balance: [1.0; 3],
+            ambient_balance: [1.0; 3],
             noon_max: 1.0,
             noon_luminance: 1.0,
         };
-        // White balance: neutralise the *noon* flat light per channel. The DNC
-        // data stays untouched, so every other hour keeps its authored ratio.
-        let (sun, ambient) = curve.raw_light(preset.terrain(), 12.0 / DAY_HOURS);
-        let flat = flat_light(sun, ambient);
-        curve.white_balance = [
-            (1.0 / flat[0].max(1e-3)).clamp(0.5, 2.0),
-            (1.0 / flat[1].max(1e-3)).clamp(0.5, 2.0),
-            (1.0 / flat[2].max(1e-3)).clamp(0.5, 2.0),
+        // White balance, per term: divide each track by its own noon value, so
+        // the daylight is exactly white on flat ground *and* in shadow. Only the
+        // ratios between hours survive, which is the authored information.
+        let light = preset.terrain();
+        let sun_noon = srgb_to_linear3(mul3(light.sun_color, track_rgb(light.sun_keys, 0.5)));
+        let ambient_noon =
+            srgb_to_linear3(mul3(light.ambient_color, track_rgb(light.ambient_keys, 0.5)));
+        curve.sun_balance = [
+            (1.0 / sun_noon[0].max(1e-3)).clamp(0.5, 2.0),
+            (1.0 / sun_noon[1].max(1e-3)).clamp(0.5, 2.0),
+            (1.0 / sun_noon[2].max(1e-3)).clamp(0.5, 2.0),
         ];
-        let (sun, ambient) = curve.raw_light(preset.terrain(), 12.0 / DAY_HOURS);
+        curve.ambient_balance = [
+            (1.0 / ambient_noon[0].max(1e-3)).clamp(0.5, 2.0),
+            (1.0 / ambient_noon[1].max(1e-3)).clamp(0.5, 2.0),
+            (1.0 / ambient_noon[2].max(1e-3)).clamp(0.5, 2.0),
+        ];
+        let (sun, ambient) = curve.raw_light(light, 12.0 / DAY_HOURS);
         let total = add3(sun, ambient);
         curve.noon_max = total.iter().copied().fold(0.0f32, f32::max).max(1e-4);
         curve.noon_luminance = luminance(flat_light(sun, ambient)).max(1e-4);
@@ -663,15 +690,13 @@ impl DayNightCurve {
     ///
     /// The map's `war3map.w3i` fog block wins when it has one (`density > 0`).
     /// Maps without a block (every RoC campaign map) get
-    /// [`FogSettings::atmosphere`] so the far terrain still has a horizon; the
-    /// map's own `base_color` is reused when the w3i carried a colour but
-    /// density 0. `atmosphere = false` returns the raw block.
+    /// [`FogSettings::atmosphere`] so the far terrain still has a horizon.
+    /// `atmosphere = false` returns the raw block.
     pub fn fog_effective(&self) -> FogSettings {
         if self.fog.density > 0.0 {
             self.fog
         } else if self.atmosphere {
-            FogSettings::atmosphere_with(self.fog.base_color)
-                .sanitized()
+            FogSettings::atmosphere()
         } else {
             self.fog
         }
@@ -686,12 +711,18 @@ impl DayNightCurve {
         // Sky/fog follows the flat-surface light level, floored so night keeps a
         // readable horizon instead of a black screen.
         let day_factor = (luminance(terrain.lit(FLAT_NDL)) / self.noon_luminance).clamp(0.0, 1.0);
-        let fog_scale = 0.22 + 0.78 * day_factor;
         let fog = self.fog_effective();
+        // Night horizon: the authored night light is dark and warm
+        // (`KLAC` 0.799/0.533/0.313), so the haze colour must fall much faster
+        // than the light or the night turns into a washed blue-grey (measured:
+        // night haze at 47 % of noon desaturated the terrain to (46,48,41) where
+        // the light model alone gives a warm (72,64,15)). The exponent keeps the
+        // noon horizon bright and the midnight horizon a deep blue.
+        let horizon = 0.09 + 0.91 * day_factor * day_factor;
         let fog_color = [
-            fog.base_color[0] * fog_scale,
-            fog.base_color[1] * fog_scale,
-            fog.base_color[2] * fog_scale,
+            fog.base_color[0] * horizon,
+            fog.base_color[1] * horizon,
+            fog.base_color[2] * horizon,
         ];
         DayNightSample {
             hour,
@@ -699,7 +730,9 @@ impl DayNightCurve {
             unit,
             sun_direction: self.preset.terrain().sun_direction,
             fog_color,
-            fog_density: fog.density,
+            // The haze thins at night for the same reason: the far plane keeps
+            // its warm moonlit colour instead of going grey.
+            fog_density: fog.density * (0.45 + 0.55 * day_factor),
             fog_range: [fog.start, fog.end],
             is_night: is_night(hour),
         }
@@ -720,19 +753,24 @@ impl DayNightCurve {
 
     /// Linear sun/ambient for one DNC light at day fraction `at`.
     ///
-    /// The MDX colour tracks are authored in sRGB (they are keyframed colours,
-    /// not radiometric intensities), so they are decoded once here and then
-    /// multiplied by the curve's white-balance gain: the shader consumes linear
-    /// light and the target is an sRGB swapchain. Applying the tint *after* the
-    /// decode is what keeps noon white; multiplying sRGB values into a linear
-    /// buffer (the old path) shifted every midtone warm.
+    /// The MDX colour tracks are authored as sRGB keyframe colours, so they are
+    /// decoded once here, multiplied by the curve's per-term white balance, then
+    /// by the static intensity: the shader consumes linear light and the target
+    /// is an sRGB swapchain. Applying the balance after the decode is what keeps
+    /// noon white; multiplying sRGB values into a linear buffer (the old path)
+    /// shifted every midtone warm.
     fn raw_light(&self, light: &DncLight, at: f32) -> ([f32; 3], [f32; 3]) {
         let sun_srgb = mul3(light.sun_color, track_rgb(light.sun_keys, at));
         let ambient_srgb = mul3(light.ambient_color, track_rgb(light.ambient_keys, at));
-        let wb = self.white_balance;
         (
-            scale3(mul3(srgb_to_linear3(sun_srgb), wb), light.sun_intensity),
-            scale3(mul3(srgb_to_linear3(ambient_srgb), wb), light.ambient_intensity),
+            scale3(
+                mul3(srgb_to_linear3(sun_srgb), self.sun_balance),
+                light.sun_intensity,
+            ),
+            scale3(
+                mul3(srgb_to_linear3(ambient_srgb), self.ambient_balance),
+                light.ambient_intensity,
+            ),
         )
     }
 }
@@ -2045,6 +2083,53 @@ mod tables {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// White balance: the noon flat-surface grade must be exactly white on both
+    /// DNC models, and the hour-to-hour ratio must survive (18:00 warm,
+    /// midnight dark-warm). This is the CPU half of `render.color.no-yellow-cast`.
+    #[test]
+    fn white_balance_makes_noon_neutral() {
+        let curve = DayNightCurve::new(Preset::Lordaeron);
+        let noon = curve.sample(12.0);
+        for channel in 0..3 {
+            assert!(
+                (noon.terrain.grade[channel] - 1.0).abs() < 0.01,
+                "terrain noon channel {channel} = {:.4}",
+                noon.terrain.grade[channel]
+            );
+        }
+        let ratio = noon.unit.grade[0] / noon.unit.grade[1];
+        assert!((ratio - 1.0).abs() < 0.02, "unit noon r/g = {ratio:.4}");
+        for hour in [0.0f32, 6.0, 12.0, 18.0] {
+            let sample = curve.sample(hour);
+            let flat = sample.terrain.lit(FLAT_NDL);
+            println!(
+                "WBN hour={hour:05.2} flat={:.4},{:.4},{:.4} sun={:.4},{:.4},{:.4} \
+                 ambient={:.4},{:.4},{:.4} night={}",
+                flat[0],
+                flat[1],
+                flat[2],
+                sample.terrain.sun[0],
+                sample.terrain.sun[1],
+                sample.terrain.sun[2],
+                sample.terrain.ambient[0],
+                sample.terrain.ambient[1],
+                sample.terrain.ambient[2],
+                sample.is_night
+            );
+        }
+        // 18:00 is still warm: red stays above blue. The shipped dusk ambient
+        // is a *magenta* sunset (KLBC 0.903/0.522/0.636 from 18:04), so green
+        // dips below blue for a few minutes — the warm metric is R−B, not the
+        // textbook R>G>B.
+        let dusk = curve.sample(18.0).terrain.grade;
+        assert!(
+            dusk[0] > dusk[2] + 0.01,
+            "dusk lost its warmth (r {:.3} vs b {:.3}): {dusk:?}",
+            dusk[0],
+            dusk[2]
+        );
+    }
 
     /// test id: render.daynight.curve
     #[test]

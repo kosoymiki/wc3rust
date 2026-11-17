@@ -103,7 +103,11 @@ impl UiRenderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    // Early, named failure (`BindingSizeTooSmall`) instead of a
+                    // draw-time "bound with size N where the shader expects M".
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<ViewportUniform>() as u64,
+                    ),
                 },
                 count: None,
             }],
@@ -388,4 +392,22 @@ fn single_level(image: &TextureImage) -> Vec<Mip> {
         height: image.height.max(1),
         rgba: image.rgba.clone(),
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `render.uniform.ui-viewport`: the Rust `ViewportUniform` and the WGSL
+    /// `Viewport` must be the same size, so the HUD pass can never bind a
+    /// buffer the shader does not fully cover (the 112-vs-176 camera abort in
+    /// `analysis/crash-20261117.txt` was exactly this class of drift).
+    #[test]
+    fn viewport_uniform_matches_the_wgsl_struct() {
+        assert_eq!(std::mem::size_of::<ViewportUniform>(), 16);
+        assert_eq!(
+            crate::mesh::wgsl_struct_size(UI_SHADER, "Viewport"),
+            std::mem::size_of::<ViewportUniform>()
+        );
+    }
 }

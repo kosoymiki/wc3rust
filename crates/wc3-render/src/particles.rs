@@ -321,6 +321,16 @@ struct CameraUniform {
     _pad: [f32; 4],
 }
 
+/// `mat4x4<f32>` + 4 × `vec4<f32>`. The particles camera is deliberately a
+/// different shape from the world camera (it carries the sprite basis), so the
+/// only thing that matters is that Rust and WGSL agree — asserted below, because
+/// a drift here aborts at draw time exactly like the 112-vs-176 camera abort
+/// (`analysis/crash-20261117.txt`).
+const _: () = assert!(
+    std::mem::size_of::<CameraUniform>() == 128,
+    "particles CameraUniform must stay 128 B (mat4x4 + 4 vec4)"
+);
+
 const PARTICLES_SHADER: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -961,6 +971,19 @@ fn blend_depth_write(blend: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `render.uniform.particles-camera`: the Rust uniform and the WGSL `Camera`
+    /// the particles module compiles must agree byte for byte. The layout already
+    /// pins `min_binding_size`, so a drift fails at pipeline creation; this test
+    /// names the file to fix.
+    #[test]
+    fn camera_uniform_matches_the_wgsl_struct() {
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 128);
+        assert_eq!(
+            crate::mesh::wgsl_struct_size(PARTICLES_SHADER, "Camera"),
+            std::mem::size_of::<CameraUniform>()
+        );
+    }
 
     #[test]
     fn instance_layout_matches_the_stride() {

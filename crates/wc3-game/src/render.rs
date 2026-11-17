@@ -84,6 +84,122 @@ const _: () = assert!(
     "game CameraUniform must stay 176 B (mat4x4 + 7 vec4)"
 );
 
+// ---------------------------------------------------------------------------
+// Validation-error instrumentation (ledger 480, packet A)
+// ---------------------------------------------------------------------------
+
+/// Pass labels, in the order `LAST_PASS` indexes them.
+const PASS_ENCODE: &str = "encode";
+const PASS_WORLD: &str = "world";
+const PASS_FOW: &str = "fow";
+const PASS_HUD: &str = "hud";
+const PASS_LABELS: [&str; 4] = [PASS_ENCODE, PASS_WORLD, PASS_FOW, PASS_HUD];
+
+/// The pass whose commands are being recorded right now.
+///
+/// wgpu reports a draw-time validation error against the *encoder* label
+/// (`In a CommandEncoder, label = 'game-encoder'`, `analysis/crash-20261117.txt`),
+/// never the pass, so the error handler reads this to name the pass.
+static LAST_PASS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn note_pass(index: usize) {
+    LAST_PASS.store(index, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn last_pass() -> &'static str {
+    let index = LAST_PASS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .min(PASS_LABELS.len() - 1);
+    PASS_LABELS[index]
+}
+
+/// `H2_PASS_SCOPE=0` disables the per-pass validation scopes; they are on by
+/// default because a named pass is what turns an opaque abort into a bug report.
+fn pass_scopes_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("H2_PASS_SCOPE").as_deref(),
+            Ok("0" | "off" | "false")
+        )
+    })
+}
+
+/// Log one validation error as `P0_PASS_ERROR pass=<label> …` (bounded: a broken
+/// frame can raise thousands).
+fn log_pass_error(source: &str, pass: &str, error: &str) {
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n <= 8 {
+        crate::dev_log!(
+            "P0_PASS_ERROR pass={} last={} source={} n={} err={}",
+            pass,
+            last_pass(),
+            source,
+            n,
+            error
+        );
+    } else if n == 9 {
+        crate::dev_log!(
+            "P0_PASS_ERROR_MORE pass={} further validation errors are counted only",
+            pass
+        );
+    }
+}
+
+/// Poll a wgpu error-scope future once, without an executor.
+///
+/// `wgpu-core` resolves the pop future with `ready(scope.error)`, so the first
+/// poll is enough; `None` means the scope has not been processed yet (the
+/// uncaptured-error handler still catches it).
+fn poll_error<F: std::future::Future>(future: F) -> Option<F::Output> {
+    use std::task::{Context, Poll, Waker};
+
+    struct Noop;
+    impl std::task::Wake for Noop {
+        fn wake(self: std::sync::Arc<Self>) {}
+    }
+    let waker = Waker::from(std::sync::Arc::new(Noop));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(value) => Some(value),
+        Poll::Pending => None,
+    }
+}
+
+/// RAII validation scope for one recorded pass.
+///
+/// Pushing `Validation` around a pass and popping it at the end of the block
+/// attributes the error to that pass; without it wgpu's default handler
+/// (`default_error_handler` -> `panic!`) aborts the process with only the
+/// encoder label, which is what build 0f037ea2 did.
+struct PassScope {
+    label: &'static str,
+    guard: Option<wgpu::ErrorScopeGuard>,
+}
+
+impl PassScope {
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            guard: pass_scopes_enabled()
+                .then(|| device.push_error_scope(wgpu::ErrorFilter::Validation)),
+        }
+    }
+}
+
+impl Drop for PassScope {
+    fn drop(&mut self) {
+        let Some(guard) = self.guard.take() else {
+            return;
+        };
+        if let Some(Some(error)) = poll_error(guard.pop()) {
+            log_pass_error("scope", self.label, &error.to_string());
+        }
+    }
+}
+
 /// WC3-style day/night grade for a clock hour in `0..24`.
 ///
 /// The curve is data, not taste: it comes from the shipped DNC light models
@@ -186,6 +302,31 @@ impl Renderer {
         font_atlas: &TextureImage,
         minimap: Option<&TextureImage>,
     ) -> Result<Self, String> {
+        // The camera contract is 176 B on all four sides: this struct, the
+        // buffer bound at (0,0), the mesh WGSL `Camera` and the terrain WGSL
+        // `Camera`. Build 0f037ea2 shipped with the WGSL side already grown to
+        // 176 B while this struct was still the old 112 B shape (`mat4x4` +
+        // `light`, `sun`, `ambient`) and died at the first terrain draw
+        // (`bound with size 112 where the shader expects 176`). Checking both
+        // shader copies here fails with a readable error instead of aborting
+        // mid-frame, and covers the terrain copy, which no assert used to read.
+        let mesh_camera_bytes = wc3_render::mesh::camera_uniform_size_from_wgsl();
+        let terrain_camera_bytes =
+            wc3_render::mesh::wgsl_struct_size(crate::terrain_render::TERRAIN_SHADER, "Camera");
+        if terrain_camera_bytes != CAMERA_UNIFORM_BYTES || mesh_camera_bytes != CAMERA_UNIFORM_BYTES
+        {
+            return Err(format!(
+                "camera uniform mismatch: bound buffer {} B, mesh WGSL `Camera` {} B, \
+                 terrain WGSL `Camera` {} B — the two sides must agree before a bind group is built",
+                CAMERA_UNIFORM_BYTES, mesh_camera_bytes, terrain_camera_bytes
+            ));
+        }
+        // Replace wgpu's default error handler (an unconditional abort, the
+        // SIGABRT in analysis/crash-20261117.txt) with one that names the pass
+        // and keeps the process alive.
+        device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
+            log_pass_error("uncaptured", last_pass(), &error.to_string());
+        }));
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("game-camera-layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -210,16 +351,14 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // One line of device evidence for the 176-byte contract: the Rust
+        // struct, the buffer that is really bound and both shader copies.
         crate::dev_log!(
-            "GAME_CAMERA_UNIFORM bytes={} shader_expected={} mesh_bytes={}",
+            "GAME_CAMERA_UNIFORM bytes={} buffer_bytes={} mesh_wgsl={} terrain_wgsl={} terrain_bind=game upholds=176",
             CAMERA_UNIFORM_BYTES,
-            wc3_render::mesh::camera_uniform_size_from_wgsl(),
-            wc3_render::mesh::CAMERA_UNIFORM_SIZE
-        );
-        debug_assert_eq!(
-            CAMERA_UNIFORM_BYTES,
-            wc3_render::mesh::camera_uniform_size_from_wgsl(),
-            "game camera uniform and terrain WGSL `Camera` disagree"
+            camera_buffer.size(),
+            mesh_camera_bytes,
+            terrain_camera_bytes
         );
         let camera_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("game-camera-bind"),
@@ -418,8 +557,9 @@ impl Renderer {
     /// renderer.sync_day_night(game.sim.time_of_day());
     /// ```
     pub fn sync_day_night(&mut self, hours: f32) {
+        // No `logged_hour` reset here: this runs every frame, and the once-per-
+        // game-hour log is driven by the integer-hour change in `render_with`.
         self.day_night.sync(hours);
-        self.logged_hour = i32::MIN;
     }
 
     /// Hand the hour back to the free-running clock (tools with no simulation).
@@ -493,31 +633,11 @@ impl Renderer {
         self.day_night.clock_mut().set_scale(scale);
     }
 
-    /// `GAME_FOW unexplored=… explored=… visible=…` when the mask changes.
-    ///
-    /// One line per distinct visibility histogram, so a device log proves the
-    /// three states exist (the operator's build showed only black + full-lit
-    /// because the explored band was never sampled at the displayed edge).
-    fn log_fow_histogram(&mut self, mask: &FogMask) {
-        let histogram = mask.histogram();
-        if self.logged_fow == Some(histogram) {
-            return;
-        }
-        self.logged_fow = Some(histogram);
-        crate::dev_log!(
-            "GAME_FOW unexplored={} explored={} visible={} cells={} cell_size={:.0}",
-            histogram.0,
-            histogram.1,
-            histogram.2,
-            mask.width * mask.height,
-            mask.cell_size
-        );
-    }
-
     /// Rebuild the fog-of-war mask from the simulation's per-player grid.
-    /// `cells`: 0 unexplored (black), 1 explored-not-visible (55% black),
-    /// 2 visible (no overlay). The renderer samples it through the depth buffer,
-    /// so the mask follows terrain height and stays under the HUD.
+    /// `cells`: 0 unexplored (black), 1 explored-not-visible (veil alpha 0.834
+    /// -> 45 % of the lit pixel on screen), 2 visible (no overlay). The renderer
+    /// samples it through the depth buffer, so the mask follows terrain height,
+    /// covers units and doodads standing on the cell, and stays under the HUD.
     pub fn set_fog(&mut self, sim: &wc3_sim::Sim, player: u8) {
         self.fog_mask = Some(fog_mask_from_sim(sim, player));
     }
@@ -559,7 +679,8 @@ impl Renderer {
             self.day_night.hour()
         };
         let sample = if cycle && self.identity_light {
-            wc3_render::daynight::neutral_sample(hour)
+            // Ungraded reference: same fog and sun direction, flat white light.
+            self.daynight.sample(hour).neutral_light()
         } else {
             self.daynight.sample(hour)
         };
@@ -693,7 +814,13 @@ impl Renderer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("game-encoder"),
         });
+        // Scope the whole encode: a validation error the pass scopes miss is
+        // still captured here instead of reaching wgpu's aborting default handler.
+        note_pass(0);
+        let encode_scope = PassScope::new(device, PASS_ENCODE);
         {
+            note_pass(1);
+            let _scope = PassScope::new(device, PASS_WORLD);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("game-world-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -794,6 +921,8 @@ impl Renderer {
                     scene.viewport,
                     depth,
                 );
+                note_pass(2);
+                let _scope = PassScope::new(device, PASS_FOW);
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("game-fog-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -818,6 +947,8 @@ impl Renderer {
                 .ui
                 .prepare(device, queue, &self.gpu_scene, &mut self.counters)
         {
+            note_pass(3);
+            let _scope = PassScope::new(device, PASS_HUD);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("game-ui-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -838,6 +969,9 @@ impl Renderer {
             self.ui.draw(&mut pass, textures, &mut self.counters);
         }
         queue.submit(Some(encoder.finish()));
+        // Report anything the encoder raised at finish/submit under `encode`;
+        // `last=` keeps the name of the last recorded pass.
+        drop(encode_scope);
     }
 
     /// Refill the reusable GPU scene from the game scene.
@@ -1563,6 +1697,46 @@ pub fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `render.uniform.camera-size` (game half): the camera the game binds at
+    /// `@group(0) @binding(0)`, the mesh WGSL `Camera` and the terrain WGSL
+    /// `Camera` that actually consumes it must all be 176 B.
+    ///
+    /// Build 0f037ea2 shipped the shaders at 176 B while this struct was still
+    /// the old 112 B shape (`mat4x4` + `light`/`sun`/`ambient`) and aborted on
+    /// the first world frame: `In bind group index 0, the buffer bound at
+    /// binding index 0 is bound with size 112 where the shader expects 176`
+    /// (`analysis/crash-20261117.txt`). The terrain copy used to be checked only
+    /// through `mesh::CAMERA_UNIFORM_SIZE`, a proxy in another crate.
+    #[test]
+    fn camera_uniform_matches_both_shaders() {
+        assert_eq!(CAMERA_UNIFORM_BYTES, 176);
+        assert_eq!(
+            CAMERA_UNIFORM_BYTES,
+            wc3_render::mesh::camera_uniform_size_from_wgsl()
+        );
+        assert_eq!(
+            CAMERA_UNIFORM_BYTES,
+            wc3_render::mesh::wgsl_struct_size(crate::terrain_render::TERRAIN_SHADER, "Camera")
+        );
+    }
+
+    /// The instrumentation must be able to pop the scopes it pushes on the
+    /// render thread: wgpu's error scopes are thread-local and LIFO, so a leaked
+    /// or mis-ordered pop panics inside `drop`, not at the call site.
+    #[test]
+    fn pass_labels_are_stable() {
+        note_pass(1);
+        assert_eq!(last_pass(), PASS_WORLD);
+        note_pass(2);
+        assert_eq!(last_pass(), PASS_FOW);
+        note_pass(3);
+        assert_eq!(last_pass(), PASS_HUD);
+        note_pass(usize::MAX);
+        assert_eq!(last_pass(), PASS_HUD, "out-of-range index is clamped");
+        note_pass(0);
+        assert_eq!(last_pass(), PASS_ENCODE);
+    }
 
     fn fixtures() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         let mpq = [
