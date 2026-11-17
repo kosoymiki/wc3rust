@@ -1266,13 +1266,24 @@ fn build_doodad_geometry(
 pub fn fog_mask_from_sim(sim: &wc3_sim::Sim, player: u8) -> FogMask {
     let width = sim.grid.width;
     let height = sim.grid.height;
+    // The pathing grid is the WPM (4-unit cells): 4096x4096 on a 128x128 map,
+    // i.e. 16.7M cells. Building the mask (and then the box blur) over all of
+    // them every frame froze the render thread (device 2026-11-17: tick=684,
+    // fps=0, SDLThread inside `wc3_render::fog::darkness_grid`). Fog of war is a
+    // visual field, not a pathing query: sample it at <=256 cells per side and
+    // scale the world cell size by the stride so the mapping stays exact.
+    let stride = (width.max(height) / 256).max(1);
+    let fog_w = width.div_ceil(stride).max(1);
+    let fog_h = height.div_ceil(stride).max(1);
     let cell_size = sim.grid.cell_size;
-    let mut cells = Vec::with_capacity((width * height) as usize);
-    for y in 0..height {
-        for x in 0..width {
+    let mut cells = Vec::with_capacity((fog_w * fog_h) as usize);
+    for y in 0..fog_h {
+        for x in 0..fog_w {
+            let sx = (x * stride).min(width - 1);
+            let sy = (y * stride).min(height - 1);
             let pos = wc3_sim::Vec2::new(
-                (x as f32 + 0.5) * cell_size,
-                (y as f32 + 0.5) * cell_size,
+                (sx as f32 + 0.5) * cell_size,
+                (sy as f32 + 0.5) * cell_size,
             );
             cells.push(if sim.is_visible(player, pos) {
                 2
@@ -1283,7 +1294,7 @@ pub fn fog_mask_from_sim(sim: &wc3_sim::Sim, player: u8) -> FogMask {
             });
         }
     }
-    FogMask::new(width, height, cell_size, cells)
+    FogMask::new(fog_w, fog_h, cell_size * stride as f32, cells)
 }
 
 /// Render one scene into an RGBA8 buffer with a headless Vulkan device.
