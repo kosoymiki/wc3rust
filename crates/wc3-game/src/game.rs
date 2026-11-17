@@ -1972,7 +1972,10 @@ impl Game {
         let mobile = self.mobile_hud.layout(&view);
         self.layout_army = army.len();
         let mut layout = HudLayout::new(self.viewport);
-        layout.scale = mobile.scale;
+        // `HudLayout::scale` is the px-per-dp factor for every legacy consumer
+        // (ring radii, edge pan, hitbox debug). The pack art has its own scale
+        // inside `MobileHudLayout::scale`.
+        layout.scale = self.density_scale;
         layout.top_bar = mobile.top_meta;
         layout.resource_row = mobile.resources;
         layout.minimap = mobile.minimap;
@@ -2218,9 +2221,20 @@ impl Game {
         for button in &mut self.buttons {
             button.rect = Rect::new(0.0, 0.0, 0.0, 0.0);
         }
+        // Compact landscape draws the card in a drawer: while it is closed the
+        // 12 actions have no screen rect, and tapping the COMMANDS control is
+        // the only way to reach them (the buttons keep their indices/actions).
+        if mobile.card_slots.is_empty() {
+            return;
+        }
         for (slot, index) in self.card_button_indices().iter().enumerate() {
+            // A drawer may expose fewer cells than the logical card (a very
+            // short window); the remaining actions stay list-only.
+            let Some(rect) = mobile.card_slots.get(slot).copied() else {
+                break;
+            };
             if let Some(button) = self.buttons.get_mut(*index) {
-                button.rect = mobile.card_slots[slot];
+                button.rect = rect;
             }
         }
     }
@@ -7106,11 +7120,7 @@ impl Game {
                     unit.mana.max(0),
                     unit.max_mana.max(0),
                 )
-                .level(unit.level.max(1))
-                .food(
-                    unit.food_used.max(0),
-                    unit.food_made.max(0),
-                )
+                .level(unit.level.max(1) as u32)
         }).or_else(|| {
             // A selected gold mine is a resource plate: WC3 shows its name and
             // the remaining gold, with no HP/mana bar (see `SelectionView.bars`).

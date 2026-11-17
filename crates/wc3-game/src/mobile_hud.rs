@@ -1756,7 +1756,9 @@ impl HudLayout {
         } else {
             zero
         };
-        let map_left = safe.left + pad * 0.5;
+        // Clear of the topbar plate's left spear ornament (the width of one
+        // authored cap at the bar's height).
+        let map_left = safe.left + (top_h * 1.6).max(24.0);
         let map_right = if show_fps { fps.x } else { upkeep.x };
         let map_name = Rect::new(
             map_left,
@@ -1859,7 +1861,7 @@ impl HudLayout {
             // Wide: every zone inline, card anchored to the safe right edge.
             let card = Rect::new(
                 content.right() - CARD_W_DP,
-                content.y,
+                content.y + ((h - CARD_H_DP) * 0.5).max(0.0),
                 CARD_W_DP,
                 CARD_H_DP.min(h),
             );
@@ -1914,24 +1916,16 @@ impl HudLayout {
             self.selection = Rect::new(sel_x, content.y, sel_w, h);
             self.compose_selection();
             if self.state.groups_open {
-                let overlay = Rect::new(
-                    content.x,
-                    (self.console.y - gap - (GROUPS_TRAY_DP + gap + TOUCH_DP))
-                        .max(self.top_bar.bottom() + gap),
+                let overlay = self.drawer_rect(
                     GROUPS_TRAY_DP + gap + TOUCH_DP,
-                    GROUPS_TRAY_DP + gap + TOUCH_DP,
+                    GROUPS_TRAY_DP,
+                    false,
                 );
                 self.groups_overlay = overlay;
                 self.group_slots = tray_slots(overlay);
             }
             if self.state.commands_open {
-                let h = CARD_H_DP.min(self.console.y - self.top_bar.bottom() - gap * 2.0);
-                let overlay = Rect::new(
-                    content.right() - CARD_W_DP,
-                    (self.console.y - gap - h).max(self.top_bar.bottom() + gap),
-                    CARD_W_DP,
-                    h,
-                );
+                let overlay = self.drawer_rect(CARD_W_DP, CARD_H_DP, true);
                 self.commands_overlay = overlay;
                 self.card = overlay;
                 self.card_slots = card_field_slots(overlay, CARD_COLUMNS, CARD_ROWS);
@@ -1941,6 +1935,25 @@ impl HudLayout {
                 groups_x - gap * 0.5,
             ]);
         }
+    }
+
+    /// A modal drawer anchored above the console; on a very short window it
+    /// slides over the console instead of shrinking its 48 dp targets.
+    fn drawer_rect(&self, width: f32, height: f32, align_right: bool) -> Rect {
+        let gap = ZONE_GAP_DP;
+        let x = if align_right {
+            (self.content.right() - width).max(self.content.x)
+        } else {
+            self.content.x.min((self.screen.x - width).max(0.0))
+        };
+        let above = self.console.y - gap - height;
+        let bottom_anchored = self.screen.y - CONSOLE_PAD_DP - height;
+        let y = if above >= self.top_bar.bottom() + gap {
+            above
+        } else {
+            bottom_anchored.max(self.top_bar.bottom())
+        };
+        Rect::new(x, y, width, height)
     }
 
     fn place_minimap_image(&mut self, ring: f32) {
@@ -1973,35 +1986,40 @@ impl HudLayout {
             aside,
         );
         // Thumbnails live inside the summary strip, never a separate column.
-        let thumbs = if self.state.selection_count > 1 { 3 } else { 0 };
-        let thumb = 30.0;
+        let thumbs = if self.state.selection_count > 1 { 2 } else { 0 };
+        let thumb = TOUCH_DP;
         let thumbs_w = if thumbs > 0 {
             thumbs as f32 * (thumb + 4.0)
         } else {
             0.0
         };
-        let side = summary_h - 8.0;
-        self.portrait = Rect::new(content.x, content.y + 4.0, side, side);
+        let summary_side = summary_h - 8.0;
+        self.portrait = Rect::new(content.x, content.y + 4.0, summary_side, summary_side);
         let info_x = self.portrait.right() + gap;
         let info_w =
             (self.groups_button.x - gap - thumbs_w - info_x).max(1.0);
-        self.name = Rect::new(info_x, content.y + 1.0, info_w, 18.0);
-        self.class = Rect::new(info_x, self.name.bottom(), info_w, 12.0);
-        self.hp_bar = Rect::new(info_x, self.class.bottom() + 1.0, info_w, 11.0);
+        self.name = Rect::new(info_x, content.y, info_w, 16.0);
+        self.class = Rect::new(info_x, content.y + 16.0, info_w, 11.0);
+        self.hp_bar = Rect::new(info_x, content.y + 27.0, info_w, 10.0);
         self.hp_text = self.hp_bar;
         if self.state.has_mana {
-            self.mana_bar = Rect::new(info_x, self.hp_bar.bottom() + 1.0, info_w, 9.0);
+            self.mana_bar = Rect::new(info_x, content.y + 37.0, info_w, 8.0);
         } else {
             self.mana_bar = Rect::new(0.0, 0.0, 0.0, 0.0);
         }
         self.mana_text = self.mana_bar;
-        self.selection = Rect::new(content.x, content.y, content.w, summary_h);
+        self.selection = Rect::new(
+            content.x,
+            content.y,
+            (content.w - aside - gap).max(1.0),
+            summary_h,
+        );
         if thumbs > 0 {
             let x0 = self.groups_button.x - gap - thumbs_w;
             for index in 0..thumbs {
                 self.army_slots.push(Rect::new(
                     x0 + index as f32 * (thumb + 4.0),
-                    content.y + (summary_h - thumb) * 0.5,
+                    content.y,
                     thumb,
                     thumb,
                 ));
@@ -2009,13 +2027,7 @@ impl HudLayout {
             self.army_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
         }
         if self.state.groups_open {
-            let overlay_h = GROUPS_TRAY_DP + gap + TOUCH_DP;
-            let overlay = Rect::new(
-                content.x,
-                (self.console.y - gap - overlay_h).max(self.top_bar.bottom() + gap),
-                (GROUPS_TRAY_DP + gap + TOUCH_DP).min(content.w),
-                overlay_h,
-            );
+            let overlay = self.drawer_rect(GROUPS_TRAY_DP + gap + TOUCH_DP, GROUPS_TRAY_DP, false);
             self.groups_overlay = overlay;
             self.group_slots = tray_slots(overlay);
         }
@@ -2026,14 +2038,9 @@ impl HudLayout {
         self.card_slots = card_field_slots(self.card, CARD_COLUMNS, CARD_ROWS);
         let map_room = self.card.x - gap - content.x;
         if map_room >= 96.0 {
-            let side = map_room.min(MINIMAP_COMPACT_DP).min(row_h);
-            self.minimap_header = Rect::new(content.x, row_y, side, 16.0);
-            self.minimap_frame = Rect::new(
-                content.x,
-                row_y + 16.0,
-                side,
-                (side - 16.0).max(1.0),
-            );
+            let frame = map_room.min(MINIMAP_COMPACT_DP).min((row_h - 16.0).max(1.0));
+            self.minimap_header = Rect::new(content.x, row_y, frame, 16.0);
+            self.minimap_frame = Rect::new(content.x, row_y + 16.0, frame, frame);
             self.place_minimap_image(6.0);
         } else {
             // TZ §7: on very narrow portraits the map collapses into a 48 dp
@@ -2056,13 +2063,12 @@ impl HudLayout {
 
     /// Selection panel internals shared by every mode (TZ §6.2).
     fn compose_selection(&mut self) {
-        let gap = 6.0;
         let zone = self.selection;
         if zone.w <= 0.0 || zone.h <= 0.0 {
             return;
         }
         let (portrait_side, info_gap) = if zone.w >= 260.0 {
-            (80.0_f32.min(zone.h * 0.5), 8.0)
+            (80.0_f32.min(zone.h * 0.55), 8.0)
         } else if zone.w >= 200.0 {
             (72.0, 6.0)
         } else {
@@ -2071,25 +2077,29 @@ impl HudLayout {
         self.portrait = Rect::new(zone.x + 2.0, zone.y + 2.0, portrait_side, portrait_side);
         let info_x = self.portrait.right() + info_gap;
         let info_w = (zone.right() - info_x - 2.0).max(1.0);
-        // Bottom band: multi-selection thumbnails OR hero inventory.
-        let band_h = 44.0_f32.min(zone.h * 0.3);
+        // Bottom band: multi-selection thumbnails OR the hero inventory; one row
+        // of 48 dp targets, never both and never an empty reserved column.
+        let band_fits = zone.h >= TOUCH_DP * 1.6;
+        let band_h = if band_fits { TOUCH_DP } else { 0.0 };
         let band_top = zone.bottom() - band_h;
-        let strip = self.state.selection_count > 1;
-        let inv = self.state.inventory && !strip;
+        let strip = self.state.selection_count > 1 && band_fits;
+        let inv = self.state.inventory && !strip && band_fits;
         let has_band = strip || inv;
         let column_bottom = if has_band { band_top - 4.0 } else { zone.bottom() };
         let mut y = zone.y + 2.0;
         let mut row = |h: f32, y: &mut f32| {
-            let r = Rect::new(info_x, *y, info_w, h);
-            *y += h;
+            // A row that does not fit collapses to zero instead of crossing the
+            // band or leaving the panel (no clipped text, TZ §6.2).
+            let available = (column_bottom - *y).max(0.0);
+            let height = h.min(available);
+            let r = Rect::new(info_x, *y, info_w, height);
+            *y += height;
             r
         };
         let name_h = 18.0;
         let class_h = 14.0;
         let hp_h = 18.0;
         let mana_h = 14.0;
-        let need = name_h + class_h + hp_h + mana_h + 14.0 + 14.0;
-        let compact_rows = column_bottom - (zone.y + 2.0) < need;
         self.name = row(name_h, &mut y);
         self.class = row(class_h, &mut y);
         self.hp_bar = row(hp_h, &mut y);
@@ -2097,14 +2107,11 @@ impl HudLayout {
         if self.state.has_mana {
             self.mana_bar = row(mana_h, &mut y);
             self.mana_text = self.mana_bar;
-        } else {
-            self.mana_bar = Rect::new(0.0, 0.0, 0.0, 0.0);
-            self.mana_text = self.mana_bar;
         }
-        if !compact_rows {
-            self.stats = row(14.0, &mut y);
-            if self.state.production {
-                self.production_label = row(14.0, &mut y);
+        self.stats = row(14.0, &mut y);
+        if self.state.production {
+            self.production_label = row(14.0, &mut y);
+            if self.production_label.h > 0.0 {
                 self.production_bar = Rect::new(
                     self.production_label.x,
                     self.production_label.bottom(),
@@ -2115,57 +2122,53 @@ impl HudLayout {
         }
         if has_band {
             self.army = Rect::new(zone.x + 2.0, band_top, (zone.w - 4.0).max(1.0), band_h);
+            let pitch = band_h + 4.0;
             if strip {
-                let cells = self.state.selection_count.min(6);
-                let cell = (band_h - 4.0).min(40.0);
-                let pitch = cell + 4.0;
+                let count = self.state.selection_count.min(6);
                 let badge_w = 34.0;
+                let room = (self.army.w - badge_w + 4.0).max(pitch);
+                let cells = ((room / pitch).floor() as usize).clamp(1, count);
                 for index in 0..cells {
-                    let x = self.army.x + index as f32 * pitch;
-                    if x + cell > self.army.right() - badge_w {
-                        break;
-                    }
-                    self.army_slots
-                        .push(Rect::new(x, self.army.y + 2.0, cell, cell));
+                    self.army_slots.push(Rect::new(
+                        self.army.x + index as f32 * pitch,
+                        self.army.y,
+                        band_h,
+                        band_h,
+                    ));
                 }
-                self.army_badge = Rect::new(
-                    self.army.right() - badge_w,
-                    self.army.y + 2.0,
-                    badge_w,
-                    band_h - 4.0,
-                );
+                if count > cells {
+                    self.army_badge = Rect::new(
+                        self.army.right() - badge_w,
+                        self.army.y,
+                        badge_w,
+                        band_h,
+                    );
+                }
             } else {
-                let cell = ((band_h - 4.0) / 2.0).min(20.0);
-                let _ = cell;
-                // 3x2 inventory grid, 40 dp cells.
-                let side = (band_h - 4.0).min(40.0);
-                let pitch = side + 4.0;
-                let grid_w = 3.0 * side + 2.0 * 4.0;
-                let grid_h = 2.0 * side + 4.0;
+                // Six 48 dp item cells, right-aligned in the band.
+                let cells = 6usize;
+                let grid_w = cells as f32 * band_h + (cells - 1) as f32 * 4.0;
                 self.inventory = Rect::new(
-                    self.army.right() - grid_w,
-                    self.army.y + ((band_h - grid_h) * 0.5).max(0.0),
-                    grid_w,
-                    grid_h,
+                    self.army.x + (self.army.w - grid_w).max(0.0),
+                    self.army.y,
+                    grid_w.min(self.army.w),
+                    band_h,
                 );
                 let mut slots = [Rect::new(0.0, 0.0, 0.0, 0.0); 6];
                 let mut icons = slots;
                 let mut charges = slots;
                 let mut touches = slots;
-                for row_index in 0..2 {
-                    for column in 0..3 {
-                        let index = row_index * 3 + column;
-                        let slot = Rect::new(
-                            self.inventory.x + column as f32 * pitch,
-                            self.inventory.y + row_index as f32 * (side + 4.0),
-                            side,
-                            side,
-                        );
-                        slots[index] = slot;
-                        icons[index] = slot.inset(4.0, 4.0);
-                        charges[index] = Rect::new(slot.x, slot.bottom() - 10.0, slot.w, 10.0);
-                        touches[index] = slot;
-                    }
+                for index in 0..cells {
+                    let slot = Rect::new(
+                        self.inventory.x + index as f32 * pitch,
+                        self.inventory.y,
+                        band_h,
+                        band_h,
+                    );
+                    slots[index] = slot;
+                    icons[index] = slot.inset(4.0, 4.0);
+                    charges[index] = Rect::new(slot.x, slot.bottom() - 12.0, slot.w, 11.0);
+                    touches[index] = slot;
                 }
                 self.inventory_parts = crate::hud::inventory::InventoryParts {
                     frame: self.inventory,
@@ -2177,10 +2180,11 @@ impl HudLayout {
                 };
             }
         }
-        let _ = gap;
     }
 
     /// World-side bands: toasts/hint above the console, tooltip, phase overlay.
+    /// Everything is allocated bottom-up inside the playfield and simply does
+    /// not exist when it does not fit — no band ever crosses the top bar.
     fn compose_bands(&mut self) {
         let gap = ZONE_GAP_DP;
         let safe = self.safe;
@@ -2189,49 +2193,77 @@ impl HudLayout {
             .max(1.0);
         let band_h = 44.0;
         let mut bottom = self.console.y - gap;
-        for _ in 0..3 {
-            let rect = Rect::new(
-                ((self.screen.x + safe.left - safe.right) * 0.5 - band_w * 0.5)
-                    .max(safe.left + gap),
-                bottom - band_h,
-                band_w,
-                band_h,
-            );
-            self.toasts.push(rect);
-            bottom -= band_h + gap;
+        // A modal drawer owns the screen: no notice may float over it.
+        let modal = self.state.groups_open || self.state.commands_open;
+        if !modal {
+            for _ in 0..3 {
+                if bottom - band_h < self.top_bar.bottom() + gap {
+                    break;
+                }
+                let rect = Rect::new(
+                    ((self.screen.x + safe.left - safe.right) * 0.5 - band_w * 0.5)
+                        .max(safe.left + gap),
+                    bottom - band_h,
+                    band_w,
+                    band_h,
+                );
+                self.toasts.push(rect);
+                bottom -= band_h + gap;
+            }
         }
-        self.toast = self.toasts.first().copied().unwrap_or(Rect::new(
-            0.0, 0.0, 0.0, 0.0,
-        ));
-        let tooltip_h = (150.0_f32).min((bottom - self.top_bar.bottom() - gap).max(48.0));
+        self.toast = self
+            .toasts
+            .first()
+            .copied()
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        let tooltip_room = (bottom - self.top_bar.bottom() - gap).max(0.0);
+        let tooltip_h = 150.0_f32.min(tooltip_room);
         let tooltip_w = (360.0_f32)
             .min(self.screen.x - safe.left - safe.right - gap * 2.0)
             .max(1.0);
-        self.tooltip = Rect::new(
-            ((self.screen.x + safe.left - safe.right) * 0.5 - tooltip_w * 0.5)
-                .max(safe.left + gap),
-            bottom - tooltip_h,
-            tooltip_w,
-            tooltip_h,
-        );
-        self.hint = Rect::new(
-            safe.left + gap * 2.0,
-            self.top_bar.bottom() + gap * 2.0,
-            (band_w * 0.8).max(1.0),
-            36.0,
-        );
-        self.phase = Rect::new(
-            (self.screen.x - 320.0) * 0.5,
-            (self.console.y - 140.0).max(self.top_bar.bottom() + gap),
-            320.0,
-            132.0,
-        );
+        self.tooltip = if !modal && tooltip_h >= 48.0 {
+            Rect::new(
+                ((self.screen.x + safe.left - safe.right) * 0.5 - tooltip_w * 0.5)
+                    .max(safe.left + gap),
+                bottom - tooltip_h,
+                tooltip_w,
+                tooltip_h,
+            )
+        } else {
+            Rect::new(0.0, 0.0, 0.0, 0.0)
+        };
+        let hint_w = (band_w * 0.8).max(1.0);
+        self.hint = if self.viewport_h() >= 60.0 {
+            Rect::new(
+                safe.left + gap * 2.0,
+                self.top_bar.bottom() + gap,
+                hint_w,
+                32.0,
+            )
+        } else {
+            Rect::new(0.0, 0.0, 0.0, 0.0)
+        };
+        let phase_h = 132.0_f32.min((self.console.y - self.top_bar.bottom() - gap * 2.0).max(0.0));
+        self.phase = if phase_h >= 64.0 {
+            Rect::new(
+                (self.screen.x - 320.0) * 0.5,
+                (self.console.y - gap - phase_h).max(self.top_bar.bottom() + gap),
+                320.0_f32.min(self.screen.x - safe.left - safe.right),
+                phase_h,
+            )
+        } else {
+            Rect::new(0.0, 0.0, 0.0, 0.0)
+        };
         self.mode_rect = Rect::new(
             safe.left + gap,
             self.top_bar.bottom() + gap,
             120.0,
             24.0,
         );
+    }
+
+    fn viewport_h(&self) -> f32 {
+        self.console.y - self.top_bar.bottom()
     }
 
     /// Apply `px = dp * density` exactly once. Every field below is already in
@@ -2513,9 +2545,11 @@ impl MobileHudLayout {
         let dp = self.dp();
         let mut zones = vec![
             ("top_bar", dp.top_bar),
+            // The resource strip lives inside the top bar; the QA table and the
+            // legacy touch names read it as its own zone.
+            ("resources", dp.resources),
             ("minimap", dp.minimap_frame),
             ("selection", dp.selection),
-            ("resources", dp.resources),
             ("card", dp.card),
             ("groups", dp.groups_area),
             ("tooltip", dp.tooltip),
@@ -2564,6 +2598,8 @@ impl MobileHudLayout {
                 rects.push((name, rect));
             }
         }
+        // Collapsed rects (closed drawer, hidden inventory) are not targets.
+        rects.retain(|(_, rect)| rect.w > 0.0 && rect.h > 0.0);
         rects
     }
 
@@ -2643,9 +2679,39 @@ impl MobileHudLayout {
             ));
         }
         // 3. Interactive content inside the safe content rect.
+        let safe_screen = Rect::new(
+            dp.safe.left,
+            dp.top_bar.bottom(),
+            (dp.screen.x - dp.safe.left - dp.safe.right).max(1.0),
+            (dp.screen.y - dp.safe.bottom - dp.top_bar.bottom()).max(1.0),
+        );
+        // An open drawer is modal: it is drawn last, it eats the gesture first,
+        // and on a short window it deliberately floats over the console.
+        let modal = if dp.commands_overlay.w > 0.0 {
+            Some(dp.commands_overlay)
+        } else if dp.groups_overlay.w > 0.0 {
+            Some(dp.groups_overlay)
+        } else {
+            None
+        };
+        let in_modal = |rect: Rect| {
+            modal
+                .map(|panel| rect.intersection_area(&panel) > 0.5)
+                .unwrap_or(false)
+        };
         for (name, rect) in self.interactive() {
-            if !rect.is_inside(&dp.content) {
-                issues.push(format!("{name} outside safe content: {rect:?}"));
+            // Console content lives inside the safe content rect; drawer cells
+            // float above the console and only owe the safe screen area.
+            let region = if in_modal(rect) || rect.bottom() <= dp.console.y + 0.5 {
+                safe_screen
+            } else {
+                dp.content
+            };
+            if !rect.is_inside(&region) {
+                issues.push(format!(
+                    "{name} outside {}: {rect:?} vs {region:?}",
+                    if region == dp.content { "safe content" } else { "safe screen" }
+                ));
             }
             let side = rect.w.min(rect.h);
             if side + 0.01 < TOUCH_DP {
@@ -2658,11 +2724,24 @@ impl MobileHudLayout {
         let zones = self.zone_rects();
         for i in 0..zones.len() {
             for j in (i + 1)..zones.len() {
+                // A modal drawer legitimately covers the console it belongs to;
+                // everything else must tile cleanly.
+                if in_modal(zones[i].1) || in_modal(zones[j].1) {
+                    continue;
+                }
+                // Nesting is not a collision: the resource strip lives inside
+                // the top bar, the drawers sit on the console they belong to.
+                // Only partial sibling overlaps are a layout bug.
+                if zones[i].1.contains_rect(&zones[j].1)
+                    || zones[j].1.contains_rect(&zones[i].1)
+                {
+                    continue;
+                }
                 let area = zones[i].1.intersection_area(&zones[j].1);
                 if area > 0.5 {
                     issues.push(format!(
-                        "{} overlaps {} by {area:.1} dp²",
-                        zones[i].0, zones[j].0
+                        "{} overlaps {} by {area:.1} dp² ({:?} vs {:?})",
+                        zones[i].0, zones[j].0, zones[i].1, zones[j].1
                     ));
                 }
             }
@@ -3842,7 +3921,7 @@ impl MobileHud {
             draw_minimap_content(ui, flat, map_font, &layout, view, tokens, s, shadow);
         } else if layout.minimap_rail.w > 0.0 {
             // Very narrow portrait: one 48 dp control opens the map overlay.
-            skin.nine_scaled(ui, "slot_gold", layout.minimap_rail, white, s);
+            skin.nine_scaled(ui, "tile_gold", layout.minimap_rail, white, s);
             text_chain.text_box(
                 ui,
                 "MAP",
@@ -3876,7 +3955,7 @@ impl MobileHud {
             let Some(chip) = view.army.get(index) else {
                 break;
             };
-            let role = if chip.selected { "slot_gold" } else { "slot_dark" };
+            let role = if chip.selected { "tile_gold" } else { "tile_dark" };
             skin.nine_scaled(ui, role, *slot, white, s);
             if let Some(icon) = chip.icon {
                 let window = slot.inset(4.0 * d, 4.0 * d);
@@ -7074,8 +7153,8 @@ fn sp(dp: f32, density: f32) -> f32 {
     (dp * density / 30.0).max(MIN_TEXT_PX / 30.0)
 }
 
-/// One continuous console band: anchored end caps, tiled middle, no four
-/// floating panels (TZ §6/§9).
+/// One continuous console band: anchored end caps, tiled **flat centre** (the
+/// piece's own gold border never repeats), no four floating panels (TZ §6/§9).
 fn draw_console_band(ui: &mut UiBatch, pack: &HudPack, layout: &MobileHudLayout, s: f32) {
     let band = layout.console;
     if band.w <= 2.0 || band.h <= 2.0 {
@@ -7097,16 +7176,32 @@ fn draw_console_band(ui: &mut UiBatch, pack: &HudPack, layout: &MobileHudLayout,
     );
     let mid_x = band.x + if left { cap_w } else { 0.0 };
     let mid_right = band.right() - if right { cap_w } else { 0.0 };
-    if mid_right > mid_x {
-        let middle = Rect::new(mid_x, band.y, mid_right - mid_x, band.h);
-        if !pack.tile_x(ui, "console_left_mid_normal_256x288", middle, [1.0; 4], art) {
-            ui.textured_quad(
-                pack.texture("console_left_mid_normal_256x288").unwrap_or(0),
-                middle,
-                [0.0, 0.0, 1.0, 1.0],
-                [1.0; 4],
-            );
-        }
+    if mid_right <= mid_x + 1.0 {
+        return;
+    }
+    let Some(asset) = pack.asset("console_left_mid_normal_256x288") else {
+        return;
+    };
+    let aw = asset.w as f32;
+    let insets = pack
+        .insets("console_left_mid_normal_256x288")
+        .unwrap_or([32.0, 0.0, 32.0, 0.0]);
+    let (il, ir) = (insets[0].max(1.0), insets[2].max(1.0));
+    let core = (aw - il - ir).max(1.0);
+    let tile_w = (core * art).max(1.0);
+    let u0 = il / aw;
+    let u1 = (aw - ir) / aw;
+    let mut x = mid_x;
+    while x < mid_right - 0.5 {
+        let width = tile_w.min(mid_right - x);
+        let span = (width / tile_w).clamp(0.0, 1.0);
+        ui.textured_quad(
+            asset.texture,
+            Rect::new(x, band.y, width, band.h),
+            [u0, 0.0, u0 + (u1 - u0) * span, 1.0],
+            [1.0; 4],
+        );
+        x += width;
     }
 }
 
@@ -7261,7 +7356,7 @@ fn draw_selection_panel(
             ui.textured_quad(icon, window, [0.0, 0.0, 1.0, 1.0], [1.0; 4]);
         }
     } else {
-        skin.nine_scaled(ui, "slot_gold", layout.portrait, [1.0; 4], s);
+        skin.nine_scaled(ui, "tile_gold", layout.portrait, [1.0; 4], s);
     }
     text_chain.text_box(
         ui,
@@ -7432,7 +7527,8 @@ fn draw_group_plate(
     } else {
         "0".to_string()
     };
-    let role = if group.count > 0 { "slot_gold" } else { "slot_dark" };
+    // `slot_*` atlas roles carry a baked-in numeral; the tile bevels are clean.
+    let role = if group.count > 0 { "tile_gold" } else { "tile_dark" };
     skin.nine_scaled(ui, role, rect, [1.0; 4], s);
     if group.active {
         fill_outline(
@@ -7488,7 +7584,7 @@ fn draw_drawer_button(
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
-    let role = if open { "slot_gold" } else { "slot_dark" };
+    let role = if open { "tile_gold" } else { "tile_dark" };
     skin.nine_scaled(ui, role, rect, [1.0; 4], s);
     text_chain.text_box(
         ui,

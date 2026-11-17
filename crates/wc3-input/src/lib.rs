@@ -94,18 +94,24 @@ impl<'a> TouchLayout<'a> {
 
 // ---------------------------------------------------------------- constants
 
-/// Finger travel (scaled px) that turns a tap into a pan or a box.
-pub const TAP_SLOP: f32 = 16.0;
+/// Finger travel in dp that turns a tap into a pan or a box.
+pub const TAP_SLOP: f32 = 12.0;
 /// Hold time after which a drag becomes a selection box instead of a pan.
 pub const BOX_HOLD_SECONDS: f32 = 0.30;
 /// Two taps closer than this are a double tap.
 pub const DOUBLE_TAP_SECONDS: f32 = 0.36;
 /// Maximum distance between the two taps of a double tap (scaled px).
 pub const DOUBLE_TAP_DISTANCE: f32 = 36.0;
-/// Extra finger-sized padding around HUD buttons (scaled px).
-pub const BUTTON_HIT_SLOP: f32 = 10.0;
-/// Minimum square hit target for a HUD button (scaled px), ~48 dp on a 3x phone.
-pub const MIN_BUTTON_TARGET: f32 = 108.0;
+/// Extra finger-sized padding around HUD buttons, in dp. The HUD layout
+/// already guarantees 48 dp rects, so this only closes the 8 dp seam between
+/// neighbours (48 + 2*4 = 56 = one 48 dp cell plus one 8 dp gap): the expanded
+/// bands tile exactly and a nearest-centre resolve can never be ambiguous.
+pub const BUTTON_HIT_SLOP: f32 = 4.0;
+/// Minimum square hit target for a HUD button: Android's 48 dp floor (TZ §8).
+/// Expressed in dp; [`TouchLayout::scale`] is px-per-dp, so `slop()` turns it
+/// into framebuffer pixels. (The retired 108 px constant was 36 dp at density
+/// 3.0 — below the platform minimum.)
+pub const MIN_BUTTON_TARGET: f32 = 48.0;
 /// A pressed button cancels once the finger is this far from its centre.
 pub const BUTTON_RELEASE_SLOP: f32 = 24.0;
 /// Hold time on the minimap that turns a camera jump into a move order.

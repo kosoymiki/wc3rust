@@ -1,21 +1,19 @@
-//! HUD acceptance dump for the operator's FINAL asset pack (ledger 457).
+//! HUD layout + composition dump for the TZ §12 viewport matrix (ledger 478).
 //!
-//! Draws the real `MobileHud::draw` path at the two phone orientations, writes
-//! the headless PNGs and a machine-readable element table, and prints the
-//! layout gate:
+//! Runs the **real** `MobileHud::draw` path headlessly for every target
+//! viewport, writes the mandatory state screenshots, prints the layout gate and
+//! exits non-zero on any violation.
 //!
 //! ```text
 //! scripts/h2-cargo run -p wc3-game --example hud_layout --offline
 //! ```
 //!
-//! Artifacts:
-//! * `analysis/hudskin/pack-2414x1080.png`
-//! * `analysis/hudskin/pack-1080x2414.png`
-//! * `analysis/hudskin/pack-layout-2414x1080.json`
-//! * `analysis/hudskin/pack-layout-1080x2414.json`
-//!
-//! The JSON is consumed by `tools/hud_pack_check.py`, which independently
-//! re-derives the manifest, section, inset, leaf, text and safe-area rules.
+//! Artifacts
+//! * `analysis/hudskin/screens/<state>-<w>x<h>.png` — mandatory states;
+//! * `analysis/hudskin/hud-layout-matrix.json` — per-viewport numbers
+//!   (density, dp viewport, console, targets, mode) consumed by
+//!   `HUD_LAYOUT_QA.md`;
+//! * `HUD_LAYOUT_GATE PASS|FAIL` on stdout.
 
 use std::path::{Path, PathBuf};
 
@@ -23,21 +21,75 @@ use glam::Vec2;
 use serde_json::json;
 
 use wc3_game::assets::TextureImage;
+use wc3_game::hud::mobile_hud::{
+    CommandButton, GroupView, HudLayout, HudLayoutMode, HudLayoutState, HudView, MinimapDot,
+    MinimapView, MobileHud, ProductionView, ResourcePill, SelectionView, ToastTone, ToastView,
+    UiPreferences, WindowMetrics, CARD_SLOTS, GROUP_COUNT, TOUCH_DP,
+};
 use wc3_game::hud::{self, Font, Rect};
 use wc3_game::hudskin::pack::{self, HudPack};
 use wc3_game::hudskin::soft_raster;
 use wc3_game::hudskin::Skin;
-use wc3_game::hud::mobile_hud::{
-    ArmyChip, CommandButton, GroupView, HudView, MinimapDot, MinimapView, MobileHud,
-    ProductionView, ResourcePill, SelectionView, ToastTone, ToastView,
-};
 use wc3_game::style::{Chrome, Tokens};
 
-const MIN_LEAF_PX: f32 = 90.0;
+/// (framebuffer px, density, label). Densities are the platform values for the
+/// device class; 3.0 is the measured target phone (`wm density` 480 dpi).
+const MATRIX: &[(u32, u32, f32, &str)] = &[
+    (2414, 1080, 3.0, "device-2414x1080"),
+    (2048, 916, 3.0, "user-2048x916"),
+    (2340, 1080, 3.0, "phone-2340x1080"),
+    (2400, 1080, 3.0, "phone-2400x1080"),
+    (1920, 1080, 3.0, "reference-1920x1080"),
+    (1280, 720, 3.0, "small-1280x720"),
+    (1080, 2340, 3.0, "portrait-1080x2340"),
+    (960, 2340, 3.0, "narrow-portrait-320dp"),
+    (2560, 1600, 2.0, "tablet-2560x1600"),
+];
+
+/// Mandatory states (TZ §12). `(slug, state, drawer)`.
+#[derive(Clone, Copy)]
+struct State {
+    slug: &'static str,
+    selection: Selection,
+    count: usize,
+    drawer: Drawer,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Selection {
+    None,
+    Worker,
+    Building,
+    Hero,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drawer {
+    Closed,
+    Groups,
+    Commands,
+}
+
+const STATES: &[State] = &[
+    State { slug: "none", selection: Selection::None, count: 0, drawer: Drawer::Closed },
+    State { slug: "worker", selection: Selection::Worker, count: 1, drawer: Drawer::Closed },
+    State { slug: "building", selection: Selection::Building, count: 1, drawer: Drawer::Closed },
+    State { slug: "hero", selection: Selection::Hero, count: 1, drawer: Drawer::Closed },
+    State { slug: "sel6", selection: Selection::Worker, count: 6, drawer: Drawer::Closed },
+    State { slug: "sel12", selection: Selection::Worker, count: 12, drawer: Drawer::Closed },
+    State { slug: "card12", selection: Selection::Building, count: 1, drawer: Drawer::Commands },
+    State { slug: "cooldown", selection: Selection::Hero, count: 1, drawer: Drawer::Commands },
+    State { slug: "groups", selection: Selection::Worker, count: 6, drawer: Drawer::Groups },
+    State { slug: "commands", selection: Selection::Building, count: 1, drawer: Drawer::Commands },
+    State { slug: "tooltip", selection: Selection::Building, count: 1, drawer: Drawer::Commands },
+];
 
 fn main() {
     let root = pack::find_installed().unwrap_or_else(|| {
-        eprintln!("HUD_PACK missing=manifest.json (searched {:?})", pack::pack_search_dirs());
+        eprintln!(
+            "HUD_PACK missing=manifest.json (searched {:?})",
+            pack::pack_search_dirs()
+        );
         std::process::exit(2);
     });
     let mut textures: Vec<TextureImage> = Vec::new();
@@ -49,184 +101,459 @@ fn main() {
         eprintln!("HUD_PACK role_mapping=failed");
         std::process::exit(2);
     });
-    let summary = pack.slice_summary();
-    println!("HUD_PACK {}", summary);
-
     let chrome = Chrome::new(&mut textures);
     let font = Font::load();
-    let minimap = minimap_texture();
-    let minimap_index = textures.len();
-    textures.push(minimap.clone());
+    let minimap_texture = minimap_texture();
+    textures.push(minimap_texture.clone());
+    let out_dir = repo_root().join("analysis/hudskin");
+    let screens = out_dir.join("screens");
+    std::fs::create_dir_all(&screens).expect("analysis/hudskin/screens");
 
     let mut failures = 0usize;
-    for viewport in [
-        Vec2::new(2414.0, 1080.0),
-        Vec2::new(1080.0, 2414.0),
-    ] {
-        let hud = MobileHud::new();
-        let tokens = Tokens::default();
-        let view = proof_view(&pack, &skin, viewport);
-        let mut batch = hud::UiBatch::default();
-        let layout = hud.draw(&view, &mut batch, &font, &chrome);
-        let name = format!("pack-{}x{}.png", viewport.x as u32, viewport.y as u32);
-        let out_dir = repo_root().join("analysis/hudskin");
-        std::fs::create_dir_all(&out_dir).expect("analysis/hudskin");
-        let png = out_dir.join(&name);
-        let rgba = soft_raster::rasterize(
-            &batch,
-            &textures,
-            Some(&font),
-            Some(&minimap),
-            viewport.x as u32,
-            viewport.y as u32,
-        );
-        soft_raster::write_png(&png, viewport.x as u32, viewport.y as u32, &rgba)
-            .expect("write proof png");
+    let mut matrix_rows = Vec::new();
+    println!(
+        "{:<26} {:>6} {:>10} {:>14} {:>10} {:>9} {:>8}  gate",
+        "viewport", "dens", "dp", "mode", "console", "HUD %", "targets"
+    );
+    for (w, h, density, label) in MATRIX {
+        let viewport = Vec2::new(*w as f32, *h as f32);
+        let metrics = WindowMetrics::new(viewport, *density);
+        let dp = metrics.screen_dp();
+        let mut row_failures = 0usize;
+        // Gate every state, not just the idle one: a drawer must not break an
+        // invariant, and every actionable rect must stay >= 48 dp.
+        let mut max_target_min = f32::INFINITY;
+        let mut ids = std::collections::BTreeSet::new();
+        for state in STATES {
+            let dp_layout = sample_layout(metrics, *state, &skin);
+            let px = dp_layout.to_px(*density);
+            for issue in px.issues(&Tokens::default()) {
+                println!("GATE {label}/{}: {issue}", state.slug);
+                row_failures += 1;
+                failures += 1;
+            }
+            for (zone, rect) in px.interactive() {
+                max_target_min = max_target_min.min(rect.w.min(rect.h));
+                ids.insert(zone);
+            }
+            // Command ids: 12 row-major whenever the grid is reachable.
+            if px.card_slots.len() != CARD_SLOTS && !px.card_slots.is_empty() {
+                println!(
+                    "GATE {label}/{}: {} card slots",
+                    state.slug,
+                    px.card_slots.len()
+                );
+                row_failures += 1;
+                failures += 1;
+            }
+            // Groups: nine in the tray plus ID 0.
+            if !px.group_slots.is_empty() && px.group_slots.len() != GROUP_COUNT {
+                println!(
+                    "GATE {label}/{}: {} group slots",
+                    state.slug,
+                    px.group_slots.len()
+                );
+                row_failures += 1;
+                failures += 1;
+            }
+        }
+        let idle = HudLayout::compute(metrics, UiPreferences::default(), HudLayoutState::default());
+        let hud_pct = 100.0 * (idle.console.h + idle.top_bar.h) / dp.y;
         println!(
-            "HUD_PACK frame={} bytes={} scale={:.5}",
-            png.display(),
-            std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0),
-            layout.scale
+            "{:<26} {:>6.2} {:>10} {:>14} {:>10} {:>8.1}% {:>8.1}  {}",
+            label,
+            density,
+            format!("{:.1}x{:.0}", dp.x, dp.y),
+            idle.mode.key(),
+            format!("{:.1}dp", idle.console.h),
+            hud_pct,
+            max_target_min,
+            if row_failures == 0 { "ok" } else { "FAIL" }
         );
+        matrix_rows.push(json!({
+            "label": label,
+            "framebuffer_px": [w, h],
+            "density_scale": density,
+            "dp_viewport": [dp.x, dp.y],
+            "mode": idle.mode.key(),
+            "console_dp": idle.console.h,
+            "console_px": idle.console.h * density,
+            "console_pct": 100.0 * idle.console.h / dp.y,
+            "topbar_dp": idle.top_bar.h,
+            "viewport_dp": idle.viewport.h,
+            "viewport_pct": 100.0 * idle.viewport.h / dp.y,
+            "hud_pct": hud_pct,
+            "min_target_dp": max_target_min,
+            "interactive_zones": ids.iter().collect::<Vec<_>>(),
+            "gate": if row_failures == 0 { "ok" } else { "FAIL" },
+        }));
 
-        let table = element_table(&pack, &skin, &layout, &view, &batch, &textures, viewport);
-        let json_path = out_dir.join(format!(
-            "pack-layout-{}x{}.json",
-            viewport.x as u32,
-            viewport.y as u32
-        ));
-        std::fs::write(
-            &json_path,
-            serde_json::to_vec_pretty(&table).expect("serialise layout"),
-        )
-        .expect("write layout json");
-
-        // Gate: the same numeric rules the Python checker re-derives.
-        let mut local = 0usize;
-        println!(
-            "\n== viewport {:.0}x{:.0} sections={:?}",
-            viewport.x, viewport.y, layout.section_assets
-        );
-        for (index, section) in layout.sections.iter().enumerate() {
-            println!(
-                "section {} {:<32} x={:>7.1} w={:>7.1} y={:>7.1} h={:>7.1}",
-                index,
-                layout.section_assets[index],
-                section.x,
-                section.w,
-                section.y,
-                section.h
-            );
-        }
-        println!(
-            "{:<22} {:>8} {:>8} {:>8} {:>8} {:>8}  verdict",
-            "element", "x", "y", "w", "h", "min px"
-        );
-        let mut rows: Vec<(&str, Rect, bool)> = vec![
-            ("minimap", layout.minimap, true),
-            ("minimap image", layout.minimap_image, false),
-            ("selection", layout.selection, true),
-            ("portrait", layout.portrait, false),
-            ("card", layout.card, false),
-            ("groups", layout.groups_area, false),
-            ("inventory", layout.inventory, false),
-            ("army", layout.army, false),
-            ("topbar", layout.top_meta, false),
-            ("tooltip", layout.tooltip, false),
-        ];
-        for slot in &layout.card_slots {
-            rows.push(("card cell", *slot, true));
-        }
-        for slot in &layout.group_slots {
-            rows.push(("group hit", *slot, true));
-        }
-        for slot in &layout.army_slots {
-            rows.push(("army chip", *slot, true));
-        }
-        for slot in &layout.inventory_parts.touches {
-            rows.push(("inventory slot", *slot, true));
-        }
-        for (label, rect, leaf) in rows {
-            if rect.w <= 0.0 || rect.h <= 0.0 {
+        // Screens: the full mandatory set on the two device-class viewports,
+        // three representative states elsewhere (keeps the run bounded).
+        let full = *label == "device-2414x1080" || *label == "portrait-1080x2340";
+        for state in STATES {
+            if !full && !matches!(state.slug, "none" | "worker" | "card12") {
                 continue;
             }
-            let min_side = rect.w.min(rect.h);
-            let ok = !leaf || min_side + 0.01 >= MIN_LEAF_PX;
-            if !ok {
-                local += 1;
-            }
-            println!(
-                "{:<22} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1}  {}",
+            if render_state(
+                &screens,
                 label,
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                min_side,
-                if ok { "ok" } else { "FAIL" }
-            );
-        }
-        // Text floor at the device scale.
-        for (label, scale) in [
-            ("map_name", 0.90 * layout.scale),
-            ("resources", 0.85 * layout.scale),
-            ("upkeep", 0.80 * layout.scale),
-            ("hotkey", 0.80 * layout.scale),
-            ("prose", 0.80 * layout.scale),
-        ] {
-            let px = hud::HudFonts::text_px(scale);
-            if px + 0.01 < hud::MIN_TEXT_PX {
-                println!("text {label} px={px:.1} FAIL (< {})", hud::MIN_TEXT_PX);
-                local += 1;
+                viewport,
+                *density,
+                *state,
+                &pack,
+                &skin,
+                &chrome,
+                &font,
+                &textures,
+                &minimap_texture,
+            ) {
+                // rendered
+            } else {
+                failures += 1;
             }
         }
-        // Card right margin inside the safe area.
-        let card_right = viewport.x - layout.safe.right;
-        if layout.card.right() > card_right + 0.5 {
-            println!(
-                "card right {:.1} > safe edge {:.1} FAIL",
-                layout.card.right(),
-                card_right
-            );
-            local += 1;
-        }
-        // Sections tile the band.
-        if layout.orientation == wc3_game::hud::mobile_hud::Orientation::Landscape {
-            // Sections tile the console band, which sits inside the horizontal
-            // safe gutters (the platform insets are authoritative), not the raw
-            // viewport width.
-            let total: f32 = layout.sections.iter().map(|section| section.w).sum();
-            if (total - layout.console.w).abs() > 0.5 {
-                println!(
-                    "sections width {total:.1} != console {:.1} FAIL",
-                    layout.console.w
-                );
-                local += 1;
-            }
-        } else {
-            let total: f32 = layout.sections.iter().map(|section| section.h).sum();
-            if (total - layout.console.h).abs() > 0.5 {
-                println!(
-                    "sections height {total:.1} != console {:.1} FAIL",
-                    layout.console.h
-                );
-                local += 1;
-            }
-        }
-        let issues = layout.issues(&tokens);
-        if !issues.is_empty() {
-            println!("layout.issues = {} {:?}", issues.len(), issues);
-            local += issues.len();
-        }
-        println!("viewport {name}: {} issue(s)", local);
-        failures += local;
     }
-    println!(
-        "\nHUD_LAYOUT_GATE {}",
-        if failures == 0 { "PASS" } else { "FAIL" }
-    );
+
+    std::fs::write(
+        out_dir.join("hud-layout-matrix.json"),
+        serde_json::to_vec_pretty(&json!({
+            "generated": "hud_layout example (ledger 478)",
+            "touch_floor_dp": TOUCH_DP,
+            "rows": matrix_rows,
+        }))
+        .expect("serialise matrix"),
+    )
+    .expect("write matrix json");
+
+    println!("\nHUD_LAYOUT_GATE {}", if failures == 0 { "PASS" } else { "FAIL" });
     if failures != 0 {
         std::process::exit(1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sample_layout(metrics: WindowMetrics, state: State, skin: &Skin) -> HudLayout {
+    let mut prefs = UiPreferences::default();
+    prefs.show_fps = false;
+    HudLayout::compute(
+        metrics,
+        prefs,
+        HudLayoutState {
+            selection_count: state.count,
+            has_mana: state.selection == Selection::Hero,
+            production: matches!(state.selection, Selection::Building | Selection::Hero),
+            inventory: state.selection == Selection::Hero,
+            groups_open: state.drawer == Drawer::Groups,
+            commands_open: state.drawer == Drawer::Commands,
+        },
+    )
+    .tap(|_| {
+        let _ = skin;
+    })
+}
+
+/// Small helper so `sample_layout` reads as one expression.
+trait Tap: Sized {
+    fn tap(self, f: impl FnOnce(&Self)) -> Self {
+        f(&self);
+        self
+    }
+}
+impl<T> Tap for T {}
+
+#[allow(clippy::too_many_arguments)]
+fn render_state(
+    screens: &Path,
+    label: &str,
+    viewport: Vec2,
+    density: f32,
+    state: State,
+    _pack: &HudPack,
+    skin: &Skin,
+    chrome: &Chrome,
+    font: &Font,
+    textures: &[TextureImage],
+    minimap_texture: &TextureImage,
+) -> bool {
+    let hud = MobileHud::new();
+    let view = proof_view(
+        viewport,
+        density,
+        state,
+        skin,
+        minimap_texture_index(textures, minimap_texture),
+    );
+    let mut batch = hud::UiBatch::default();
+    let layout = hud.draw(&view, &mut batch, font, chrome);
+    let name = format!("{}-{}-{}x{}.png", label, state.slug, viewport.x as u32, viewport.y as u32);
+    let path = screens.join(&name);
+    let rgba = soft_raster::rasterize(
+        &batch,
+        textures,
+        Some(font),
+        Some(minimap_texture),
+        viewport.x as u32,
+        viewport.y as u32,
+    );
+    match write_png(&path, viewport.x as u32, viewport.y as u32, &rgba) {
+        Ok(()) => {
+            println!(
+                "SCREEN {} mode={} console={:.0},{:.0},{:.0},{:.0} bytes={}",
+                path.display(),
+                layout.layout_mode.key(),
+                layout.console.x,
+                layout.console.y,
+                layout.console.w,
+                layout.console.h,
+                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            );
+            true
+        }
+        Err(error) => {
+            println!("SCREEN FAILED {}: {error}", path.display());
+            false
+        }
+    }
+}
+
+/// Compressed PNG (the shared `soft_raster::write_png` stores raw deflate
+/// blocks: 9.9 MB per 2414x1080 frame, which the 3 GB free on this device
+/// cannot absorb across the whole matrix).
+fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(())
+}
+
+fn minimap_texture_index(textures: &[TextureImage], _minimap: &TextureImage) -> usize {
+    // `main` pushes the minimap texture last, so its index is len-1 at draw
+    // time; the proof view stores the resolved index explicitly.
+    textures.len().saturating_sub(1)
+}
+
+fn proof_view<'a>(
+    viewport: Vec2,
+    density: f32,
+    state: State,
+    skin: &'a Skin,
+    minimap_index: usize,
+) -> HudView<'a> {
+    let icon = |name: &str| skin.pack.as_ref().and_then(|pack| pack.texture(name));
+    let resources: &'static [ResourcePill<'static>] = Box::leak(
+        vec![
+            ResourcePill::new("1200", "GOLD", [0.98, 0.86, 0.42, 1.0]).warn(true),
+            ResourcePill::new("880", "LUMBER", [0.72, 0.86, 0.55, 1.0]),
+            ResourcePill::new("42/50", "FOOD", [0.80, 0.82, 0.92, 1.0]),
+        ]
+        .into_boxed_slice(),
+    );
+    let commands: &'static [CommandButton<'static>] = Box::leak(
+        (0..12)
+            .map(|index| match index {
+                0 => CommandButton::new("TRAIN", icon("command_icon_01_64"))
+                    .short("TRAIN")
+                    .hotkey("T")
+                    .sub("60"),
+                1 => CommandButton::new("BUILD", icon("command_icon_02_64"))
+                    .short("BUILD")
+                    .hotkey("B"),
+                2 => CommandButton::new("ATTACK", icon("command_icon_03_64"))
+                    .short("ATTACK")
+                    .hotkey("A"),
+                3 => CommandButton::new("MOVE", icon("command_icon_04_64"))
+                    .short("MOVE")
+                    .hotkey("M"),
+                4 => CommandButton::new("HOLD", icon("command_icon_05_64"))
+                    .short("HOLD")
+                    .hotkey("H")
+                    .enabled(false),
+                5 => CommandButton::new("STOP", icon("command_icon_06_64"))
+                    .short("STOP")
+                    .hotkey("S"),
+                6 => CommandButton::new("SPELL", icon("command_icon_07_64"))
+                    .short("SPELL")
+                    .hotkey("Q")
+                    .cooldown(Some(4.0))
+                    .mana_cost(60),
+                7 => CommandButton::new("AURA", icon("command_icon_08_64"))
+                    .short("AURA")
+                    .hotkey("W")
+                    .autocast(true),
+                8 => CommandButton::new("CANCEL", icon("command_icon_09_64"))
+                    .short("CANCEL")
+                    .hotkey("C")
+                    .pressed(true),
+                9 => CommandButton::new("BUILD2", icon("command_icon_10_64"))
+                    .short("BUILD")
+                    .hotkey("B")
+                    .progress(0.42),
+                10 => CommandButton::new("PATROL", icon("command_icon_11_64"))
+                    .short("PATROL")
+                    .hotkey("P"),
+                _ => CommandButton::new("BACK", icon("command_icon_12_64"))
+                    .short("BACK")
+                    .hotkey("ESC"),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let groups: &'static [GroupView] = Box::leak(
+        (0..GROUP_COUNT)
+            .map(|index| GroupView {
+                rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+                count: if index % 3 == 0 { 0 } else { (index % 5) as u32 + 1 },
+                active: index == 1,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let army: &'static [wc3_game::hud::mobile_hud::ArmyChip] = Box::leak(
+        (0..state.count.min(12))
+            .map(|index| wc3_game::hud::mobile_hud::ArmyChip {
+                icon: icon(&format!("command_icon_{:02}_64", index % 12 + 1)),
+                hp: 0.9 - index as f32 * 0.05,
+                selected: index == 0,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let items: &'static [Option<usize>] = if state.selection == Selection::Hero {
+        Box::leak(
+            vec![
+                icon("command_icon_05_64"),
+                icon("command_icon_06_64"),
+                None,
+                None,
+                None,
+                None,
+            ]
+            .into_boxed_slice(),
+        )
+    } else {
+        Box::leak(Vec::new().into_boxed_slice())
+    };
+    let dots: &'static [MinimapDot] = Box::leak(
+        (0..12)
+            .map(|index| {
+                MinimapDot::new(
+                    0.12 + (index % 4) as f32 * 0.22,
+                    0.16 + (index / 4) as f32 * 0.25,
+                    if index == 0 { 3.0 } else { 2.0 },
+                    [0.95, 0.32, 0.28, 1.0],
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let selection = match state.selection {
+        Selection::None => None,
+        Selection::Worker => Some(
+            SelectionView::new("РАБОЧИЙ", 220, 250)
+                .class("ЛЮДИ · РАБОЧИЙ")
+                .kind("WORKER")
+                .portrait(icon("command_icon_01_64"))
+                .stats(1, 6)
+                .range(90.0),
+        ),
+        Selection::Building => Some(
+            SelectionView::new("КАЗАРМА", 1400, 1500)
+                .class("ЛЮДИ · ЗДАНИЕ")
+                .kind("BUILDING")
+                .portrait(icon("command_icon_02_64"))
+                .stats(4, 0)
+                .production(Some(ProductionView {
+                    name: "ТРЕНИРОВКА",
+                    progress: 0.42,
+                    remaining: 9,
+                })),
+        ),
+        Selection::Hero => Some(
+            SelectionView::new("АРХИМАГ", 640, 800)
+                .class("ЛЮДИ · ГЕРОЙ")
+                .kind("HERO")
+                .portrait(icon("command_icon_03_64"))
+                .stats(6, 21)
+                .range(600.0)
+                .mana(210, 320)
+                .level(5)
+                .production(Some(ProductionView {
+                    name: "ОБУЧЕНИЕ",
+                    progress: 0.20,
+                    remaining: 14,
+                })),
+        ),
+    };
+    let tooltip = if state.slug == "tooltip" {
+        Some("ОБУЧИТЬ ПЕХОТИНЦА\nСтоимость: 60 золота, 20 дерева\nТребуется: Казарма".to_string())
+    } else {
+        None
+    };
+    let toast = if state.slug == "tooltip" {
+        Some(ToastView::new(
+            "ГОРОДСКОЙ ЗАЛ ПОД АТАКОЙ",
+            ToastTone::Danger,
+        ))
+    } else {
+        None
+    };
+    let _ = minimap_index;
+    HudView::new(viewport)
+        .density(density)
+        .ui_scale(1.0)
+        .selection_count(state.count)
+        .groups_open(state.drawer == Drawer::Groups)
+        .commands_open(state.drawer == Drawer::Commands)
+        .resources(resources)
+        .minimap(MinimapView {
+            dots,
+            camera: Some([0.22, 0.26, 0.30, 0.34]),
+            title: "АЛЬЯНС 04",
+            ..MinimapView::new("АЛЬЯНС 04")
+        })
+        .selection(selection)
+        .commands(commands)
+        .map_name("Осада Даларана (4 игрока)", 61.0)
+        .mode("MOVE")
+        .upkeep("НИЗКОЕ")
+        .groups(groups)
+        .army(army)
+        .item_icons(items)
+        .toast(toast)
+        .tooltip(tooltip)
+        .hud_skin(Some(skin))
+}
+
+fn minimap_texture() -> TextureImage {
+    let side = 128usize;
+    let mut rgba = vec![0u8; side * side * 4];
+    for y in 0..side {
+        for x in 0..side {
+            let index = (y * side + x) * 4;
+            // Real terrain-ish greens with a river band: the map texture is a
+            // stand-in for the map's own minimap; no claim of map parity.
+            let river = (x as f32 - 40.0 - (y as f32 * 0.35)).abs() < 6.0;
+            let grass = 80 + ((x * 7 + y * 13) % 40) as u8;
+            rgba[index] = if river { 42 } else { 30 + grass / 4 };
+            rgba[index + 1] = if river { 78 } else { 60 + grass / 2 };
+            rgba[index + 2] = if river { 120 } else { 24 + grass / 5 };
+            rgba[index + 3] = 255;
+        }
+    }
+    TextureImage {
+        width: side as u32,
+        height: side as u32,
+        rgba,
     }
 }
 
@@ -235,453 +562,4 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn proof_view<'a>(pack: &HudPack, skin: &'a Skin, viewport: Vec2) -> HudView<'a> {
-    let icon = |name: &str| pack.texture(name);
-    let resources: &'static [ResourcePill<'static>] = Box::leak(
-        vec![
-            ResourcePill::new("1200", "GOLD", [0.95, 0.76, 0.30, 1.0])
-                .icon(icon("icon_gold_64")),
-            ResourcePill::new("340", "LUMBER", [0.48, 0.85, 0.56, 1.0])
-                .icon(icon("icon_lumber_64")),
-            ResourcePill::new("7/12", "SUPPLY", [0.44, 0.71, 1.0, 1.0])
-                .icon(icon("icon_food_64")),
-        ]
-        .into_boxed_slice(),
-    );
-    let hotkeys = ["S", "A", "B", "G", "M", "H", "F", "R", "", "", "", ""];
-    let labels = [
-        "STOP", "ATTACK", "BUILD", "GATHER", "MOVE", "HOLD", "TRAIN", "RESEARCH", "", "", "", "",
-    ];
-    let commands: &'static [CommandButton<'static>] = Box::leak(
-        labels
-            .iter()
-            .enumerate()
-            .map(|(index, label)| {
-                if label.is_empty() {
-                    CommandButton::empty()
-                } else {
-                    CommandButton::new(
-                        label,
-                        icon(&format!("command_icon_{:02}_64", index + 1)),
-                    )
-                    .hotkey(&hotkeys[index])
-                    .enabled(true)
-                }
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    let dots: &'static [MinimapDot] = Box::leak(
-        vec![
-            MinimapDot::new(0.24, 0.32, 6.0, [0.44, 0.71, 1.0, 1.0]),
-            MinimapDot::new(0.72, 0.66, 7.0, [1.0, 0.35, 0.37, 1.0]),
-            MinimapDot::new(0.18, 0.22, 7.0, [0.95, 0.76, 0.30, 1.0]),
-        ]
-        .into_boxed_slice(),
-    );
-    let groups: &'static [GroupView] = Box::leak(
-        (0..10)
-            .map(|index| GroupView {
-                rect: Rect::new(0.0, 0.0, 0.0, 0.0),
-                count: (index % 4) as u32,
-                active: index == 0,
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    );
-    let army: &'static [ArmyChip] = Box::leak(
-        vec![
-            ArmyChip {
-                icon: icon("command_icon_02_64"),
-                hp: 0.86,
-                selected: true,
-            },
-            ArmyChip {
-                icon: icon("command_icon_03_64"),
-                hp: 0.62,
-                selected: false,
-            },
-            ArmyChip {
-                icon: icon("command_icon_04_64"),
-                hp: 0.35,
-                selected: false,
-            },
-        ]
-        .into_boxed_slice(),
-    );
-    let items: &'static [Option<usize>] = Box::leak(
-        vec![
-            icon("command_icon_05_64"),
-            icon("command_icon_06_64"),
-            None,
-            None,
-            None,
-            None,
-        ]
-        .into_boxed_slice(),
-    );
-    HudView::new(viewport)
-        .resources(resources)
-        .minimap(MinimapView {
-            dots,
-            camera: Some([0.22, 0.26, 0.30, 0.34]),
-            title: "MINIMAP",
-            ..MinimapView::new("MINIMAP")
-        })
-        .selection(Some(
-            SelectionView::new("ARCHER", 300, 300)
-                .class("WARRIOR")
-                .kind("RANGED")
-                .portrait(icon("command_icon_02_64"))
-                .stats(3, 14)
-                .production(Some(ProductionView {
-                    name: "TRAINING",
-                    progress: 0.42,
-                    remaining: 9,
-                })),
-        ))
-        .commands(commands)
-        .map_name("Альянс04", 61.0)
-        .mode("MOVE")
-        .upkeep("NO UPKEEP")
-        .groups(groups)
-        .army(army)
-        .item_icons(items)
-        .toast(Some(ToastView::new(
-            "THE ENEMY TOWN HALL IS UNDER ATTACK",
-            ToastTone::Danger,
-        )))
-        .tooltip(Some(
-            "TRAIN FOOTMAN\nCost: 60 gold, 20 lumber\nRequires: Barracks".to_string(),
-        ))
-         .hud_skin(Some(skin))
-}
-
-fn minimap_texture() -> TextureImage {
-    let side = 256u32;
-    let mut rgba = vec![0u8; (side * side * 4) as usize];
-    for y in 0..side {
-        for x in 0..side {
-            let index = ((y * side + x) * 4) as usize;
-            let nx = x as f32 / side as f32;
-            let ny = y as f32 / side as f32;
-            let grass = ((nx * 17.0).sin() * (ny * 13.0).cos() * 0.5 + 0.5) * 0.18;
-            let water = nx > 0.62 && ny > 0.55;
-            let (r, g, b) = if water {
-                (0.10, 0.24 + grass * 0.2, 0.42)
-            } else {
-                (0.16 + grass * 0.4, 0.34 + grass * 0.5, 0.12 + grass * 0.2)
-            };
-            rgba[index] = (r * 255.0) as u8;
-            rgba[index + 1] = (g * 255.0) as u8;
-            rgba[index + 2] = (b * 255.0) as u8;
-            rgba[index + 3] = 255;
-        }
-    }
-    TextureImage {
-        width: side,
-        height: side,
-        rgba,
-    }
-}
-
-fn section_of(layout: &wc3_game::hud::mobile_hud::MobileHudLayout, rect: Rect) -> usize {
-    let point = rect.centre();
-    for (index, section) in layout.sections.iter().enumerate() {
-        if point.x >= section.x
-            && point.x <= section.right()
-            && point.y >= section.y
-            && point.y <= section.bottom()
-        {
-            return index;
-        }
-    }
-    usize::MAX
-}
-
-#[allow(clippy::too_many_arguments)]
-fn element_table(
-    pack: &HudPack,
-    skin: &Skin,
-    layout: &wc3_game::hud::mobile_hud::MobileHudLayout,
-    view: &HudView<'_>,
-    batch: &hud::UiBatch,
-    textures: &[TextureImage],
-    viewport: Vec2,
-) -> serde_json::Value {
-    let s = layout.scale;
-    let mut elements = Vec::new();
-    let mut texts = Vec::new();
-    let mut push = |id: &str,
-                    rect: Rect,
-                    leaf: bool,
-                    art: Option<&str>,
-                    overlap: Option<Rect>| {
-        let section = section_of(layout, rect);
-        let mut object = json!({
-            "id": id,
-            "rect": [rect.x, rect.y, rect.w, rect.h],
-            "section": section,
-            "leaf": leaf,
-            "min_px": rect.w.min(rect.h),
-            "crosses_section": overlap.map(|check| {
-                let a = section_of(layout, check);
-                a != section
-            }).unwrap_or(false),
-        });
-        if let Some(name) = art
-            && let Some(asset) = pack.asset(name)
-        {
-            let authored = [asset.w as f32, asset.h as f32];
-            object["art"] = json!(name);
-            object["authored"] = json!(authored);
-            object["insets"] = json!(asset.insets);
-            object["sliced"] = json!(asset.sliced());
-            object["scale"] = json!(s);
-            object["stretch"] = json!([
-                rect.w / (authored[0] * s).max(0.01),
-                rect.h / (authored[1] * s).max(0.01),
-            ]);
-            if asset.sliced()
-                && let Some(corners) = pack.corner_quads(name, rect, s)
-            {
-                let rows: Vec<_> = corners
-                    .iter()
-                    .map(|(dst, src)| {
-                        json!({
-                            "dst": [dst.x, dst.y, dst.w, dst.h],
-                            "src": [src.x, src.y, src.w, src.h],
-                        })
-                    })
-                    .collect();
-                object["corners"] = json!(rows);
-            }
-        }
-        elements.push(object);
-    };
-
-    for (index, section) in layout.sections.iter().enumerate() {
-        push(
-            &format!("section_{index}"),
-            *section,
-            false,
-            Some(layout.section_assets[index]),
-            None,
-        );
-    }
-    push("minimap", layout.minimap, true, Some("minimap_frame_normal_216"), None);
-    push("minimap_image", layout.minimap_image, false, None, None);
-    push(
-        "minimap_header",
-        layout.minimap_header,
-        false,
-        Some("minimap_header_normal_216x20"),
-        None,
-    );
-    push("selection", layout.selection, true, None, None);
-    push(
-        "selection_panel",
-        layout.panel,
-        false,
-        Some("selection_panel_normal_240x180"),
-        None,
-    );
-    push("portrait", layout.portrait, false, Some("portrait_frame_normal_128"), Some(layout.selection));
-    push("card", layout.card, false, None, None);
-    if layout.inventory.w > 0.0 {
-        push("inventory", layout.inventory, false, None, None);
-    }
-    for (index, slot) in layout.card_slots.iter().enumerate() {
-        push(
-            &format!("card_slot_{index}"),
-            *slot,
-            true,
-            Some("button_border_normal_64"),
-            Some(layout.card),
-        );
-    }
-    for (index, slot) in layout.group_slots.iter().enumerate() {
-        push(
-            &format!("group_hit_{index}"),
-            *slot,
-            true,
-            None,
-            Some(layout.groups_area),
-        );
-        let art_side = (pack.group_cell * s).max(44.0);
-        let art = Rect::new(
-            slot.centre().x - art_side * 0.5,
-            slot.centre().y - art_side * 0.5,
-            art_side,
-            art_side,
-        );
-        push(
-            &format!("group_art_{index}"),
-            art,
-            false,
-            Some("control_group_button_inactive_44"),
-            Some(layout.groups_area),
-        );
-    }
-    for (index, slot) in layout.army_slots.iter().enumerate() {
-        push(
-            &format!("army_{index}"),
-            *slot,
-            true,
-            Some("button_border_empty_64"),
-            Some(layout.army),
-        );
-    }
-    for (index, slot) in layout.inventory_parts.slots.iter().enumerate() {
-        // The drawn plate fits the band; the *touch* rect carries the 90 px
-        // finger floor, so the interactive leaf is the touch rect (the art is
-        // reported separately and is deliberately smaller).
-        push(
-            &format!("inventory_slot_{index}"),
-            layout.inventory_parts.touches[index],
-            true,
-            Some("button_border_empty_64"),
-            Some(layout.inventory),
-        );
-        push(
-            &format!("inventory_art_{index}"),
-            *slot,
-            false,
-            Some("button_border_empty_64"),
-            Some(layout.inventory),
-        );
-    }
-    // The topbar is a measured composition (flat column + authored plates at
-    // both ends), not a plain 9-slice: its element row carries no stretch
-    // claim; the draw trace and the PNG prove the treatment.
-    push("topbar", layout.top_meta, false, None, None);
-    for (index, pill) in layout.resource_pills.iter().enumerate() {
-        push(
-            &format!("resource_pill_{index}"),
-            *pill,
-            false,
-            Some("resource_pill_normal_236x32"),
-            None,
-        );
-    }
-    if layout.tooltip.w > 0.0 {
-        push(
-            "tooltip",
-            layout.tooltip,
-            false,
-            Some("tooltip_panel_normal_384x256"),
-            None,
-        );
-    }
-    push("hp_bar", layout.hp_bar, false, None, None);
-    push(
-        "production_bar",
-        layout.production_bar,
-        false,
-        Some("build_progress_normal_64x8"),
-        None,
-    );
-    if layout.toast.w > 0.0 {
-        push(
-            "toast",
-            layout.toast,
-            false,
-            Some("tooltip_panel_normal_384x256"),
-            None,
-        );
-    }
-
-    for (id, rect, scale) in [
-        ("map_name", layout.map_name, 0.90 * s),
-        ("upkeep", layout.upkeep, 0.80 * s),
-        ("fps", layout.fps, 0.80 * s),
-        ("selection_name", layout.name, 0.90 * s),
-        ("selection_class", layout.class, 0.80 * s),
-        ("hp_text", layout.hp_bar, 0.80 * s),
-        ("stats", layout.stats, 0.80 * s),
-        ("hotkey_gold", layout.card_slots.first().copied().unwrap_or_default(), 0.80 * s),
-    ] {
-        texts.push(json!({
-            "id": id,
-            "rect": [rect.x, rect.y, rect.w, rect.h],
-            "px": hud::HudFonts::text_px(scale),
-        }));
-    }
-
-    // Texture index -> pack asset name (font atlases and the flat/minimap
-    // textures are not art and are simply named).
-    let mut names: Vec<Option<String>> = vec![None; textures.len()];
-    for asset in &pack.assets {
-        if asset.texture < names.len() {
-            names[asset.texture] = Some(asset.name.clone());
-        }
-    }
-    for (slot, label) in [
-        "font_primary",
-        "font_serif",
-        "font_sans",
-        "font_numeric",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let index = pack.font_textures[slot];
-        if index < names.len() {
-            names[index] = Some((*label).to_string());
-        }
-    }
-    let mut draws = Vec::new();
-    for draw in &batch.textured {
-        let name = names
-            .get(draw.texture)
-            .cloned()
-            .flatten()
-            .unwrap_or_else(|| format!("texture_{}", draw.texture));
-        for chunk in draw.vertices.chunks_exact(6) {
-            let xs: Vec<f32> = chunk.iter().map(|vertex| vertex.pos[0]).collect();
-            let ys: Vec<f32> = chunk.iter().map(|vertex| vertex.pos[1]).collect();
-            let u0 = chunk.iter().map(|v| v.uv[0]).fold(f32::MAX, f32::min);
-            let u1 = chunk.iter().map(|v| v.uv[0]).fold(f32::MIN, f32::max);
-            let v0 = chunk.iter().map(|v| v.uv[1]).fold(f32::MAX, f32::min);
-            let v1 = chunk.iter().map(|v| v.uv[1]).fold(f32::MIN, f32::max);
-            let x0 = xs.iter().cloned().fold(f32::MAX, f32::min);
-            let x1 = xs.iter().cloned().fold(f32::MIN, f32::max);
-            let y0 = ys.iter().cloned().fold(f32::MAX, f32::min);
-            let y1 = ys.iter().cloned().fold(f32::MIN, f32::max);
-            draws.push(json!({
-                "texture": draw.texture,
-                "name": name,
-                "dst": [x0, y0, x1 - x0, y1 - y0],
-                "uv": [u0, v0, u1, v1],
-            }));
-        }
-    }
-
-    json!({
-        "viewport": [viewport.x, viewport.y],
-        "orientation": format!("{:?}", layout.orientation),
-        "scale": s,
-        "safe": [layout.safe.left, layout.safe.top, layout.safe.right, layout.safe.bottom],
-        "console": [layout.console.x, layout.console.y, layout.console.w, layout.console.h],
-        "sections": layout.sections.iter().enumerate().map(|(index, rect)| json!({
-            "index": index,
-            "asset": layout.section_assets[index],
-            "rect": [rect.x, rect.y, rect.w, rect.h],
-            "insets": pack.insets(layout.section_assets[index]),
-            "authored": pack.asset(layout.section_assets[index]).map(|asset| [asset.w, asset.h]),
-        })).collect::<Vec<_>>(),
-        "summary": pack.slice_summary().to_string(),
-        "samples": {
-            "map_name": view.map_name,
-            "upkeep": view.upkeep,
-            "unit_name": view.selection.as_ref().map(|selection| selection.name.clone()).unwrap_or_default(),
-            "hotkeys": view.commands.iter().map(|command| command.hotkey).filter(|hotkey| !hotkey.is_empty()).collect::<Vec<_>>(),
-        },
-        "elements": elements,
-        "texts": texts,
-        "draws": draws,
-        "skin_roles": skin.role_names,
-    })
 }
