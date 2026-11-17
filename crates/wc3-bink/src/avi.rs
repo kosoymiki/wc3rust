@@ -24,7 +24,20 @@ pub enum AviError {
     /// Not a RIFF/AVI file.
     NotAvi,
     /// A chunk header or size field runs past the end of the file.
-    Truncated { what: &'static str },
+    Truncated {
+        what: &'static str,
+    },
+    /// A header field is shorter than the fixed layout this parser reads.
+    InvalidHeader {
+        what: &'static str,
+        len: usize,
+        need: usize,
+    },
+    /// A structural limit (nesting depth or chunk count) was exceeded.
+    Limit {
+        what: &'static str,
+        limit: usize,
+    },
     /// Required structure (`hdrl`, a `vids` stream) is missing.
     Missing(&'static str),
 }
@@ -35,6 +48,10 @@ impl fmt::Display for AviError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::NotAvi => write!(f, "not a RIFF/AVI file"),
             Self::Truncated { what } => write!(f, "truncated AVI while reading {what}"),
+            Self::InvalidHeader { what, len, need } => {
+                write!(f, "AVI {what} is {len} bytes, needs at least {need}")
+            }
+            Self::Limit { what, limit } => write!(f, "AVI exceeds the {what} limit of {limit}"),
             Self::Missing(what) => write!(f, "AVI is missing {what}"),
         }
     }
@@ -326,8 +343,8 @@ fn parse_hdrl(
     if let Some((mut v, s)) = video {
         if let Some(avih) = avih {
             if avih.len() >= 40 {
-                v.micros_per_frame = rd_u32(avih, 0);
-                v.total_frames = rd_u32(avih, 16);
+                v.micros_per_frame = u32::from_le_bytes([avih[0], avih[1], avih[2], avih[3]]);
+                v.total_frames = u32::from_le_bytes([avih[16], avih[17], avih[18], avih[19]]);
             }
         }
         Ok((Some((v, s)), audio))
@@ -335,6 +352,15 @@ fn parse_hdrl(
         Ok((None, audio))
     }
 }
+
+/// Bytes of `AVISTREAMHEADER` (`strh`) this parser reads: `fccType` +
+/// `fccHandler` (0..8), `dwScale`/`dwRate` (20..28) and `dwLength` (32..36).
+/// A shorter body is rejected before any indexing.
+const STRH_MIN_LEN: usize = 36;
+/// `BITMAPINFOHEADER` bytes read for a `vids` stream, through `biCompression`.
+const STRF_VIDS_MIN_LEN: usize = 20;
+/// `WAVEFORMATEX` bytes read for an `auds` stream, through `nSamplesPerSec`.
+const STRF_AUDS_MIN_LEN: usize = 8;
 
 fn parse_strl(
     d: &[u8],
@@ -360,19 +386,40 @@ fn parse_strl(
     let (Some(strh), Some(strf)) = (strh, strf) else {
         return Ok((None, None));
     };
+    if strh.len() < 4 {
+        return Err(AviError::InvalidHeader {
+            what: "strh (fccType)",
+            len: strh.len(),
+            need: 4,
+        });
+    }
     let fcc = [strh[0], strh[1], strh[2], strh[3]];
+    if &fcc != b"vids" && &fcc != b"auds" {
+        return Ok((None, None));
+    }
+    if strh.len() < STRH_MIN_LEN {
+        return Err(AviError::InvalidHeader {
+            what: "strh",
+            len: strh.len(),
+            need: STRH_MIN_LEN,
+        });
+    }
     let handler = [strh[4], strh[5], strh[6], strh[7]];
-    let scale = rd_u32(strh, 20);
-    let rate = rd_u32(strh, 24);
-    let length = rd_u32(strh, 32);
+    let scale = u32::from_le_bytes([strh[20], strh[21], strh[22], strh[23]]);
+    let rate = u32::from_le_bytes([strh[24], strh[25], strh[26], strh[27]]);
+    let length = u32::from_le_bytes([strh[32], strh[33], strh[34], strh[35]]);
     match &fcc {
         b"vids" => {
-            if strf.len() < 20 {
-                return Ok((None, None));
+            if strf.len() < STRF_VIDS_MIN_LEN {
+                return Err(AviError::InvalidHeader {
+                    what: "strf",
+                    len: strf.len(),
+                    need: STRF_VIDS_MIN_LEN,
+                });
             }
-            let width = rd_u16(strf, 4);
-            let height = rd_u16(strf, 8);
-            let bit_count = rd_u16(strf, 14);
+            let width = u16::from_le_bytes([strf[4], strf[5]]);
+            let height = u16::from_le_bytes([strf[8], strf[9]]);
+            let bit_count = u16::from_le_bytes([strf[14], strf[15]]);
             let fourcc = [strf[16], strf[17], strf[18], strf[19]];
             Ok((
                 Some((
@@ -394,16 +441,20 @@ fn parse_strl(
             ))
         }
         b"auds" => {
-            if strf.len() < 8 {
-                return Ok((None, None));
+            if strf.len() < STRF_AUDS_MIN_LEN {
+                return Err(AviError::InvalidHeader {
+                    what: "strf",
+                    len: strf.len(),
+                    need: STRF_AUDS_MIN_LEN,
+                });
             }
             Ok((
                 None,
                 Some((
                     AudioInfo {
-                        format_tag: rd_u16(strf, 0),
-                        channels: rd_u16(strf, 2),
-                        sample_rate: rd_u32(strf, 4),
+                        format_tag: u16::from_le_bytes([strf[0], strf[1]]),
+                        channels: u16::from_le_bytes([strf[2], strf[3]]),
+                        sample_rate: u32::from_le_bytes([strf[4], strf[5], strf[6], strf[7]]),
                         length,
                     },
                     1,
@@ -414,41 +465,84 @@ fn parse_strl(
     }
 }
 
+/// Deepest `LIST rec ` nesting accepted inside `movi`.
+///
+/// Retail cinematics nest one level; the limit only stops a crafted file from
+/// turning the walk into unbounded recursion.
+pub const MAX_MOVI_DEPTH: u32 = 32;
+/// Hard cap on the payload chunks collected from one `movi` list.
+pub const MAX_MOVI_CHUNKS: usize = 1_048_576;
+
 fn parse_movi(
     d: &[u8],
-    mut pos: usize,
+    pos: usize,
     end: usize,
     stream_idx: &mut u8,
     out: &mut Vec<Chunk>,
 ) -> Result<(), AviError> {
-    while pos + 8 <= end {
-        let id = &d[pos..pos + 4];
-        let size = u32::from_le_bytes([d[pos + 4], d[pos + 5], d[pos + 6], d[pos + 7]]) as usize;
-        let body = pos + 8;
-        let body_end = body.checked_add(size).filter(|e| *e <= end).ok_or(AviError::Truncated {
-            what: "movi chunk",
-        })?;
-        if id == b"LIST" {
-            // Nested 'rec ' lists are just containers; recurse into them.
-            if body + 4 <= body_end && &d[body..body + 4] == b"rec " {
-                parse_movi(d, body + 4, body_end, stream_idx, out)?;
-            }
-        } else {
-            let stream = hex_digit(id[0]).zip(hex_digit(id[1])).map(|(h, l)| h * 16 + l);
-            let kind = [id[2], id[3]];
-            if let Some(stream) = stream {
-                if kind == *b"dc" || kind == *b"wb" || kind == *b"db" {
-                    out.push(Chunk {
-                        stream,
-                        kind,
-                        offset: body,
-                        len: size,
+    /// One open `LIST rec ` range; `depth` counts the containers around it.
+    struct Frame {
+        pos: usize,
+        end: usize,
+        depth: u32,
+    }
+
+    // Explicit range stack instead of recursion: the enclosing frame advances
+    // past a nested list *before* the child is descended into, so the cursor is
+    // monotonic, the child's chunks are collected in file order, and every
+    // chunk's word padding is skipped exactly once.
+    let mut stack = vec![Frame { pos, end, depth: 0 }];
+    while let Some(top) = stack.last() {
+        let (p, frame_end, depth) = (top.pos, top.end, top.depth);
+        if frame_end.saturating_sub(p) < 8 {
+            stack.pop();
+            continue;
+        }
+        let id = [d[p], d[p + 1], d[p + 2], d[p + 3]];
+        let size = u32::from_le_bytes([d[p + 4], d[p + 5], d[p + 6], d[p + 7]]) as usize;
+        let body = p + 8;
+        let body_end = body
+            .checked_add(size)
+            .filter(|e| *e <= frame_end)
+            .ok_or(AviError::Truncated { what: "movi chunk" })?;
+        stack.last_mut().expect("stack is non-empty").pos = body_end + (size & 1);
+        if id == *b"LIST" {
+            if body_end - body >= 4 && &d[body..body + 4] == b"rec " {
+                let child = depth + 1;
+                if child > MAX_MOVI_DEPTH {
+                    return Err(AviError::Limit {
+                        what: "movi rec nesting depth",
+                        limit: MAX_MOVI_DEPTH as usize,
                     });
-                    *stream_idx = stream;
                 }
+                stack.push(Frame {
+                    pos: body + 4,
+                    end: body_end,
+                    depth: child,
+                });
+            }
+            // Any other LIST type is a container this demuxer does not read.
+        } else if let Some(stream) = hex_digit(id[0])
+            .zip(hex_digit(id[1]))
+            .map(|(high, low)| high * 16 + low)
+        {
+            let kind = [id[2], id[3]];
+            if kind == *b"dc" || kind == *b"wb" || kind == *b"db" {
+                if out.len() >= MAX_MOVI_CHUNKS {
+                    return Err(AviError::Limit {
+                        what: "movi payload chunks",
+                        limit: MAX_MOVI_CHUNKS,
+                    });
+                }
+                out.push(Chunk {
+                    stream,
+                    kind,
+                    offset: body,
+                    len: size,
+                });
+                *stream_idx = stream;
             }
         }
-        pos = body_end + (size & 1);
     }
     Ok(())
 }
@@ -462,99 +556,157 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
-fn rd_u16(d: &[u8], at: usize) -> u16 {
-    if at + 2 > d.len() {
-        return 0;
-    }
-    u16::from_le_bytes([d[at], d[at + 1]])
-}
-
-fn rd_u32(d: &[u8], at: usize) -> u32 {
-    if at + 4 > d.len() {
-        return 0;
-    }
-    u32::from_le_bytes([d[at], d[at + 1], d[at + 2], d[at + 3]])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a minimal but structurally valid AVI in memory.
-    fn build_avi(video_chunks: &[&[u8]]) -> Vec<u8> {
-        fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
-            let mut v = Vec::with_capacity(8 + body.len() + 1);
-            v.extend_from_slice(id);
-            v.extend_from_slice(&(body.len() as u32).to_le_bytes());
-            v.extend_from_slice(body);
-            if body.len() & 1 == 1 {
-                v.push(0);
-            }
-            v
+    /// One RIFF chunk: `id`, declared size, body, word padding.
+    fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(8 + body.len() + 1);
+        v.extend_from_slice(id);
+        v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        v.extend_from_slice(body);
+        if body.len() & 1 == 1 {
+            v.push(0);
         }
-        fn list(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
-            let mut inner = Vec::new();
-            inner.extend_from_slice(kind);
-            inner.extend_from_slice(body);
-            chunk(b"LIST", &inner)
-        }
+        v
+    }
 
+    fn list(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut inner = Vec::new();
+        inner.extend_from_slice(kind);
+        inner.extend_from_slice(body);
+        chunk(b"LIST", &inner)
+    }
+
+    /// `AVISTREAMHEADER` body of exactly `len` bytes for `fcc`, with every field
+    /// the parser reads filled when it fits (a shorter body leaves the tail off,
+    /// which is what a truncated untrusted file looks like).
+    fn stream_header(fcc: &[u8; 4], len: usize) -> Vec<u8> {
+        let mut h = vec![0u8; len];
+        if len >= 4 {
+            h[0..4].copy_from_slice(fcc);
+        }
+        if *fcc == *b"vids" && len >= 8 {
+            h[4..8].copy_from_slice(b"divx");
+        }
+        if len >= 24 {
+            h[20..24].copy_from_slice(&41_554u32.to_le_bytes());
+        }
+        if len >= 28 {
+            h[24..28].copy_from_slice(&1_000_000u32.to_le_bytes());
+        }
+        if len >= 36 {
+            h[32..36].copy_from_slice(&7u32.to_le_bytes());
+        }
+        h
+    }
+
+    fn strf_video() -> Vec<u8> {
+        let mut s = vec![0u8; 40];
+        s[0..4].copy_from_slice(&40u32.to_le_bytes());
+        s[4..8].copy_from_slice(&800i32.to_le_bytes());
+        s[8..12].copy_from_slice(&368i32.to_le_bytes());
+        s[12..14].copy_from_slice(&1u16.to_le_bytes());
+        s[14..16].copy_from_slice(&24u16.to_le_bytes());
+        s[16..20].copy_from_slice(b"BLZ0");
+        s
+    }
+
+    fn strf_audio() -> Vec<u8> {
+        let mut s = vec![0u8; 18];
+        s[0..2].copy_from_slice(&0x0055u16.to_le_bytes());
+        s[2..4].copy_from_slice(&2u16.to_le_bytes());
+        s[4..8].copy_from_slice(&44_100u32.to_le_bytes());
+        s
+    }
+
+    /// `movi` body with the video frames interleaved with audio, like retail.
+    fn movi_body(video_chunks: &[&[u8]]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (i, payload) in video_chunks.iter().enumerate() {
+            body.extend(chunk(b"00dc", payload));
+            let audio = vec![0xA5u8; 4 + (i % 3)];
+            body.extend(chunk(b"01wb", &audio));
+        }
+        body
+    }
+
+    /// Build a minimal but structurally valid AVI in memory, with caller-chosen
+    /// stream headers and `movi` body.
+    fn build_avi_with(
+        vstrh: &[u8],
+        vstrf: &[u8],
+        astrh: &[u8],
+        astrf: &[u8],
+        movi: &[u8],
+        total_frames: u32,
+    ) -> Vec<u8> {
         let mut avih = vec![0u8; 56];
         avih[0..4].copy_from_slice(&41554u32.to_le_bytes());
-        avih[16..20].copy_from_slice(&(video_chunks.len() as u32).to_le_bytes());
+        avih[16..20].copy_from_slice(&total_frames.to_le_bytes());
         avih[32..36].copy_from_slice(&800u32.to_le_bytes());
         avih[36..40].copy_from_slice(&368u32.to_le_bytes());
 
-        let mut vstrh = vec![0u8; 56];
-        vstrh[0..4].copy_from_slice(b"vids");
-        vstrh[4..8].copy_from_slice(b"divx");
-        vstrh[20..24].copy_from_slice(&41554u32.to_le_bytes());
-        vstrh[24..28].copy_from_slice(&1_000_000u32.to_le_bytes());
-
-        let mut vstrf = vec![0u8; 40];
-        vstrf[0..4].copy_from_slice(&40u32.to_le_bytes());
-        vstrf[4..8].copy_from_slice(&800i32.to_le_bytes());
-        vstrf[8..12].copy_from_slice(&368i32.to_le_bytes());
-        vstrf[12..14].copy_from_slice(&1u16.to_le_bytes());
-        vstrf[14..16].copy_from_slice(&24u16.to_le_bytes());
-        vstrf[16..20].copy_from_slice(b"BLZ0");
-
-        let mut astrh = vec![0u8; 56];
-        astrh[0..4].copy_from_slice(b"auds");
-        let mut astrf = vec![0u8; 18];
-        astrf[0..2].copy_from_slice(&0x0055u16.to_le_bytes());
-        astrf[2..4].copy_from_slice(&2u16.to_le_bytes());
-        astrf[4..8].copy_from_slice(&44100u32.to_le_bytes());
-
         let mut vstrl = Vec::new();
-        vstrl.extend(chunk(b"strh", &vstrh));
-        vstrl.extend(chunk(b"strf", &vstrf));
+        vstrl.extend(chunk(b"strh", vstrh));
+        vstrl.extend(chunk(b"strf", vstrf));
         let mut astrl = Vec::new();
-        astrl.extend(chunk(b"strh", &astrh));
-        astrl.extend(chunk(b"strf", &astrf));
+        astrl.extend(chunk(b"strh", astrh));
+        astrl.extend(chunk(b"strf", astrf));
 
         let mut hdrl_body = chunk(b"avih", &avih);
         hdrl_body.extend(list(b"strl", &vstrl));
         hdrl_body.extend(list(b"strl", &astrl));
 
-        let mut movi_body = Vec::new();
-        for (i, payload) in video_chunks.iter().enumerate() {
-            let id: [u8; 4] = [b'0', b'0', b'd', b'c'];
-            movi_body.extend(chunk(&id, payload));
-            // interleave an audio chunk like the retail files do
-            let audio = vec![0xA5u8; 4 + (i % 3)];
-            movi_body.extend(chunk(b"01wb", &audio));
-        }
-
         let mut body = Vec::new();
         body.extend_from_slice(b"AVI ");
         body.extend(list(b"hdrl", &hdrl_body));
-        body.extend(list(b"movi", &movi_body));
+        body.extend(list(b"movi", movi));
 
         let mut out = Vec::new();
         out.extend_from_slice(b"RIFF");
         out.extend_from_slice(&(body.len() as u32).to_le_bytes());
         out.extend_from_slice(&body);
+        out
+    }
+
+    /// Build a minimal but structurally valid AVI in memory.
+    fn build_avi(video_chunks: &[&[u8]]) -> Vec<u8> {
+        build_avi_with(
+            &stream_header(b"vids", 56),
+            &strf_video(),
+            &stream_header(b"auds", 56),
+            &strf_audio(),
+            &movi_body(video_chunks),
+            video_chunks.len() as u32,
+        )
+    }
+
+    /// Parse a bare `movi` body (the content of `LIST movi`, without its type).
+    fn movi_parse(body: &[u8]) -> Result<Vec<Chunk>, AviError> {
+        let mut out = Vec::new();
+        let mut stream = 0u8;
+        parse_movi(body, 0, body.len(), &mut stream, &mut out)?;
+        Ok(out)
+    }
+
+    /// Wrap `leaf` in `depth` nested `LIST rec ` containers, built inside-out
+    /// without quadratic copying.
+    fn nested_rec(depth: usize, leaf: &[u8]) -> Vec<u8> {
+        let mut sizes = Vec::with_capacity(depth);
+        let mut inner_len = leaf.len();
+        for _ in 0..depth {
+            sizes.push((inner_len + 4) as u32); // body = 'rec ' + inner
+            inner_len += 12; // LIST header (8) + 'rec ' (4)
+        }
+        let mut out = Vec::with_capacity(inner_len);
+        for size in sizes.iter().rev() {
+            out.extend_from_slice(b"LIST");
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(b"rec ");
+        }
+        out.extend_from_slice(leaf);
         out
     }
 
@@ -625,6 +777,237 @@ mod tests {
         for len in 0..64 {
             let data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
             let _ = Avi::from_bytes(data);
+        }
+    }
+
+    /// AUD-010: every `strh` shorter than the layout the parser reads (36
+    /// bytes) must return a typed error, never index out of bounds.
+    #[test]
+    fn rejects_every_short_strh_length() {
+        for len in 0..36usize {
+            let avi = build_avi_with(
+                &stream_header(b"vids", len),
+                &strf_video(),
+                &stream_header(b"auds", 56),
+                &strf_audio(),
+                &movi_body(&[b"x"]),
+                1,
+            );
+            match Avi::from_bytes(avi) {
+                Err(AviError::InvalidHeader { what, len: got, need }) => {
+                    assert_eq!(got, len, "reported strh length");
+                    assert!(need > len && need <= STRH_MIN_LEN, "{what}: need {need}");
+                }
+                other => panic!("strh len {len}: expected InvalidHeader, got {other:?}"),
+            }
+        }
+    }
+
+    /// AUD-010: the audio stream header is length-checked the same way.
+    #[test]
+    fn rejects_short_audio_strh() {
+        let avi = build_avi_with(
+            &stream_header(b"vids", 56),
+            &strf_video(),
+            &stream_header(b"auds", 20),
+            &strf_audio(),
+            &movi_body(&[b"x"]),
+            1,
+        );
+        assert!(matches!(
+            Avi::from_bytes(avi),
+            Err(AviError::InvalidHeader { what: "strh", len: 20, need: STRH_MIN_LEN })
+        ));
+    }
+
+    /// AUD-010: the exact minimum header and an odd (padded) header both parse,
+    /// and the pad byte does not desynchronise the `strl` walk.
+    #[test]
+    fn accepts_minimum_and_padded_strh() {
+        for len in [STRH_MIN_LEN, STRH_MIN_LEN + 1, 56] {
+            let avi = build_avi_with(
+                &stream_header(b"vids", len),
+                &strf_video(),
+                &stream_header(b"auds", 56),
+                &strf_audio(),
+                &movi_body(&[b"frame"]),
+                1,
+            );
+            let parsed = Avi::from_bytes(avi).unwrap_or_else(|e| panic!("strh len {len}: {e}"));
+            assert_eq!(parsed.video().scale, 41_554);
+            assert_eq!(parsed.video().rate, 1_000_000);
+            assert_eq!(parsed.video().length, 7);
+            assert_eq!(parsed.video_frame(0), Some(&b"frame"[..]));
+            assert_eq!(parsed.audio().map(|a| a.sample_rate), Some(44_100));
+        }
+    }
+
+    /// AUD-010: a `strf` shorter than the fields read is a typed error, not a
+    /// silent zero-filled stream.
+    #[test]
+    fn rejects_short_strf() {
+        let avi = build_avi_with(
+            &stream_header(b"vids", 56),
+            &strf_video()[..19],
+            &stream_header(b"auds", 56),
+            &strf_audio(),
+            &movi_body(&[b"x"]),
+            1,
+        );
+        assert!(matches!(
+            Avi::from_bytes(avi),
+            Err(AviError::InvalidHeader { what: "strf", len: 19, need: 20 })
+        ));
+        let avi = build_avi_with(
+            &stream_header(b"vids", 56),
+            &strf_video(),
+            &stream_header(b"auds", 56),
+            &strf_audio()[..7],
+            &movi_body(&[b"x"]),
+            1,
+        );
+        assert!(matches!(
+            Avi::from_bytes(avi),
+            Err(AviError::InvalidHeader { what: "strf", len: 7, need: 8 })
+        ));
+    }
+
+    /// AUD-011: nested `rec ` lists are containers only; payload chunks keep
+    /// file order and offsets stay correct across the nesting boundary.
+    #[test]
+    fn nested_rec_lists_keep_file_order() {
+        let mut body = chunk(b"00dc", b"aa");
+        body.extend(nested_rec(1, &chunk(b"00dc", b"bb")));
+        body.extend(chunk(b"01wb", b"cccc"));
+        body.extend(nested_rec(2, &chunk(b"00dc", b"dd")));
+        let chunks = movi_parse(&body).expect("parse");
+        let payloads: Vec<&[u8]> = chunks
+            .iter()
+            .map(|c| &body[c.offset..c.offset + c.len])
+            .collect();
+        assert_eq!(
+            payloads,
+            vec![&b"aa"[..], &b"bb"[..], &b"cccc"[..], &b"dd"[..]]
+        );
+        assert!(chunks.windows(2).all(|w| w[0].offset < w[1].offset));
+    }
+
+    /// AUD-011: depth 0 / 1 / max parse; max + 1 is a typed limit error.
+    #[test]
+    fn enforces_the_rec_depth_limit() {
+        let leaf = chunk(b"00dc", b"leaf");
+        for depth in [0usize, 1, MAX_MOVI_DEPTH as usize] {
+            let body = nested_rec(depth, &leaf);
+            let chunks = movi_parse(&body).unwrap_or_else(|e| panic!("depth {depth}: {e}"));
+            assert_eq!(chunks.len(), 1, "depth {depth}");
+        }
+        let body = nested_rec(MAX_MOVI_DEPTH as usize + 1, &leaf);
+        assert!(matches!(
+            movi_parse(&body),
+            Err(AviError::Limit {
+                what: "movi rec nesting depth",
+                ..
+            })
+        ));
+    }
+
+    /// AUD-011: an absurd nesting depth returns an error instead of recursing
+    /// until the stack is gone.
+    #[test]
+    fn deep_nesting_does_not_exhaust_the_stack() {
+        let body = nested_rec(200_000, &chunk(b"00dc", b"leaf"));
+        assert!(matches!(movi_parse(&body), Err(AviError::Limit { .. })));
+    }
+
+    /// AUD-011: empty nested `LIST rec ` containers are skipped.
+    #[test]
+    fn empty_nested_lists_are_skipped() {
+        let body = nested_rec(3, b"");
+        assert!(movi_parse(&body).expect("parse").is_empty());
+    }
+
+    /// AUD-011: a declared size past the enclosing frame/end is `Truncated`.
+    #[test]
+    fn rejects_malformed_declared_sizes() {
+        let mut body = nested_rec(1, &chunk(b"00dc", b"x"));
+        let too_big = (body.len() as u32 + 64).to_le_bytes();
+        body[4..8].copy_from_slice(&too_big);
+        assert!(matches!(
+            movi_parse(&body),
+            Err(AviError::Truncated { what: "movi chunk" })
+        ));
+
+        let mut body = chunk(b"00dc", b"x");
+        body[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            movi_parse(&body),
+            Err(AviError::Truncated { what: "movi chunk" })
+        ));
+    }
+
+    /// AUD-011: many siblings keep order, offsets and the word padding.
+    #[test]
+    fn keeps_many_sibling_chunks_in_order() {
+        let mut body = Vec::new();
+        for i in 0..10_000u32 {
+            body.extend(chunk(b"00dc", &i.to_le_bytes()));
+        }
+        let chunks = movi_parse(&body).expect("parse");
+        assert_eq!(chunks.len(), 10_000);
+        for (i, c) in chunks.iter().enumerate() {
+            assert_eq!(&body[c.offset..c.offset + c.len], &(i as u32).to_le_bytes());
+        }
+        assert!(chunks.windows(2).all(|w| w[0].offset < w[1].offset));
+
+        // Odd-sized chunks must skip the RIFF pad byte.
+        let mut body = chunk(b"00dc", b"odd");
+        body.extend(chunk(b"00dc", b"even"));
+        let chunks = movi_parse(&body).expect("parse");
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(&body[chunks[1].offset..chunks[1].offset + 2], b"ev");
+    }
+
+    /// AUD-011: a full file with a nested `rec ` list yields its frames.
+    #[test]
+    fn full_avi_with_nested_rec_lists() {
+        let mut movi = chunk(b"00dc", b"first");
+        movi.extend(nested_rec(2, &chunk(b"00dc", b"second")));
+        let avi = build_avi_with(
+            &stream_header(b"vids", 56),
+            &strf_video(),
+            &stream_header(b"auds", 56),
+            &strf_audio(),
+            &movi,
+            2,
+        );
+        let parsed = Avi::from_bytes(avi).expect("parse");
+        assert_eq!(parsed.video_frame(0), Some(&b"first"[..]));
+        assert_eq!(parsed.video_frame(1), Some(&b"second"[..]));
+        assert_eq!(parsed.video_frame_count(), 2);
+    }
+
+    /// AUD-011: random `movi` bodies never panic.
+    #[test]
+    fn movi_fuzz_never_panics() {
+        let base = nested_rec(2, &chunk(b"00dc", b"payload"));
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..256 {
+            let mut data = base.clone();
+            for _ in 0..4 {
+                let idx = (next() as usize) % data.len();
+                data[idx] = next() as u8;
+            }
+            let _ = movi_parse(&data);
+        }
+        for len in 0..96 {
+            let data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            let _ = movi_parse(&data);
         }
     }
 }
