@@ -4260,7 +4260,10 @@ impl MobileHud {
         // stack a tab row, the list rows and one nav row.
         let use_tabs = !view.tabs.is_empty();
         let use_rows = !view.rows.is_empty();
-        let use_buttons = !use_rows && !use_tabs && !view.buttons.is_empty();
+        // Main-menu entries must lay out even when the view still carries a
+        // tab row or list rows: gating them on the other groups left the main
+        // menu with zero button rects, so only the hardware Back (Quit) worked.
+        let use_buttons = !view.buttons.is_empty();
         let use_nav = !view.nav.is_empty();
         let mut slots = 0usize;
         if use_tabs {

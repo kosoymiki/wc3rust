@@ -137,16 +137,16 @@ struct SeatScore {
     commands: u32,
 }
 
-/// Directory the pause-menu save slots live in. `HEROFOLENDS_SAVE_DIR`
+/// Directory the pause-menu save slots live in. `WC3RUST_SAVE_DIR`
 /// overrides it for tests and portable installs.
 fn default_save_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HEROFOLENDS_SAVE_DIR") {
+    if let Some(dir) = std::env::var_os("WC3RUST_SAVE_DIR") {
         return PathBuf::from(dir);
     }
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".local/share/herofolends-rs/saves"))
-        .unwrap_or_else(|| std::env::temp_dir().join("herofolends-saves"))
+        .map(|home| PathBuf::from(home).join(".local/share/wc3rust/saves"))
+        .unwrap_or_else(|| std::env::temp_dir().join("wc3rust-saves"))
 }
 
 /// `<slot>.sav` -> `<slot>.sav.meta` (same sidecar convention as the host
@@ -2284,7 +2284,7 @@ impl Game {
     /// `harvest <x> <y>`. Every step logs `AUTOTEST <cmd> ok|err=<reason>` so a
     /// device run can prove the interaction loop without hand taps.
     fn load_autotest(&mut self) {
-        let path = std::path::Path::new("/data/data/org.herofolends.p0/files/autotest.txt");
+        let path = std::path::Path::new("/data/data/org.wc3rust.p0/files/autotest.txt");
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
@@ -5231,15 +5231,34 @@ impl Game {
     pub fn pointer_down(&mut self, pos: Vec2) {
         self.input_seen = true;
         if self.screen != Screen::Playing {
-            let view = self.menu_view();
-            let layout = self.mobile_hud.layout_menu(&view);
-            for (index, rect) in layout.buttons.iter().enumerate() {
-                if rect.contains(pos)
-                    && let Some(button) = view.buttons.get(index)
-                {
-                    self.activate_menu(button.action);
-                    return;
+            // Every group the painter draws must be hit-tested with the same
+            // rects: tabs, list rows and the nav row were dead on the campaign
+            // and custom-game pages because only `buttons` was checked. The
+            // action is copied out inside the borrow so `activate_menu` can take
+            // `&mut self` afterwards.
+            let hit = {
+                let view = self.menu_view();
+                let layout = self.mobile_hud.layout_menu(&view);
+                let mut hit = None;
+                'groups: for (rects, items) in [
+                    (&layout.tabs, view.tabs),
+                    (&layout.rows, view.rows),
+                    (&layout.buttons, view.buttons),
+                    (&layout.nav, view.nav),
+                ] {
+                    for (index, rect) in rects.iter().enumerate() {
+                        if rect.contains(pos)
+                            && let Some(button) = items.get(index)
+                        {
+                            hit = Some(button.action);
+                            break 'groups;
+                        }
+                    }
                 }
+                hit
+            };
+            if let Some(action) = hit {
+                self.activate_menu(action);
             }
             return;
         }
@@ -8570,7 +8589,7 @@ mod tests {
         let mpq =
             std::path::Path::new("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq");
         let map = std::path::Path::new(
-            "/data/data/com.termux/files/home/src/herofolends-rs/analysis/war3_data/Maps/Campaign/Human04.w3m",
+            "/data/data/com.termux/files/home/src/wc3rust/analysis/war3_data/Maps/Campaign/Human04.w3m",
         );
         if !mpq.is_file() || !map.is_file() {
             eprintln!("SKIP coords: install missing");
@@ -9442,7 +9461,7 @@ mod tests {
             .join("../../analysis/war3_full3/Maps/Campaign/Orc01.w3m");
         let mpq = [
             "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
-            "/data/data/org.herofolends.p0/files/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
         ]
         .iter()
         .map(std::path::PathBuf::from)
