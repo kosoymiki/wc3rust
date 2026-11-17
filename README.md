@@ -1,6 +1,6 @@
 # wc3rust — clean-room WC3-compatible RTS engine for Android
 
-Рабочее название: **wc3rust**. Статус: **Phase 0 — P0 core + Rust-порт libadrenotools**:
+Проект: **wc3rust**. Статус: **Phase 0 — P0 core + Rust-порт libadrenotools**:
 Rust workspace + **SDL3 3.5.0** + **wgpu 30.0.1/Vulkan** triangle на **Turnip** (Mesa 26.2.6),
 StormLib открывает `War3.mpq` (10 525 файлов), извлечены и протестированы MDX/BLP/SLK фикстуры;
 8 тестов, clippy/fmt clean. `crates/wc3-adrenotools` — полный Rust-порт
