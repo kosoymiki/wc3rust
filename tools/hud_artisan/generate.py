@@ -376,8 +376,8 @@ def image_metrics(path:Path)->dict:
           "alpha_bbox":list(box) if box else None,"thumbnail_unique_colors":colors,
           "thumbnail_rgb_variance":round(variance,3)}
 
-def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
-    doc=load_manifest(manifest);fail=[];warn=[];records=[];hashes=defaultdict(list)
+def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contract:bool=False)->int:
+    doc=load_manifest(manifest,engine_contract);fail=[];warn=[];records=[];hashes=defaultdict(list)
     if not (pack/"manifest.json").is_file(): fail.append("pack manifest.json missing")
     elif read_json(pack/"manifest.json")!=doc: fail.append("pack manifest differs from source manifest")
     by_file={a["file"]:a for a in doc["assets"]}
@@ -422,7 +422,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
         if not isinstance(font,str) or Path(font).name!=font: fail.append(f"unsafe font filename: {font!r}")
         elif not (pack/"fonts"/font).is_file(): fail.append(f"missing font dependency fonts/{font}")
     report={"tool":"HUD Artisan","version":VERSION,"manifest_sha256":sha(manifest.read_bytes()),
-      "asset_count":len(doc["assets"]),"checked_count":len(records),"pixel_qa":pixels,
+      "asset_count":len(doc["assets"]),"checked_count":len(records),"pixel_qa":pixels,"engine_contract":engine_contract,
       "failures":fail,"warnings":warn,"assets":records}
     (pack/"reports").mkdir(exist_ok=True)
     (pack/"reports"/"validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
@@ -545,6 +545,8 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
 
 def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
     payload=read_json(jobs_path);cfg=read_json(adapter_path)
+    if payload.get("tool")!="HUD Artisan" or payload.get("schema_version")!=1:
+        raise ValueError("unsupported jobs.json tool/schema")
     jobs=payload.get("jobs")
     if not isinstance(jobs,list) or not jobs:raise ValueError("jobs.json has no jobs[]")
     command=cfg.get("command")
@@ -566,6 +568,11 @@ def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|No
     for job in jobs:
         jid=job.get("job_id");rel=safe_rel(job.get("output",""))
         if not isinstance(jid,str) or jid in ids:raise ValueError(f"missing/duplicate job id: {jid!r}")
+        prompt=job.get("prompt","")
+        if not isinstance(prompt,str) or job.get("prompt_sha256")!=sha(prompt.encode("utf-8")):
+            raise ValueError(f"{jid}: prompt hash mismatch in jobs.json")
+        if len(job.get("width",0).__str__())==0 or job.get("width",0)<1 or job.get("height",0)<1:
+            raise ValueError(f"{jid}: invalid target dimensions")
         if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
         ids.add(jid);paths.add(str(rel))
     work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
@@ -677,7 +684,7 @@ def main(argv=None):
     q.add_argument("--parallel",type=int)
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
-    q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true")
+    q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true");q.add_argument("--engine-contract",action="store_true")
     q=s.add_parser("contact-sheet",help="build labeled visual review sheet")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
     q.add_argument("--cols",type=int,default=5);q.add_argument("--cell",type=int,default=240)
@@ -697,7 +704,7 @@ def main(argv=None):
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
         if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
         if a.cmd=="dispatch":return dispatch(a.jobs,a.adapter,a.drop,a.parallel)
-        if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets)
+        if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
         print(f"HUD_ARTISAN_ERROR {e}",file=sys.stderr);return 2
