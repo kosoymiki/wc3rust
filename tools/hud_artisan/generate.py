@@ -584,12 +584,14 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     if not all(isinstance(x,str) and x.strip() for x in (provider,model,license_name)):
         raise ValueError("adapter provider, model and license strings are required for provenance")
     timeout=int(cfg.get("timeout_seconds",1800));retries=int(cfg.get("retries",1))
-    parallel=int(parallel_override or cfg.get("max_parallel",1))
+    parallel=int(parallel_override if parallel_override is not None else cfg.get("max_parallel",1))
     if not 1<=timeout<=86400 or not 0<=retries<=5 or not 1<=parallel<=32:
         raise ValueError("adapter timeout/retries/max_parallel outside safe limits")
     allow=cfg.get("environment",[])
-    if not isinstance(allow,list) or any(not isinstance(x,str) for x in allow):
-        raise ValueError("adapter.environment must be an array of environment variable names")
+    if not isinstance(allow,list) or any(not isinstance(x,str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",x) for x in allow):
+        raise ValueError("adapter.environment must be an array of valid environment variable names")
+    if len(set(allow))!=len(allow):
+        raise ValueError("adapter.environment contains duplicate variable names")
     ids=set();paths=set()
     for job in jobs:
         jid=job.get("job_id");rel=safe_rel(job.get("output",""))
