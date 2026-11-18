@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """HUD Artisan tests: python -m unittest discover -s tools/hud_artisan -p 'test_*.py'"""
-import importlib.util,json,tempfile,unittest,struct,zlib
+import importlib.util,json,tempfile,unittest,struct,zlib,hashlib
 from pathlib import Path
 SPEC=importlib.util.spec_from_file_location("artisan",Path(__file__).with_name("generate.py"))
 artisan=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(artisan)
@@ -59,6 +59,14 @@ class Tests(unittest.TestCase):
             (drop/"atlas_sources").mkdir();cell.save(drop/"atlas_sources/icon_a.png")
             (drop/"fonts").mkdir()
             for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
+            prov=[]
+            for job in payload["jobs"]:
+                artifact=drop/job["output"]
+                prov.append({"job_id":job["job_id"],"provider":"manual-test","model":"fixture",
+                  "generated_at":"2026-11-18T00:00:00Z","license":"clean-room test fixture",
+                  "prompt_sha256":hashlib.sha256(job["prompt"].encode()).hexdigest(),
+                  "output_sha256":hashlib.sha256(artifact.read_bytes()).hexdigest()})
+            (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"jobs":prov}))
             rc=artisan.ingest(manifest,jobs/"jobs.json",drop,out,"strict",False)
             self.assertEqual(rc,0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
