@@ -147,6 +147,13 @@ a workspace member.
 | `apps/driver-probe` | Vulkan/Turnip driver probe |
 | `tools/mdx-gltf` | `mdx-gltf` MDX -> glTF 2.0 exporter for visual verification |
 
+### HUD art production pipeline
+
+The manifest-driven multi-agent asset generator is documented in [tools/hud_artisan/README.md](tools/hud_artisan/README.md).
+It compiles per-asset image jobs, supports local ComfyUI and custom CLI adapters, verifies provenance,
+and checks output against the 92-asset engine contract. It does not fabricate a missing pack manifest
+or claim artistic approval from file-generation success.
+
 ### HUD asset pack
 
 The HUD is manifest-driven; no pixel offset is hand-tuned. The pack layout is:
