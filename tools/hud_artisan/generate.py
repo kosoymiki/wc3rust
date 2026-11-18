@@ -305,6 +305,7 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
 the tool from atlas cell jobs and must never be generated as a single model-created collage.
 
 - Generate exactly one asset per job; never output a sheet, collage or screenshot.
+- Read STYLE_BIBLE.md and apply its material system, icon semantics, UI-state grammar and rejection rules.
 - Preserve exact relative output paths, native dimensions and straight alpha.
 - Respect declared nine-slice insets; corners retain ornament and stretch zones remain calm.
 - Sibling states must be visibly distinct but coherent. Icons need distinct semantic silhouettes.
@@ -680,7 +681,7 @@ def main(argv=None):
              "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
              "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
              "control_groups":{"count":10,"cell":[44,44]},
-             "commandbuttons_atlas":{"size":[2048,2048],"entries":20},
+             "asset_count_required":92,"commandbuttons_atlas":{"size":[2048,2048],"entries":20},
              "font_files_required":5,"required_unique_assets":ENGINE_ROLES,
              "note":"Contract reference only. Unknown insets, complete filenames, font binaries and source art are intentionally not fabricated."}
             a.out.parent.mkdir(parents=True,exist_ok=True);a.out.write_text(json.dumps(profile,indent=2)+"\n",encoding="utf-8")
