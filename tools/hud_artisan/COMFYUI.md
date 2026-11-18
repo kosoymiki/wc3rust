@@ -87,3 +87,33 @@ if that file is absent. The full five-font dependency set must also be available
 This CI integration is committed, but it is not yet an executed render and does not imply that
 any HUD images have been generated. Do not start a costly render until the authoritative
 manifest and matching asset/font contract are committed.
+
+
+## GitHub-hosted CPU-only rendering
+
+The workflow uses `runs-on: ubuntu-latest` and installs ComfyUI plus CPU-only PyTorch
+inside the ephemeral GitHub runner. It launches ComfyUI with `python main.py --cpu`.
+No GPU, self-hosted runner, external machine or always-on ComfyUI server is required.
+
+Required Actions secrets:
+- `HUD_COMFYUI_WORKFLOW_B64`: base64-encoded ComfyUI API-format workflow JSON;
+- `HUD_COMFYUI_CONFIG_B64`: base64-encoded adapter config JSON;
+- `HUD_COMFYUI_MODEL_URL`: direct HTTPS download URL for the checkpoint file;
+- `HUD_COMFYUI_MODEL_SHA256`: exact SHA-256 digest of that checkpoint;
+- `HUD_COMFYUI_MODEL`: model identifier/revision for provenance;
+- `HUD_COMFYUI_LICENSE`: truthful model/output license declaration;
+- `HF_TOKEN` (optional): token for a gated Hugging Face download;
+- `COMFYUI_URL` is optional; default is the local ComfyUI API.
+
+The checkpoint is downloaded into the runner's ComfyUI checkpoint directory and its
+SHA-256 is verified before ComfyUI starts. The API workflow must reference the exact
+checkpoint filename. The generated model weights and private workflow are not committed
+to the repository.
+
+**Performance warning:** standard `ubuntu-latest` runners have finite CPU/RAM/disk and
+ComfyUI explicitly documents `--cpu` as slow. A full 92-asset production render may exceed
+the Actions job time limit. The first run should be treated as a measured pilot, not assumed
+to finish the entire pack. The production manifest must exist in the selected branch before
+the dispatch step; the currently documented default manifest path is not present in the
+remote tree at the time this workflow was changed. Do not interpret successful ComfyUI
+startup as successful asset generation.
