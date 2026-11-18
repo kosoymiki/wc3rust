@@ -10,6 +10,7 @@ description = "Warcraft III reverse-engineering port: resource access layer, JAS
 wc3-mpq = { path = "../wc3-mpq" }
 wc3-formats = { path = "../wc3-formats" }
 wc3-data = { path = "../wc3-data" }
+wc3-guest = { path = "../wc3-guest" }
 flate2 = "1"
 bzip2 = "0.5"
 sha2 = "0.10"

@@ -39,6 +39,7 @@ pub mod cutscenes;
 pub mod engine;
 pub mod gameplay;
 pub mod error;
+pub mod guest_host;
 pub mod host;
 pub mod icons;
 pub mod jass;
