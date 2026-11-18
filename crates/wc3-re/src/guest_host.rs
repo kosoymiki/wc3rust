@@ -77,6 +77,17 @@ pub struct GuestHost {
     registry: HleRegistry,
 }
 
+impl core::fmt::Debug for GuestHost {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GuestHost")
+            .field("image_base", &self.image_base)
+            .field("entry", &self.entry)
+            .field("imports", &self.imports)
+            .field("exports", &self.exports)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GuestHost {
     /// Boots a PE32 image: validates the image against the guest address plan,
     /// then binds every import by name through `bind` (which receives
@@ -260,7 +271,7 @@ mod tests {
         bytes[section..section + 5].copy_from_slice(b".text");
         bytes[section + 8..section + 12].copy_from_slice(&0x1000u32.to_le_bytes());
         bytes[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
-        bytes[section + 16..section + 20].copy_from_slice(&0x800u32.to_le_bytes());
+        bytes[section + 16..section + 20].copy_from_slice(&0x600u32.to_le_bytes());
         bytes[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
 
         // Export directory at RVA 0x1100 (file 0x300): one named export
