@@ -15,6 +15,8 @@ VERSION = "1.0.0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PIXELS = 64_000_000
 MAX_PNG_BYTES = 256 * 1024 * 1024
+MAX_PARALLEL = 4
+MAX_LOG_CHARS = 131072
 REQUIRED = ("design_height","reference_resolution","safe_area_1080p","command_card","control_groups","atlas","assets","font_files")
 ENGINE_ROLES = [
 "console_left_cap_normal_256x288","console_left_mid_normal_256x288","console_right_mid_normal_256x288","console_right_cap_normal_256x288",
@@ -660,8 +662,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         raise ValueError("adapter provider, model and license strings are required for provenance")
     timeout=int(cfg.get("timeout_seconds",1800));retries=int(cfg.get("retries",1))
     parallel=int(parallel_override if parallel_override is not None else cfg.get("max_parallel",1))
-    if not 1<=timeout<=86400 or not 0<=retries<=5 or not 1<=parallel<=32:
-        raise ValueError("adapter timeout/retries/max_parallel outside safe limits")
+    if not 1<=timeout<=86400 or not 0<=retries<=5 or not 1<=parallel<=MAX_PARALLEL:
+        raise ValueError(f"adapter timeout/retries/max_parallel outside safe limits (parallel max {MAX_PARALLEL})")
     allow=cfg.get("environment",[])
     if not isinstance(allow,list) or any(not isinstance(x,str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",x) for x in allow):
         raise ValueError("adapter.environment must be an array of valid environment variable names")
@@ -687,10 +689,6 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             raise ValueError(f"{jid}: invalid target dimensions {width}x{height}")
         if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
         ids.add(jid);paths.add(str(rel))
-    work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
-    logs=drop/"reports"/"worker";logs.mkdir(parents=True,exist_ok=True)
-    drop.mkdir(parents=True,exist_ok=True)
-    work_jobs=work/"jobs";work_jobs.mkdir()
     cwd_value=cfg.get("working_directory",".")
     cwd=Path(cwd_value).expanduser()
     if not cwd.is_absolute():cwd=(adapter_path.resolve().parent/cwd).resolve()
@@ -699,6 +697,11 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     if image_modules is None:
         raise RuntimeError("provider dispatch requires Pillow; install tools/hud_artisan/requirements.txt")
     Image,_,_=image_modules
+    drop.mkdir(parents=True,exist_ok=True)
+    logs=safe_join_any(drop,"reports/worker")
+    logs.mkdir(parents=True,exist_ok=True)
+    work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
+    work_jobs=work/"jobs";work_jobs.mkdir()
     env={"PATH":os.environ.get("PATH",""),"HOME":os.environ.get("HOME","")}
     for key in allow:
         if key in os.environ:env[key]=os.environ[key]
@@ -715,15 +718,19 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         for attempt in range(retries+1):
             try:
                 if out.exists():out.unlink()
-                result=subprocess.run(argv,cwd=cwd,env=env,capture_output=True,text=True,timeout=timeout,check=False)
-                stdout=result.stdout or "";stderr=result.stderr or ""
+                with tempfile.TemporaryFile(mode="w+t",encoding="utf-8",errors="replace") as stdout_file, \
+                     tempfile.TemporaryFile(mode="w+t",encoding="utf-8",errors="replace") as stderr_file:
+                    result=subprocess.run(argv,cwd=cwd,env=env,stdout=stdout_file,stderr=stderr_file,timeout=timeout,check=False)
+                    stdout_file.flush();stderr_file.flush()
+                    stdout_file.seek(0);stderr_file.seek(0)
+                    stdout=stdout_file.read(MAX_LOG_CHARS+1);stderr=stderr_file.read(MAX_LOG_CHARS+1)
                 for secret_name in allow:
                     secret=env.get(secret_name)
                     if secret:
                         stdout=stdout.replace(secret,"[REDACTED]")
                         stderr=stderr.replace(secret,"[REDACTED]")
-                if len(stdout)>131072: stdout=stdout[:131072]+"\n[stdout truncated at 128 KiB]"
-                if len(stderr)>131072: stderr=stderr[:131072]+"\n[stderr truncated at 128 KiB]"
+                if len(stdout)>MAX_LOG_CHARS: stdout=stdout[:MAX_LOG_CHARS]+"\n[stdout truncated]"
+                if len(stderr)>MAX_LOG_CHARS: stderr=stderr[:MAX_LOG_CHARS]+"\n[stderr truncated]"
                 history.append(f"attempt={attempt+1} exit={result.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
                 if result.returncode!=0:raise RuntimeError(f"adapter exit code {result.returncode}")
                 if not out.is_file():raise RuntimeError("adapter returned success but output file is missing")
@@ -739,7 +746,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 status="succeeded";error=None;generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat();break
             except Exception as exc:
                 error=str(exc);history.append(f"attempt={attempt+1} error={error}")
-        (logs/(jid+".log")).write_text("\n\n".join(history),encoding="utf-8")
+        log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
+        log_path.write_text("\n\n".join(history),encoding="utf-8")
         return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
                 "generated_at":generated_at,"error":error,"sha256":sha(out.read_bytes()) if status=="succeeded" else None}
     try:
@@ -755,8 +763,9 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 "adapter":{"provider":provider,"model":model},"parallel":parallel,"results":results,
                 "succeeded":sum(row["status"]=="succeeded" for row in results),
                 "failed":sum(row["status"]!="succeeded" for row in results)}
-        (drop/"reports").mkdir(exist_ok=True)
-        (drop/"reports"/"worker-results.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        worker_report=safe_join_any(drop,"reports/worker-results.json")
+        worker_report.parent.mkdir(parents=True,exist_ok=True)
+        worker_report.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         if ok:
             job_map={job["job_id"]:job for job in jobs}
             records=[]
@@ -766,7 +775,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "generated_at":row["generated_at"],"license":license_name,
                     "references":cfg.get("references",[]),"postprocessing":cfg.get("postprocessing",[]),
                     "prompt_sha256":job["prompt_sha256"],"output_sha256":row["sha256"]})
-            (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
+            provenance_path=safe_join_any(drop,"provenance.json")
+            provenance_path.write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":sha(jobs_path.read_bytes()),"jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
         return 0 if ok else 1
