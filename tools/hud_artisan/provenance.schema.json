@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HUD Artisan provenance file",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "jobs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "adapter": {
+      "type": "string"
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "provider",
+          "model",
+          "generated_at",
+          "license",
+          "prompt_sha256",
+          "output_sha256"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$"
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "generated_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prompt_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "output_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  }
+}
