@@ -251,11 +251,18 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
     for a in doc["assets"]:
         if a["file"] != atlas_file:
             jobs.append(make_job(a,theme,seed))
+    occupied=[];cell_ids=set()
     for entry in atlas["entries"]:
         ident=str(entry.get("id","")).strip()
-        if not ident: raise ValueError("atlas cell id is empty")
+        if not ident or ident in cell_ids: raise ValueError(f"atlas cell id is empty or duplicated: {ident!r}")
+        cell_ids.add(ident)
         x,y,w,h=(int(round(float(entry[k]))) for k in ("x","y","w","h"))
-        if w<1 or h<1: raise ValueError(f"atlas cell {ident}: invalid size")
+        if x<0 or y<0 or w<1 or h<1 or x+w>atlas_asset["w"] or y+h>atlas_asset["h"]:
+            raise ValueError(f"atlas cell {ident}: rectangle {(x,y,w,h)} outside {atlas_asset['w']}x{atlas_asset['h']}")
+        for ox,oy,ow,oh,other in occupied:
+            if x<ox+ow and ox<x+w and y<oy+oh and oy<y+h:
+                raise ValueError(f"atlas cells overlap: {ident} and {other}")
+        occupied.append((x,y,w,h,ident))
         source_asset=entry.get("source_asset") or entry.get("asset")
         source_file=entry.get("source_file")
         if source_asset in by_name: source_file=by_name[source_asset]["file"]
@@ -276,11 +283,17 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
       "source_manifest_sha256":sha(manifest.read_bytes()),"job_count":len(jobs),"jobs":jobs,
       "atlas":{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}}
     (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    pd=out/"prompts";pd.mkdir(exist_ok=True)
+    pd=out/"prompts"
+    if pd.exists(): shutil.rmtree(pd)
+    pd.mkdir(parents=True,exist_ok=True)
+    prompt_names=set()
     for j in jobs:
         body=(f"# {j['asset']}\n\nJob: {j['job_id']}\nOutput: {j['output']}\nTarget: {j['width']}x{j['height']} RGBA8 PNG\n"
         f"Family: {j['family']}\nInsets: {j['insets']}\n\n## Prompt\n{j['prompt']}\n\n## Negative prompt\n{j['negative_prompt']}\n")
-        (pd/(slug(j["asset"])+".md")).write_text(body,encoding="utf-8")
+        prompt_name=slug(j["asset"])+"-"+j["job_id"][:8]+".md"
+        if prompt_name in prompt_names: raise ValueError(f"prompt filename collision: {prompt_name}")
+        prompt_names.add(prompt_name)
+        (pd/prompt_name).write_text(body,encoding="utf-8")
     brief=f"""# HUD Artisan agent brief
 
 {len(jobs)} independent image jobs were compiled. The command-buttons atlas is assembled later by
@@ -559,7 +572,15 @@ def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|No
             try:
                 if out.exists():out.unlink()
                 result=subprocess.run(argv,cwd=cwd,env=env,capture_output=True,text=True,timeout=timeout,check=False)
-                history.append(f"attempt={attempt+1} exit={result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                stdout=result.stdout or "";stderr=result.stderr or ""
+                for secret_name in allow:
+                    secret=env.get(secret_name)
+                    if secret:
+                        stdout=stdout.replace(secret,"[REDACTED]")
+                        stderr=stderr.replace(secret,"[REDACTED]")
+                if len(stdout)>131072: stdout=stdout[:131072]+"\n[stdout truncated at 128 KiB]"
+                if len(stderr)>131072: stderr=stderr[:131072]+"\n[stderr truncated at 128 KiB]"
+                history.append(f"attempt={attempt+1} exit={result.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
                 if result.returncode!=0:raise RuntimeError(f"adapter exit code {result.returncode}")
                 if not out.is_file():raise RuntimeError("adapter returned success but output file is missing")
                 w,h,depth,color=png_info(out)
