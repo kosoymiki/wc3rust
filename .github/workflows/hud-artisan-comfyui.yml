@@ -62,10 +62,14 @@ jobs:
         env:
           WORKFLOW_B64: ${{ secrets.HUD_COMFYUI_WORKFLOW_B64 }}
           CONFIG_B64: ${{ secrets.HUD_COMFYUI_CONFIG_B64 }}
+          MODEL_ID: ${{ secrets.HUD_COMFYUI_MODEL }}
+          MODEL_LICENSE: ${{ secrets.HUD_COMFYUI_LICENSE }}
         run: |
           set -euo pipefail
           test -n "$WORKFLOW_B64" || { echo "::error::Missing HUD_COMFYUI_WORKFLOW_B64 secret"; exit 1; }
           test -n "$CONFIG_B64" || { echo "::error::Missing HUD_COMFYUI_CONFIG_B64 secret"; exit 1; }
+          test -n "$MODEL_ID" || { echo "::error::Missing HUD_COMFYUI_MODEL secret"; exit 1; }
+          test -n "$MODEL_LICENSE" || { echo "::error::Missing HUD_COMFYUI_LICENSE secret"; exit 1; }
           mkdir -p build/hud-artisan/private
           printf '%s' "$WORKFLOW_B64" | base64 --decode > build/hud-artisan/private/comfyui_api_workflow.json
           printf '%s' "$CONFIG_B64" | base64 --decode > build/hud-artisan/private/comfyui.json
@@ -81,6 +85,8 @@ jobs:
           workflow = json.loads((p / "comfyui_api_workflow.json").read_text())
           if not isinstance(workflow, dict) or not workflow:
               raise SystemExit("ComfyUI API workflow must be a non-empty object")
+          adapter = {"schema_version": 1, "name": "github-actions-comfyui-gpu", "provider": "ComfyUI", "model": os.environ["MODEL_ID"], "license": os.environ["MODEL_LICENSE"], "working_directory": "../..", "command": ["python", "tools/hud_artisan/comfyui_adapter.py", "--config", "build/hud-artisan/private/comfyui.json", "--job-json", "{job_json}", "--output", "{output_path}"], "environment": ["COMFYUI_URL"], "timeout_seconds": 1900, "retries": 1, "max_parallel": 1, "references": [], "postprocessing": []}
+          Path("build/hud-artisan/adapter.json").write_text(json.dumps(adapter, indent=2) + "\\n")
           PY
           python - <<'PY'
           import json, os, urllib.request
