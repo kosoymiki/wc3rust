@@ -51,7 +51,13 @@ def safe_join_any(root:Path,relative:str|Path)->Path:
     rel=Path(relative)
     if not str(relative) or rel.is_absolute() or "\\" in str(relative) or ".." in rel.parts:
         raise ValueError(f"unsafe relative path: {relative!r}")
-    target=(base/rel).resolve()
+    # Reject every symlink component, including aliases that resolve inside root.
+    cursor=base
+    for part in rel.parts:
+        cursor=cursor/part
+        if cursor.is_symlink():
+            raise ValueError(f"symlink path is not allowed: {relative}")
+    target=cursor.resolve()
     if not target.is_relative_to(base):
         raise ValueError(f"path escapes its root through a symlink: {relative}")
     return target
@@ -553,7 +559,7 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     shutil.copy2(manifest,out/"manifest.json")
     (out/"fonts").mkdir(exist_ok=True);done=[];errors=[];inputs=[]
     # Verify chain-of-custody before importing any generated output.
-    provenance_path=drop/"provenance.json"
+    provenance_path=safe_join_any(drop,"provenance.json")
     provenance=None
     if not provenance_path.is_file():
         errors.append("missing drop/provenance.json")
@@ -631,14 +637,13 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
             canvas.save(dst,"PNG",optimize=True,compress_level=9);done.append("atlas:"+atlas_file)
     for font in doc["font_files"]:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
-        src=(drop/"fonts"/font).resolve()
-        if not src.is_relative_to(drop.resolve()):errors.append(f"font path escapes drop: {font}");continue
-        dst=(out/"fonts"/font).resolve()
+        src=safe_join_any(drop,Path("fonts")/font)
+        dst=safe_join_any(out,Path("fonts")/font)
         if not dst.is_relative_to(out.resolve()):errors.append(f"font destination escapes staging pack: {font}")
         elif src.is_file():shutil.copy2(src,dst)
         else:errors.append(f"missing font dependency fonts/{font}")
     if provenance is not None:
-        shutil.copy2(provenance_path,out/"provenance.json")
+        shutil.copy2(provenance_path,safe_join_any(out,"provenance.json"))
     (out/"reports").mkdir(exist_ok=True)
     (out/"reports"/"ingestion.json").write_text(json.dumps({"tool":"HUD Artisan","version":VERSION,
       "manifest_sha256":sha(manifest.read_bytes()),"jobs_sha256":sha(jobs_path.read_bytes()),
