@@ -49,6 +49,7 @@ are bundled. The dispatcher does not use a shell string:
 
 ~~~sh
 python3 tools/hud_artisan/generate.py dispatch \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
   --jobs build/hud-artisan/jobs/jobs.json \
   --adapter build/hud-artisan/adapter.json \
   --drop build/hud-artisan/drop --parallel 2
