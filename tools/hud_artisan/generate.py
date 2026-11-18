@@ -1,207 +1,356 @@
 #!/usr/bin/env python3
-"""HUD Artisan: deterministic clean-room RGBA asset generation from the canonical manifest.
+"""HUD Artisan 1.0: manifest-driven art production, ingestion and quality gates.
 
-Python standard library only. The manifest remains the schema authority.
+The tool is provider-neutral: an image model or agent consumes jobs.json and writes
+one PNG per job into a drop directory. Python stdlib handles planning and PNG integrity;
+Pillow provides decode, normalization and pixel-level QA.
 """
 from __future__ import annotations
-import argparse, hashlib, json, math, random, shutil, struct, zlib
+import argparse, hashlib, json, math, re, shutil, struct, sys, zlib
+from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
-VERSION = "0.1.0"
-PALETTE = {
-    "gold": (190, 126, 38), "gold_hi": (255, 211, 111), "gold_lo": (76, 43, 17),
-    "iron": (75, 77, 73), "iron_hi": (164, 157, 132), "stone": (54, 49, 43),
-    "stone_hi": (104, 91, 72), "green": (20, 91, 53), "green_hi": (71, 174, 99),
-    "red": (126, 35, 27), "blue": (35, 72, 119), "ink": (12, 12, 13),
-}
-def clamp(v): return max(0, min(255, int(v)))
-def mix(a,b,t): return tuple(clamp(x+(y-x)*t) for x,y in zip(a,b))
-def png_chunk(tag,data):
-    body=tag+data
-    return struct.pack(">I",len(data))+body+struct.pack(">I",zlib.crc32(body)&0xffffffff)
+VERSION = "1.0.0"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_PIXELS = 64_000_000
+REQUIRED = ("design_height","reference_resolution","safe_area_1080p","command_card","control_groups","atlas","assets","font_files")
+ENGINE_ROLES = [
+"console_left_cap_normal_256x288","console_left_mid_normal_256x288","console_right_mid_normal_256x288","console_right_cap_normal_256x288",
+"topbar_plate_normal_720x32","menu_panel_normal_512x384","resource_pill_normal_236x32","portrait_frame_normal_128",
+"build_progress_normal_64x8","tooltip_panel_normal_384x256","button_border_normal_64","button_glow_64","button_border_pressed_64",
+"button_border_autocast_64","button_border_disabled_64","button_border_empty_64","control_group_button_active_44","control_group_button_inactive_44",
+"selection_panel_normal_240x180","menu_button_normal_256x64","score_panel_normal_1024x512","menu_button_pressed_256x64",
+"loading_frame_normal_1024x512","minimap_frame_normal_216"]
+THEMES = {
+"classic-modern":{"palette":"aged bronze, hammered iron, warm dark stone, restrained emerald enamel and parchment highlights",
+ "materials":"layered forged metal, brushed bronze bevels, worn stone/leather, dark inset surfaces and directional warm light",
+ "ornament":"restrained high-fantasy geometry, asymmetrical hand-forged cornerwork, engraved micro-lines and occasional green gems"},
+"human-gold":{"palette":"warm gold, pale steel, cream parchment, deep navy and restrained cobalt enamel",
+ "materials":"polished steel, brushed gold, worn leather and parchment","ornament":"disciplined heraldic geometry, fine engraved rays and small blue gems"},
+"orc-iron":{"palette":"dark iron, oxidized bronze, muted blood red, leather brown and bone",
+ "materials":"scarred iron plates, hammered bronze, rough leather and chipped edges","ornament":"heavy angular construction, rivets and blunt forged corners"},
+"undead-obsidian":{"palette":"obsidian, tarnished silver, desaturated violet, bone and cold teal",
+ "materials":"dark glassy stone, tarnished silver, cold enamel and bone inlay","ornament":"thin gothic spikes, carved abstract geometry and cold luminous accents"}}
 
-class Raster:
-    def __init__(self,w,h):
-        self.w,self.h=w,h
-        self.p=bytearray(w*h*4)
-    def blend(self,x,y,c,a=255):
-        if x<0 or y<0 or x>=self.w or y>=self.h: return
-        i=(y*self.w+x)*4; a=clamp(a); ia=255-a
-        self.p[i]=clamp((c[0]*a+self.p[i]*ia)/255)
-        self.p[i+1]=clamp((c[1]*a+self.p[i+1]*ia)/255)
-        self.p[i+2]=clamp((c[2]*a+self.p[i+2]*ia)/255)
-        self.p[i+3]=clamp(a+self.p[i+3]*ia/255)
-    def rect(self,x,y,w,h,c,a=255):
-        for yy in range(max(0,int(y)),min(self.h,int(y+h))):
-            for xx in range(max(0,int(x)),min(self.w,int(x+w))): self.blend(xx,yy,c,a)
-    def grad(self,x,y,w,h,top,bottom,alpha=255):
-        if w<=0 or h<=0:return
-        for yy in range(max(0,int(y)),min(self.h,int(y+h))):
-            t=(yy-y)/max(1,h-1); col=mix(top,bottom,t)
-            self.rect(x,yy,w,1,col,alpha)
-    def line(self,x0,y0,x1,y1,c,width=1,a=255):
-        dx=x1-x0;dy=y1-y0;n=max(abs(int(dx)),abs(int(dy)),1)
-        r=max(0,int(width)//2)
-        for k in range(n+1):
-            x=round(x0+dx*k/n);y=round(y0+dy*k/n)
-            for yy in range(y-r,y+r+1):
-                for xx in range(x-r,x+r+1): self.blend(xx,yy,c,a)
-    def poly(self,pts,c,a=255):
-        ys=[p[1] for p in pts]; lo=max(0,int(min(ys)));hi=min(self.h-1,int(max(ys)))
-        for y in range(lo,hi+1):
-            xs=[]
-            for i,(x1,y1) in enumerate(pts):
-                x2,y2=pts[(i+1)%len(pts)]
-                if y1==y2: continue
-                if min(y1,y2)<=y<max(y1,y2): xs.append(x1+(y-y1)*(x2-x1)/(y2-y1))
-            xs.sort()
-            for j in range(0,len(xs)-1,2):
-                for x in range(max(0,int(xs[j])),min(self.w,int(xs[j+1])+1)): self.blend(x,y,c,a)
-    def ellipse(self,cx,cy,rx,ry,col,a=255):
-        if rx<=0 or ry<=0:return
-        for y in range(max(0,int(cy-ry)),min(self.h,int(cy+ry+1))):
-            for x in range(max(0,int(cx-rx)),min(self.w,int(cx+rx+1))):
-                if ((x-cx)/rx)**2+((y-cy)/ry)**2<=1:self.blend(x,y,col,a)
-    def frame(self,x,y,w,h,seed,thick=None):
-        t=thick or max(2,min(w,h)//18)
-        # Cast shadow, dark forged backing, bevel and bright worn lip.
-        self.rect(x+2,y+3,w,h,(0,0,0),180)
-        self.grad(x,y,w,h,PALETTE["gold_hi"],PALETTE["gold_lo"])
-        self.rect(x+t,y+t,w-2*t,h-2*t,PALETTE["iron"])
-        self.grad(x+t+1,y+t+1,w-2*t-2,h-2*t-2,(58,53,46),(19,18,17))
-        self.rect(x+t,y+t,w-2*t,1,PALETTE["gold_hi"],180)
-        self.rect(x+t,y+h-t-1,w-2*t,1,PALETTE["gold_lo"])
-        self.rect(x+t,y+t,1,h-2*t,PALETTE["gold_hi"],120)
-        self.rect(x+w-t-1,y+t,1,h-2*t,PALETTE["gold_lo"])
-        # Corner rivets and inset glints.
-        for px,py in ((x+t,y+t),(x+w-t-1,y+t),(x+t,y+h-t-1),(x+w-t-1,y+h-t-1)):
-            self.ellipse(px,py,max(1,t//3),max(1,t//3),PALETTE["gold_hi"])
-            self.ellipse(px,py,max(1,t//6),max(1,t//6),PALETTE["ink"])
-        # Small deterministic hammered marks, restrained to the frame.
-        rng=random.Random(seed)
-        for _ in range(max(8,(w+h)//5)):
-            side=rng.randrange(4); q=rng.random()
-            if side<2:
-                px=int(x+q*w);py=y+(t//2 if side==0 else h-t//2)
-            else:
-                px=x+(t//2 if side==2 else w-t//2);py=int(y+q*h)
-            self.blend(px,py,PALETTE["gold_hi"],rng.randrange(18,75))
-    def gem(self,cx,cy,r):
-        self.poly([(cx,cy-r),(cx+r,cy-r//3),(cx+r//2,cy+r),(cx-r//2,cy+r),(cx-r,cy-r//3)],PALETTE["green"])
-        self.line(cx,cy-r,cx-r//2,cy+r,PALETTE["green_hi"],max(1,r//5))
-        self.line(cx,cy-r,cx+r,cy-r//3,PALETTE["gold_hi"],1)
-    def texture(self,seed,amount=250):
-        rng=random.Random(seed)
-        for _ in range(min(amount,self.w*self.h//2)):
-            x=rng.randrange(self.w);y=rng.randrange(self.h)
-            i=(y*self.w+x)*4
-            if self.p[i+3]:
-                d=rng.choice((-13,-8,-4,4,7,11))
-                self.p[i]=clamp(self.p[i]+d);self.p[i+1]=clamp(self.p[i+1]+d);self.p[i+2]=clamp(self.p[i+2]+d)
-    def save(self,path):
-        raw=b"".join(b"\0"+bytes(self.p[y*self.w*4:(y+1)*self.w*4]) for y in range(self.h))
-        data=b"\x89PNG\r\n\x1a\n"+png_chunk(b"IHDR",struct.pack(">IIBBBBB",self.w,self.h,8,6,0,0,0))+png_chunk(b"IDAT",zlib.compress(raw,9))+png_chunk(b"IEND",b"")
-        path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+def sha(data:bytes)->str: return hashlib.sha256(data).hexdigest()
+def slug(s:str)->str: return re.sub(r"[^a-z0-9_-]+","-",s.lower()).strip("-") or "asset"
+def safe_rel(value:str)->Path:
+    p=Path(value)
+    if not value or p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
+        raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
+    return p
+def read_json(path:Path)->dict[str,Any]:
+    try: obj=json.loads(path.read_text(encoding="utf-8"))
+    except (OSError,json.JSONDecodeError) as e: raise ValueError(f"cannot read {path}: {e}") from e
+    if not isinstance(obj,dict): raise ValueError(f"{path}: JSON root must be an object")
+    return obj
 
-def glyph(r,name,cx,cy,size,seed):
-    s=max(3,size//2); gold=PALETTE["gold_hi"]; white=(205,205,190)
+def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
+    doc=read_json(path); missing=[k for k in REQUIRED if k not in doc]
+    if missing: raise ValueError("manifest missing: "+", ".join(missing))
+    if not isinstance(doc["assets"],list) or not doc["assets"]: raise ValueError("assets must be a non-empty array")
+    names=set(); files=set()
+    for i,a in enumerate(doc["assets"]):
+        if not isinstance(a,dict): raise ValueError(f"assets[{i}] must be an object")
+        for k in ("name","file","w","h","insets"):
+            if k not in a: raise ValueError(f"assets[{i}] missing {k}")
+        name=a["name"]
+        if not isinstance(name,str) or not name.strip() or name in names: raise ValueError(f"invalid/duplicate asset name: {name!r}")
+        names.add(name); rel=safe_rel(a["file"])
+        if str(rel) in files: raise ValueError(f"duplicate asset file: {rel}")
+        files.add(str(rel)); w,h=a["w"],a["h"]
+        if type(w)!=int or type(h)!=int or w<1 or h<1 or w*h>MAX_PIXELS: raise ValueError(f"{name}: invalid dimensions {w}x{h}")
+        ins=a["insets"]
+        if not isinstance(ins,dict) or any(k not in ins for k in ("l","t","r","b")): raise ValueError(f"{name}: insets need l,t,r,b")
+        vals=[float(ins[k]) for k in ("l","t","r","b")]
+        if any(not math.isfinite(v) or v<0 for v in vals): raise ValueError(f"{name}: insets must be finite and non-negative")
+    atlas=doc["atlas"].get("commandbuttons") if isinstance(doc["atlas"],dict) else None
+    if not isinstance(atlas,dict) or not isinstance(atlas.get("entries"),list) or not atlas["entries"]:
+        raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
+    if not isinstance(doc["font_files"],list) or len(doc["font_files"])!=5:
+        raise ValueError("wc3rust pack loader requires exactly five font_files")
+    if engine_contract:
+        absent=sorted(set(ENGINE_ROLES)-names)
+        if absent: raise ValueError("required engine roles missing: "+", ".join(absent))
+    return doc
+
+def family(name:str)->str:
     n=name.lower()
-    if any(k in n for k in ("gold","coin","resource")):
-        r.ellipse(cx,cy,s,s,PALETTE["gold"]);r.ellipse(cx,cy,s-3,s-3,gold);r.ellipse(cx,cy,s-6,s-6,PALETTE["gold_lo"]);r.ellipse(cx,cy,s-8,s-8,PALETTE["gold"])
-        r.line(cx-s//2,cy,cx+s//2,cy,gold,max(2,s//5))
-    elif "wood" in n or "lumber" in n:
-        for j in range(3):
-            yy=cy-s//2+j*s//3;r.line(cx-s,yy,cx+s,yy+2,PALETTE["gold"],max(3,s//4));r.ellipse(cx-s,yy,3,3,gold)
-    elif any(k in n for k in ("food","meat","supply")):
-        r.ellipse(cx,cy,s//2,s,PALETTE["red"]);r.line(cx,cy-s,cx+s//2,cy-s//2,PALETTE["green_hi"],2)
-    elif any(k in n for k in ("attack","sword","damage","weapon")):
-        r.poly([(cx-s,cy+s//2),(cx+s//2,cy-s),(cx+s,cy-s//2),(cx-s//2,cy+s)],white)
-        r.line(cx-s,cy+s,cx+s,cy-s,gold,max(2,s//5))
-    elif any(k in n for k in ("armor","shield","defense")):
-        r.poly([(cx-s,cy-s),(cx+s,cy-s),(cx+s//2,cy+s//2),(cx,cy+s),(cx-s//2,cy+s//2)],PALETTE["blue"])
-        r.line(cx,cy-s,cx,cy+s,white,max(2,s//6))
-    elif any(k in n for k in ("health","life","heal")):
-        r.ellipse(cx-s//2,cy-s//3,s//2,s//2,PALETTE["red"]);r.ellipse(cx+s//2,cy-s//3,s//2,s//2,PALETTE["red"]);r.poly([(cx-s,cy-s//4),(cx+s,cy-s//4),(cx,cy+s)],PALETTE["red"])
-    elif any(k in n for k in ("mana","magic","spell","rune")):
-        r.poly([(cx,cy-s),(cx+s//2,cy),(cx,cy+s),(cx-s//2,cy)],PALETTE["blue"]);r.ellipse(cx,cy,s//4,s//4,PALETTE["green_hi"])
-    elif any(k in n for k in ("move","arrow","rally")):
-        r.poly([(cx-s,cy-s//3),(cx+s//3,cy-s//3),(cx+s//3,cy-s),(cx+s,cy),(cx+s//3,cy+s),(cx+s//3,cy+s//3),(cx-s,cy+s//3)],gold)
-    elif any(k in n for k in ("close","cancel","stop")):
-        r.line(cx-s,cy-s,cx+s,cy+s,PALETTE["red"],max(3,s//3));r.line(cx+s,cy-s,cx-s,cy+s,PALETTE["red"],max(3,s//3))
-    else:
-        # Unique seed-derived rune silhouette; never a text glyph.
-        rng=random.Random(seed); sides=5+rng.randrange(4); pts=[]
-        for i in range(sides):
-            a=-math.pi/2+2*math.pi*i/sides;rad=s*(0.65 if i%2 else 1)
-            pts.append((cx+math.cos(a)*rad,cy+math.sin(a)*rad))
-        r.poly(pts,PALETTE["gold"]);r.ellipse(cx,cy,max(2,s//4),max(2,s//4),PALETTE["green_hi"])
+    if any(x in n for x in ("portrait","hero_frame","unit_frame")): return "portrait-frame"
+    if "minimap" in n: return "minimap-frame"
+    if n.startswith(("icon_","ability_","item_","spell_","command_")): return "icon"
+    if any(x in n for x in ("cursor","reticle","rally_point","order_marker")): return "cursor"
+    if any(x in n for x in ("button","slot","tile","tab","control_group")): return "interactive-control"
+    if any(x in n for x in ("topbar","console","resource","upkeep","progress","hp_bar","mana_bar")): return "hud-strip"
+    if any(x in n for x in ("menu","dialog","modal","loading","score","campaign","save")): return "menu-panel"
+    if any(x in n for x in ("tooltip","selection","inventory","panel","frame")): return "panel"
+    return "misc-ui"
 
-def render(asset,theme,seed):
-    name=asset["name"];w=asset["w"];h=asset["h"];low=name.lower()
-    r=Raster(w,h);rng=random.Random(seed)
-    # Transparent canvas; panel families get full alpha, icons stay isolated.
-    icon=low.startswith(("icon_","ability_","item_")) or "glyph" in low
-    if icon:
-        pad=max(1,min(w,h)//14);r.ellipse(w//2+1,h//2+2,min(w,h)//2-pad,min(w,h)//2-pad,(0,0,0),150)
-        r.ellipse(w//2,h//2,min(w,h)//2-pad,min(w,h)//2-pad,PALETTE["gold_lo"])
-        r.ellipse(w//2,h//2,min(w,h)//2-pad-3,min(w,h)//2-pad-3,PALETTE["iron"])
-        glyph(r,name,w//2,h//2,max(6,min(w,h)//2-7),seed)
-    else:
-        t=max(2,min(w,h)//22)
-        r.frame(0,0,w,h,seed,t)
-        # Interior dark material: smoky parchment for menus, charcoal for HUD.
-        inset=t+2
-        if any(k in low for k in ("menu","modal","dialog","tooltip","loading","save","campaign")):
-            r.grad(inset,inset,w-2*inset,h-2*inset,(71,57,40),(24,21,18))
-        else:
-            r.grad(inset,inset,w-2*inset,h-2*inset,(38,37,34),(12,13,14))
-        # Distinct semantic decoration.
-        if any(k in low for k in ("portrait","hero","unit")):
-            r.gem(w//2,t+max(3,t//2),max(3,t))
-        elif any(k in low for k in ("resource","topbar","console")):
-            r.gem(w//2,t+max(3,t//2),max(3,t))
-            r.poly([(w//2-8,h-1),(w//2,h-max(4,t*2)),(w//2+8,h-1)],PALETTE["green"])
-        elif any(k in low for k in ("slot","button","command","tab")):
-            r.rect(inset+2,inset+2,max(1,w-2*inset-4),max(1,h-2*inset-4),PALETTE["ink"],80)
-            r.line(inset+3,inset+3,w-inset-4,inset+3,PALETTE["gold_hi"],80)
-        if "minimap" in low:
-            # Abstract terrain relief texture; no copied map data.
-            for _ in range(max(20,w*h//90)):
-                x=rng.randrange(inset,max(inset+1,w-inset));y=rng.randrange(inset,max(inset+1,h-inset))
-                r.ellipse(x,y,rng.randrange(1,5),rng.randrange(1,5),rng.choice([PALETTE["green"],PALETTE["stone_hi"],PALETTE["blue"]]),130)
-        r.texture(seed,max(20,(w+h)//2))
-    return r
+def material(name:str,kind:str)->str:
+    n=name.lower()
+    if kind=="icon": return "sculpted miniature emblem with a distinct silhouette, strong value grouping and a controlled metallic rim"
+    if kind=="portrait-frame": return "deep dark portrait aperture, thick forged surround, protected inner bevel; centre stays empty"
+    if "wood" in n or "lumber" in n: return "carved dark wood with cut end grain and warm sap highlights"
+    if "gold" in n or "resource" in n: return "brushed gold, dark iron backing and a clean embossed resource insignia"
+    if "console" in n or "topbar" in n: return "broad dark iron plate, substantial bronze rim, low-frequency texture and stretch-safe centre"
+    if kind=="menu-panel": return "layered dark leather and aged stone inset, thick bronze/steel outer frame and restrained parchment accents"
+    return "dark slate inset, forged metal frame, bronze bevels, engraved detail and restrained enamel accents"
 
-def main():
-    ap=argparse.ArgumentParser(description="Deterministic clean-room HUD asset generator")
-    ap.add_argument("--manifest",required=True,type=Path)
-    ap.add_argument("--out",required=True,type=Path)
-    ap.add_argument("--theme",choices=("classic-modern","orc-iron","human-gold","undead-obsidian"),default="classic-modern")
-    ap.add_argument("--seed",type=int,default=20261118)
-    ap.add_argument("--limit",type=int,default=0,help="debug only: generate first N assets")
-    args=ap.parse_args()
-    source=args.manifest.resolve();doc=json.loads(source.read_text(encoding="utf-8"))
-    assets=doc.get("assets")
-    if not isinstance(assets,list) or not assets: raise SystemExit("manifest has no assets[]")
-    out=args.out.resolve();out.mkdir(parents=True,exist_ok=True)
-    shutil.copy2(source,out/"manifest.json")
-    hashes=[];generated=[]
-    for index,a in enumerate(assets):
-        if args.limit and index>=args.limit:break
-        for key in ("name","file","w","h"):
-            if key not in a:raise SystemExit(f"asset[{index}] missing {key}")
-        if not isinstance(a["w"],int) or not isinstance(a["h"],int) or a["w"]<1 or a["h"]<1 or a["w"]*a["h"]>64_000_000:
-            raise SystemExit(f"unsafe dimensions for {a['name']}: {a['w']}x{a['h']}")
-        seed=int(hashlib.sha256(f"{args.seed}:{a['name']}".encode()).hexdigest()[:8],16)
-        dest=out/a["file"]
-        render(a,args.theme,seed).save(dest)
-        digest=hashlib.sha256(dest.read_bytes()).hexdigest()
-        hashes.append({"name":a["name"],"file":a["file"],"sha256":digest,"width":a["w"],"height":a["h"]})
-        generated.append(a["name"])
-    report={"tool":"HUD Artisan","version":VERSION,"theme":args.theme,"seed":args.seed,
-            "source_manifest_sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
-            "generated_count":len(generated),"generated":hashes}
-    reports=out/"reports";reports.mkdir(exist_ok=True)
-    (reports/"generation.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
-    print(f"HUD_ARTISAN_OK assets={len(generated)} theme={args.theme} seed={args.seed} out={out}")
-if __name__=="__main__":main()
+def make_job(a:dict,theme:str,seed:int)->dict:
+    name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
+    states=", ".join(a.get("states") or []) or "normal/default state"
+    alpha=kind in ("icon","cursor")
+    prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
+    f"Family {kind}; state {states}. Palette: {t['palette']}. Materials: {material(name,kind)}. "
+    f"Surface rendering: {t['materials']}. Ornament: {t['ornament']}. "
+    f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
+    "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
+    "Strong silhouette and hierarchy at native UI scale; believable bevels, subtle wear, consistent light direction, "
+    "clean anti-aliased edges, no clutter. "+
+    ("Transparent background beyond the isolated silhouette, clean straight alpha." if alpha else
+     "Fill panel surface; content/text field is empty and unobstructed."))
+    negative=("text, typography, letters, digits, words, logos, watermark, signature, screenshot, mockup, "
+    "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
+    "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
+    "chromatic aberration, noisy microtexture, random ornament")
+    return {"job_id":sha(f"{name}:{w}x{h}:{seed}:{theme}".encode())[:16],"asset":name,"output":a["file"],
+      "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":seed,"insets":ins,
+      "requires_alpha":alpha,"prompt":prompt,"negative_prompt":negative,
+      "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
+
+def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
+    doc=load_manifest(manifest,engine_contract);out.mkdir(parents=True,exist_ok=True)
+    jobs=[make_job(a,theme,seed) for a in doc["assets"]]
+    manifest_sha=sha(manifest.read_bytes())
+    payload={"tool":"HUD Artisan","version":VERSION,"theme":theme,"seed":seed,
+      "source_manifest_sha256":manifest_sha,"job_count":len(jobs),"jobs":jobs}
+    (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    pd=out/"prompts";pd.mkdir(exist_ok=True)
+    for j in jobs:
+        body=(f"# {j['asset']}\n\nJob: {j['job_id']}\nOutput: {j['output']}\nTarget: {j['width']}x{j['height']} RGBA8 PNG\n"
+        f"Family: {j['family']}\nInsets: {j['insets']}\n\n## Prompt\n{j['prompt']}\n\n## Negative prompt\n{j['negative_prompt']}\n")
+        (pd/(slug(j["asset"])+".md")).write_text(body,encoding="utf-8")
+    brief=f"""# HUD Artisan agent brief
+
+{len(jobs)} independent jobs were compiled from the authoritative manifest.
+
+- Generate exactly one asset per job. Never output a sheet, collage or screenshot.
+- Preserve each exact relative output path, native dimensions and straight alpha.
+- Respect the declared nine-slice insets: corners retain ornament; stretch zones stay calm and continuous.
+- Sibling states must be visibly distinct but use one consistent component language.
+- Icons need semantically recognisable, distinct silhouettes at 32–64 px; no generic placeholder rune.
+- Panels need material layers, controlled bevel lighting, believable occlusion and restrained wear.
+- Keep text out of images; game text is rendered by the engine.
+- Clean-room fantasy art only. No extracted game assets, game screenshots, proprietary logos or copied retail art.
+- Deliver outputs under the exact paths in your drop folder and include provenance.json with provider/model,
+  revision, seed, prompt hash, post-processing and reference-source/license details.
+- Structural PASS is not art approval. Inspect at native size and run actual game screenshot QA.
+
+Run:
+  python tools/hud_artisan/generate.py ingest --manifest MANIFEST --drop DROP --out PACK
+  python tools/hud_artisan/generate.py validate --manifest MANIFEST --pack PACK --pixels
+  python tools/hud_artisan/generate.py contact-sheet --manifest MANIFEST --pack PACK --out contact-sheet.png
+
+Theme={theme}; seed={seed}; source manifest SHA-256={manifest_sha}
+"""
+    (out/"AGENT_BRIEF.md").write_text(brief,encoding="utf-8")
+    print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} out={out}");return 0
+
+def png_info(path:Path)->tuple[int,int,int,int]:
+    data=path.read_bytes()
+    if not data.startswith(PNG_SIGNATURE): raise ValueError("bad PNG signature")
+    pos=8;w=h=depth=ctype=None;idat=0;ended=False;ihdr=False
+    while pos<len(data):
+        if pos+12>len(data): raise ValueError("truncated PNG chunk header")
+        n=struct.unpack(">I",data[pos:pos+4])[0];tag=data[pos+4:pos+8];end=pos+12+n
+        if end>len(data): raise ValueError(f"truncated {tag!r} chunk")
+        payload=data[pos+8:pos+8+n];crc=struct.unpack(">I",data[pos+8+n:end])[0]
+        if zlib.crc32(tag+payload)&0xffffffff!=crc: raise ValueError(f"CRC mismatch in {tag!r}")
+        if tag==b"IHDR":
+            if n!=13 or ihdr: raise ValueError("invalid/duplicate IHDR")
+            ihdr=True;w,h,depth,ctype,comp,filt,interlace=struct.unpack(">IIBBBBB",payload)
+            if not w or not h or w*h>MAX_PIXELS: raise ValueError("unsafe PNG dimensions")
+            if comp or filt or interlace not in (0,1): raise ValueError("unsupported PNG encoding")
+        elif tag==b"IDAT": idat+=n
+        elif tag==b"IEND":
+            if n: raise ValueError("non-empty IEND")
+            ended=True
+            if end!=len(data): raise ValueError("trailing bytes after IEND")
+            break
+        pos=end
+    if not ihdr or not ended or not idat: raise ValueError("incomplete PNG")
+    return int(w),int(h),int(depth),int(ctype)
+
+def pil_modules():
+    try:
+        from PIL import Image, ImageDraw, ImageStat
+        return Image,ImageDraw,ImageStat
+    except ImportError: return None
+
+def image_metrics(path:Path)->dict:
+    mods=pil_modules()
+    if not mods: raise RuntimeError("pixel QA requires Pillow; install tools/hud_artisan/requirements.txt")
+    Image,_,ImageStat=mods
+    with Image.open(path) as src:
+        src.load();rgba=src.convert("RGBA");alpha=rgba.getchannel("A");hist=alpha.histogram()
+        trans=sum(hist[:255])/(rgba.width*rgba.height);opaque=hist[255]/(rgba.width*rgba.height)
+        thumb=rgba.convert("RGB").resize((min(64,rgba.width),min(64,rgba.height)))
+        colors=len(set(thumb.getdata()));variance=sum(ImageStat.Stat(thumb).var)/3
+        box=alpha.getbbox()
+        return {"source_mode":src.mode,"transparent_fraction":round(trans,5),"opaque_fraction":round(opaque,5),
+          "alpha_bbox":list(box) if box else None,"thumbnail_unique_colors":colors,
+          "thumbnail_rgb_variance":round(variance,3)}
+
+def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
+    doc=load_manifest(manifest);fail=[];warn=[];records=[];hashes=defaultdict(list)
+    if not (pack/"manifest.json").is_file(): fail.append("pack manifest.json missing")
+    elif read_json(pack/"manifest.json")!=doc: fail.append("pack manifest differs from source manifest")
+    by_file={a["file"]:a for a in doc["assets"]}
+    for a in doc["assets"]:
+        name=a["name"];rel=safe_rel(a["file"]);f=pack/rel
+        if not f.is_file(): fail.append(f"{name}: missing {rel}");continue
+        try:
+            w,h,depth,ctype=png_info(f)
+            if (w,h)!=(a["w"],a["h"]): fail.append(f"{name}: {w}x{h} != {a['w']}x{a['h']}")
+            if depth!=8 or ctype!=6: fail.append(f"{name}: expected RGBA8; got depth={depth} color={ctype}")
+            digest=sha(f.read_bytes());hashes[digest].append(name)
+            rec={"name":name,"file":str(rel),"sha256":digest,"bytes":f.stat().st_size}
+            if pixels and (w,h)==(a["w"],a["h"]) and depth==8 and ctype==6:
+                m=image_metrics(f);rec["pixels"]=m
+                if not m["alpha_bbox"]: fail.append(f"{name}: fully transparent")
+                if m["thumbnail_unique_colors"]<12: fail.append(f"{name}: flat image; only {m['thumbnail_unique_colors']} sampled colours")
+                if m["thumbnail_rgb_variance"]<2: fail.append(f"{name}: near-uniform pixel variance")
+                if family(name) in ("icon","cursor") and m["transparent_fraction"]<.005: warn.append(f"{name}: almost no transparent pixels")
+                if family(name) in ("panel","menu-panel","portrait-frame","hud-strip") and m["thumbnail_unique_colors"]<40: warn.append(f"{name}: low material colour diversity")
+            records.append(rec)
+            ins=a["insets"];l,t,r,b=(float(ins[k]) for k in ("l","t","r","b"))
+            if l+r>=w or t+b>=h:
+                msg=f"{name}: invalid 9-slice centre (L+R={l+r}/{w}, T+B={t+b}/{h})"
+                (fail if strict_insets else warn).append(msg)
+        except Exception as e: fail.append(f"{name}: {e}")
+    for digest,names in hashes.items():
+        if len(names)>1: fail.append("byte-identical assets: "+", ".join(names))
+    atlas=doc["atlas"]["commandbuttons"];atlas_file=atlas.get("file")
+    if not isinstance(atlas_file,str) or atlas_file not in by_file:
+        fail.append("atlas.commandbuttons.file must match an assets[].file")
+    else:
+        aw,ah=by_file[atlas_file]["w"],by_file[atlas_file]["h"];occupied=[]
+        for e in atlas["entries"]:
+            try:
+                x,y,w,h=(float(e[k]) for k in ("x","y","w","h"))
+                if x<0 or y<0 or w<=0 or h<=0 or x+w>aw or y+h>ah: fail.append(f"atlas {e.get('id')}: outside {aw}x{ah}")
+                for ox,oy,ow,oh,oid in occupied:
+                    if x<ox+ow and ox<x+w and y<oy+oh and oy<y+h: fail.append(f"atlas overlap: {e.get('id')} / {oid}")
+                occupied.append((x,y,w,h,e.get("id","?")))
+            except Exception: fail.append(f"invalid atlas entry: {e!r}")
+    for font in doc["font_files"]:
+        if not isinstance(font,str) or Path(font).name!=font: fail.append(f"unsafe font filename: {font!r}")
+        elif not (pack/"fonts"/font).is_file(): fail.append(f"missing font dependency fonts/{font}")
+    report={"tool":"HUD Artisan","version":VERSION,"manifest_sha256":sha(manifest.read_bytes()),
+      "asset_count":len(doc["assets"]),"checked_count":len(records),"pixel_qa":pixels,
+      "failures":fail,"warnings":warn,"assets":records}
+    (pack/"reports").mkdir(exist_ok=True)
+    (pack/"reports"/"validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    for x in warn: print("HUD_ARTISAN_WARN "+x)
+    for x in fail: print("HUD_ARTISAN_FAIL "+x)
+    print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
+    return int(bool(fail))
+
+def ingest(manifest:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+    doc=load_manifest(manifest);mods=pil_modules()
+    if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
+    Image,_,_=mods;out.mkdir(parents=True,exist_ok=True);shutil.copy2(manifest,out/"manifest.json")
+    (out/"fonts").mkdir(exist_ok=True);done=[];errors=[];inputs=[]
+    for a in doc["assets"]:
+        rel=safe_rel(a["file"]);src=drop/rel
+        alt=drop/(slug(a["name"])+".png")
+        if not src.is_file() and alt.is_file():src=alt
+        if not src.is_file():errors.append(f"{a['name']}: missing input {rel}");continue
+        try:
+            with Image.open(src) as im:
+                im.load();original=im.size;im=im.convert("RGBA");target=(a["w"],a["h"])
+                if im.size!=target:
+                    if fit=="strict": raise ValueError(f"input {im.size} != target {target}; choose fit policy explicitly")
+                    if fit=="contain":
+                        im.thumbnail(target,Image.Resampling.LANCZOS);canvas=Image.new("RGBA",target,(0,0,0,0))
+                        canvas.alpha_composite(im,((target[0]-im.width)//2,(target[1]-im.height)//2));im=canvas
+                    elif fit=="crop":
+                        scale=max(target[0]/im.width,target[1]/im.height);size=(round(im.width*scale),round(im.height*scale))
+                        im=im.resize(size,Image.Resampling.LANCZOS);x=(size[0]-target[0])//2;y=(size[1]-target[1])//2
+                        im=im.crop((x,y,x+target[0],y+target[1]))
+                    elif fit=="stretch":im=im.resize(target,Image.Resampling.LANCZOS)
+                if family(a["name"]) in ("icon","cursor") and not allow_opaque and im.getchannel("A").getextrema()==(255,255):
+                    raise ValueError("icon/cursor is opaque; preserve transparent background or pass --allow-opaque")
+                dst=out/rel;dst.parent.mkdir(parents=True,exist_ok=True);im.save(dst,"PNG",optimize=True,compress_level=9)
+                inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha(src.read_bytes()),
+                   "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
+        except Exception as e:errors.append(f"{a['name']}: {e}")
+    for font in doc["font_files"]:
+        if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
+        src=drop/"fonts"/font
+        if src.is_file():shutil.copy2(src,out/"fonts"/font)
+        else:errors.append(f"missing font dependency fonts/{font}")
+    (out/"reports").mkdir(exist_ok=True)
+    (out/"reports"/"ingestion.json").write_text(json.dumps({"tool":"HUD Artisan","version":VERSION,
+      "manifest_sha256":sha(manifest.read_bytes()),"ingested":done,"inputs":inputs,"errors":errors,"fit_policy":fit},
+      ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    for e in errors:print("HUD_ARTISAN_FAIL "+e)
+    print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)}/{len(doc['assets'])} errors={len(errors)}")
+    return int(bool(errors))
+
+def contact_sheet(manifest:Path,pack:Path,out:Path,cols:int,cell:int)->int:
+    doc=load_manifest(manifest);mods=pil_modules()
+    if not mods:raise RuntimeError("contact sheet requires Pillow")
+    Image,ImageDraw,_=mods;label=34;rows=math.ceil(len(doc["assets"])/cols)
+    canvas=Image.new("RGB",(cols*cell,rows*(cell+label)),(28,27,25));draw=ImageDraw.Draw(canvas)
+    for i,a in enumerate(doc["assets"]):
+        x=(i%cols)*cell;y=(i//cols)*(cell+label);src=pack/safe_rel(a["file"])
+        if not src.is_file():draw.text((x+8,y+8),"MISSING "+a["name"],fill=(255,80,70));continue
+        with Image.open(src) as im:
+            im=im.convert("RGBA");im.thumbnail((cell-20,cell-20),Image.Resampling.LANCZOS)
+            tile=Image.new("RGBA",(cell-12,cell-12),(52,51,48,255))
+            tile.alpha_composite(im,((tile.width-im.width)//2,(tile.height-im.height)//2));canvas.paste(tile.convert("RGB"),(x+6,y+6))
+        draw.text((x+8,y+cell+2),a["name"][:40],fill=(236,224,198))
+    out.parent.mkdir(parents=True,exist_ok=True);canvas.save(out)
+    print(f"HUD_ARTISAN_CONTACT_SHEET {out} {canvas.width}x{canvas.height}");return 0
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description="HUD Artisan — provider-neutral multi-agent art production")
+    s=p.add_subparsers(dest="cmd",required=True)
+    q=s.add_parser("profile",help="write verified engine contract reference, not a fabricated manifest")
+    q.add_argument("--out",type=Path,required=True)
+    q=s.add_parser("plan",help="compile per-asset generation jobs and prompts")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
+    q.add_argument("--theme",choices=tuple(THEMES),default="classic-modern");q.add_argument("--seed",type=int,default=20261118)
+    q.add_argument("--engine-contract",action="store_true")
+    q=s.add_parser("ingest",help="normalize agent PNG drop into a pack")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
+    q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
+    q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
+    q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true")
+    q=s.add_parser("contact-sheet",help="build labeled visual review sheet")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
+    q.add_argument("--cols",type=int,default=5);q.add_argument("--cell",type=int,default=240)
+    a=p.parse_args(argv)
+    try:
+        if a.cmd=="profile":
+            profile={"profile":"wc3rust-hud-engine-contract","contract_only":True,"design_height":768,
+             "reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
+             "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
+             "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+             "control_groups":{"count":10,"cell":[44,44]},
+             "commandbuttons_atlas":{"size":[2048,2048],"entries":20},
+             "font_files_required":5,"required_unique_assets":ENGINE_ROLES,
+             "note":"Contract reference only. Unknown insets, complete filenames, font binaries and source art are intentionally not fabricated."}
+            a.out.parent.mkdir(parents=True,exist_ok=True);a.out.write_text(json.dumps(profile,indent=2)+"\n",encoding="utf-8")
+            print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
+        if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
+        if a.cmd=="ingest":return ingest(a.manifest,a.drop,a.out,a.fit,a.allow_opaque)
+        if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets)
+        if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
+    except (ValueError,RuntimeError,OSError) as e:
+        print(f"HUD_ARTISAN_ERROR {e}",file=sys.stderr);return 2
+    return 2
+if __name__=="__main__":raise SystemExit(main())
