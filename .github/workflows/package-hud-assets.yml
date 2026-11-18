@@ -1,0 +1,24 @@
+name: Package HUD Asset Pack
+on:
+  push:
+    branches: [assets/hud-classic-modern-v1]
+    paths:
+      - 'tools/generate_hud_asset_pack.py'
+      - '.github/workflows/package-hud-assets.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate, validate and archive
+        run: python3 tools/generate_hud_asset_pack.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wc3rust-hud-asset-pack-classic-modern-v1.0
+          path: wc3rust-hud-asset-pack-classic-modern-v1.0.zip
+          if-no-files-found: error
+          retention-days: 30
