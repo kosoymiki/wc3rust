@@ -1,31 +1,41 @@
-# Provider-neutral agent protocol
+# HUD Artisan provider protocol
 
-HUD Artisan deliberately separates asset specification from image generation. Its job contract is
-the versioned JSON schema in job.schema.json. An execution provider can be:
-- a human-operated image model UI;
-- an autonomous coding/art agent with image-generation access;
-- a local ComfyUI/Stable Diffusion workflow;
-- an internal company image service;
-- an offline artist who returns PNGs.
+HUD Artisan separates the engine asset contract from the image-generation provider. There are two
+supported integration modes:
 
-## Required adapter behavior
+1. Agent mode: an autonomous agent reads jobs.json and emits one image per job.
+2. Adapter mode: the built-in dispatcher calls a local provider CLI through an argv-only interface.
 
-An adapter reads jobs.json and writes one PNG at each job.output path under a clean drop directory.
-It must not modify the manifest or silently transform aspect ratios. Exact dimensions are preferred.
-If it cannot supply exact dimensions, it must record source size and leave fitting to the explicit
-ingest policy. It should write provenance.json with provider, model, revision, generated_at,
-prompt hash, seed, references and usage/license metadata.
+## Adapter configuration
 
-## Concurrency and retries
+Copy adapter.example.json and configure provider, model, license, working_directory, command,
+timeouts, retry count, concurrency and the exact environment-variable allowlist.
 
-Jobs are independent and can be distributed across agents. Use job_id as the idempotency key.
-A retry must preserve the same seed/prompt unless the job revision changes. Never let two workers
-write the same output path simultaneously. A worker reports status per job: queued, running,
-succeeded, rejected or failed. Failed outputs do not enter the staging pack.
+The command is an array of arguments, never a shell string. Supported placeholders are:
+- {job_json}: temporary JSON file containing the complete asset job.
+- {output_path}: absolute destination path to write as PNG RGBA8.
+- {job_id}: stable idempotency key.
 
-## Image model guidance
+The provider program must write one image at the exact target dimensions and return exit code 0.
+The dispatcher rejects missing outputs, malformed PNG files, wrong dimensions and non-RGBA8 data.
+No image provider secrets are stored in jobs.json or adapter config; only environment variable names
+are allowed, and the dispatcher passes through only those named variables plus PATH and HOME.
 
-Use high-resolution / quality mode for large panels and menus; use icon/small-asset mode for 32–64 px
-glyphs. Do not ask the model to draw text. For frames, reserve the supplied insets and avoid central
-ornament. Use transparent output for isolated icon/cursor families. Keep reference images and their
-licenses in provenance, not in the output artwork metadata.
+The dispatcher supports bounded concurrency, per-job timeouts, retries and separate stdout/stderr
+logs. A successful run writes worker-results.json and provenance.json. The latter binds every job
+to the prompt SHA-256 and actual output SHA-256; ingest verifies both before building the pack.
+
+## Provider implementation expectations
+
+The adapter script should:
+- read the job JSON; never infer dimensions or output paths from array ordering;
+- use the prompt and negative_prompt exactly, or record any intentional transformation;
+- use job_id for provider-side idempotency where available;
+- preserve supplied references and attribution in a sidecar if any are used;
+- save exactly one RGBA8 PNG to output_path;
+- avoid text, logos, watermarks and copied protected art;
+- not run shell commands constructed from prompt content.
+
+Local ComfyUI, a Stable Diffusion pipeline, an internal REST service and vendor APIs can all be
+wrapped by a small provider_adapter.py. The core tool remains provider-neutral and needs no internet
+or model-specific dependency.
