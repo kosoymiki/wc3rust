@@ -79,7 +79,7 @@ Run structural and pixel QA:
 ~~~sh
 python3 tools/hud_artisan/generate.py validate \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
-  --pack build/hud-artisan/pack --pixels
+  --pack build/hud-artisan/pack --pixels --engine-contract
 python3 tools/hud_artisan/generate.py contact-sheet \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
   --pack build/hud-artisan/pack \
