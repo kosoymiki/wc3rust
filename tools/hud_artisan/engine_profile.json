@@ -81,5 +81,6 @@
     "Read from PACK_ROLE_ASSETS, HudPack tests and current pack loader code.",
     "This file is a validation profile only, not a runtime manifest.",
     "Do not invent missing manifest paths, nine-slice insets, all 92 assets or font binaries."
-  ]
+  ],
+  "asset_count_required": 92
 }
