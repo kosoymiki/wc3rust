@@ -142,8 +142,27 @@ def material(name:str,kind:str)->str:
     if kind=="menu-panel": return "layered dark leather and aged stone inset, thick bronze/steel outer frame and restrained parchment accents"
     return "dark slate inset, forged metal frame, bronze bevels, engraved detail and restrained enamel accents"
 
-def semantic_brief(name:str,kind:str)->str:
-    n=name.lower()
+def metadata_context(asset:dict[str,Any])->str:
+    """Use explicit asset semantics when present; cap context to keep prompts focused."""
+    fields=[]
+    for key in ("faction","race","culture","unit_name","ability_name","item_name","object_id",
+                "ability_id","item_id","semantic","meaning","description","purpose","art_direction",
+                "visual_description","composition","silhouette","artist_notes","material","palette"):
+        value=asset.get(key)
+        if isinstance(value,str) and value.strip():
+            fields.append(f"{key}: {value.strip()}")
+    for key in ("visual_tags","tags"):
+        values=asset.get(key)
+        if isinstance(values,list):
+            valid=[str(value).strip() for value in values if isinstance(value,(str,int,float)) and str(value).strip()]
+            if valid: fields.append(f"{key}: {', '.join(valid[:20])}")
+    return " | ".join(fields)[:1400]
+
+def semantic_brief(asset:dict[str,Any],kind:str)->str:
+    name=asset["name"];n=name.lower()
+    explicit=asset.get("semantic") or asset.get("meaning") or asset.get("icon_concept") or asset.get("visual_description") or asset.get("description")
+    if isinstance(explicit,str) and explicit.strip():
+        return explicit.strip()[:800]
     catalog=[
       (("gold","coin"),"a minted gold coin with milled edge and embossed abstract crest; no lettering"),
       (("lumber","wood"),"a bundle of cut timber logs with visible end grain and a binding"),
@@ -203,6 +222,7 @@ def semantic_brief(name:str,kind:str)->str:
         return "a reusable UI panel with clear perimeter, dark central field and nine-slice-safe construction"
     return f"a functional fantasy RTS interface element representing {n.replace('_',' ')}"
 
+
 def state_brief(state_text:str)->str:
     s=state_text.lower()
     rules=[]
@@ -223,7 +243,7 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     states=", ".join(a.get("states") or []) or "normal/default state"
     alpha=kind in ("icon","cursor")
     prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
-    f"Family {kind}; state {states}. Semantic subject: {semantic_brief(name,kind)}. "
+    f"Family {kind}; state {states}. Semantic subject: {semantic_brief(a,kind)}. Manifest context: {metadata_context(a) or "no additional semantic metadata supplied"}. "
     f"State rendering instruction: {state_brief(states)}. "
     f"Palette: {t['palette']}. Materials: {material(name,kind)}. "
     f"Surface rendering: {t['materials']}. Ornament: {t['ornament']}. "
