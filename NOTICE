@@ -1,0 +1,28 @@
+# NOTICE
+
+This project is MIT OR Apache-2.0 licensed (see `crates/*/Cargo.toml`).
+It contains code ported from third-party donors. Each ported unit records the
+donor repository, the exact commit, the donor path and the destination path.
+
+## NIK2703/WC3_AndroidRecomp
+
+Portions derived from NIK2703/WC3_AndroidRecomp
+  https://github.com/NIK2703/WC3_AndroidRecomp
+  commit c753ab89debcf729b1a815ec29a14b035c47a92f
+  Copyright (c) 2026 NIK2703 — MIT Licence
+
+| unit | donor path | our path |
+|---|---|---|
+| U1 guest address plan | `runtime/guest/guest_layout.h`, `runtime/guest/guest_memory.c` | `crates/wc3-guest/src/layout.rs` |
+| U2 frozen CPU model | `runtime/cpu/cpu.h` | `crates/wc3-guest/src/cpu.rs` |
+| U3 flag semantics | `runtime/cpu/cpu.h` (flag helpers), `tests/cpu_selftest.c` (vectors) | `crates/wc3-guest/src/cpu.rs` |
+| U4 PE32 image parser | `runtime/guest/pe.c`, `runtime/guest/pe.h` | `crates/wc3-guest/src/pe.rs` |
+| U7 HLE thunk registry | `runtime/hle/abi/hle_abi.h`, `runtime/hle/abi/hle_abi.c` | `crates/wc3-guest/src/hle.rs` |
+| U7.1 guest host (consumer) | `runtime/guest/pe.c` (`wc3_pe_load`), `runtime/hle/abi/hle_abi.c` (dispatch) | `crates/wc3-re/src/guest_host.rs` |
+
+Full provenance, per-file sha256 and the byte-level matrix:
+`~/donor-intake/wc3-androidrecomp/{PROVENANCE.md,MATRIX.md,INVENTORY.md}` and
+`docs/audit/donor-*-androidrecomp.md`.
+
+No Blizzard data is stored here: the guest model parses images the operator
+supplies at runtime and never bundles derived game bytes.

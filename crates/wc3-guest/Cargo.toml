@@ -1,0 +1,8 @@
+[package]
+name = "wc3-guest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Guest machine model for the WC3 1.27 static-recompilation path: x86-32 flag semantics, guest address plan, HLE thunk registry, PE32 image parser. Ported from NIK2703/WC3_AndroidRecomp (MIT)."
+
+[dependencies]
