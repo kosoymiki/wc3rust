@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "profile": "wc3rust-hud-engine-contract",
+  "contract_only": true,
+  "design_height": 768,
+  "reference_resolution": {
+    "landscape": [
+      2414,
+      1080
+    ],
+    "portrait": [
+      1080,
+      2414
+    ]
+  },
+  "safe_area_1080p": {
+    "landscape": [
+      48,
+      80,
+      48,
+      48
+    ],
+    "portrait": [
+      24,
+      96,
+      24,
+      64
+    ]
+  },
+  "command_card": {
+    "columns": 4,
+    "rows": 3,
+    "cell": [
+      64,
+      64
+    ],
+    "gap": 4
+  },
+  "control_groups": {
+    "count": 10,
+    "cell": [
+      44,
+      44
+    ]
+  },
+  "commandbuttons_atlas": {
+    "expected_size": [
+      2048,
+      2048
+    ],
+    "entries": 20
+  },
+  "font_files_required": 5,
+  "required_unique_assets": [
+    "console_left_cap_normal_256x288",
+    "console_left_mid_normal_256x288",
+    "console_right_mid_normal_256x288",
+    "console_right_cap_normal_256x288",
+    "topbar_plate_normal_720x32",
+    "menu_panel_normal_512x384",
+    "resource_pill_normal_236x32",
+    "portrait_frame_normal_128",
+    "build_progress_normal_64x8",
+    "tooltip_panel_normal_384x256",
+    "button_border_normal_64",
+    "button_glow_64",
+    "button_border_pressed_64",
+    "button_border_autocast_64",
+    "button_border_disabled_64",
+    "button_border_empty_64",
+    "control_group_button_active_44",
+    "control_group_button_inactive_44",
+    "selection_panel_normal_240x180",
+    "menu_button_normal_256x64",
+    "score_panel_normal_1024x512",
+    "menu_button_pressed_256x64",
+    "loading_frame_normal_1024x512",
+    "minimap_frame_normal_216"
+  ],
+  "notes": [
+    "Read from PACK_ROLE_ASSETS, HudPack tests and current pack loader code.",
+    "This file is a validation profile only, not a runtime manifest.",
+    "Do not invent missing manifest paths, nine-slice insets, all 92 assets or font binaries."
+  ]
+}
