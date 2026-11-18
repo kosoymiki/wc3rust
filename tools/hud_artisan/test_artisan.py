@@ -24,6 +24,16 @@ class Tests(unittest.TestCase):
     def test_semantic_prompt(self):
         a={"name":"icon_gold_normal_32","file":"icons/gold.png","w":32,"h":32,"insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
         j=artisan.make_job(a,"classic-modern",9);self.assertTrue(j["requires_alpha"]);self.assertIn("9-slice",j["prompt"])
+    def test_job_identity_tracks_prompt_revision(self):
+        asset={"name":"icon_fire_spell_32","file":"icons/fire.png","w":32,"h":32,
+               "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
+        first=artisan.make_job(asset,"classic-modern",11)
+        repeated=artisan.make_job(asset,"classic-modern",11)
+        changed=artisan.make_job(asset,"undead-obsidian",11)
+        self.assertEqual(first["job_id"],repeated["job_id"])
+        self.assertEqual(first["prompt_sha256"],repeated["prompt_sha256"])
+        self.assertNotEqual(first["job_id"],changed["job_id"])
+        self.assertNotEqual(first["prompt_sha256"],changed["prompt_sha256"])
     def test_semantic_subjects_and_state_language(self):
         icon={"name":"icon_frost_spell_32","file":"icons/frost.png","w":32,"h":32,
               "insets":{"l":0,"t":0,"r":0,"b":0},"states":["hover","disabled"]}
