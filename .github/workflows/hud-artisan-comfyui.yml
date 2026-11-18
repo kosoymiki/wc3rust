@@ -1,0 +1,148 @@
+name: HUD Artisan — ComfyUI GPU render
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: Path to the authoritative HUD asset manifest
+        required: true
+        default: analysis/hudskin/final/wc3rust-hud-final/manifest.json
+      theme:
+        description: HUD visual theme
+        required: true
+        type: choice
+        options:
+          - classic-modern
+          - human-gold
+          - orc-iron
+          - undead-obsidian
+        default: classic-modern
+      seed:
+        description: Deterministic batch seed
+        required: true
+        default: "20261119"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hud-artisan-comfyui
+  cancel-in-progress: false
+
+jobs:
+  render:
+    # Register a GPU machine as a self-hosted runner with these exact labels.
+    # ComfyUI must already be installed, have the required checkpoint/custom nodes,
+    # and be listening on 127.0.0.1:8188 on that runner.
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 360
+    env:
+      COMFYUI_URL: ${{ secrets.COMFYUI_URL || 'http://127.0.0.1:8188' }}
+      MANIFEST: ${{ inputs.manifest }}
+      THEME: ${{ inputs.theme }}
+      SEED: ${{ inputs.seed }}
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/hud_artisan/requirements.txt
+
+      - name: Install HUD Artisan dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/hud_artisan/requirements.txt
+
+      - name: Verify ComfyUI API and private workflow secrets
+        shell: bash
+        env:
+          WORKFLOW_B64: ${{ secrets.HUD_COMFYUI_WORKFLOW_B64 }}
+          CONFIG_B64: ${{ secrets.HUD_COMFYUI_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKFLOW_B64" || { echo "::error::Missing HUD_COMFYUI_WORKFLOW_B64 secret"; exit 1; }
+          test -n "$CONFIG_B64" || { echo "::error::Missing HUD_COMFYUI_CONFIG_B64 secret"; exit 1; }
+          mkdir -p build/hud-artisan/private
+          printf '%s' "$WORKFLOW_B64" | base64 --decode > build/hud-artisan/private/comfyui_api_workflow.json
+          printf '%s' "$CONFIG_B64" | base64 --decode > build/hud-artisan/private/comfyui.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("build/hud-artisan/private")
+          cfg = json.loads((p / "comfyui.json").read_text())
+          if cfg.get("schema_version") != 1:
+              raise SystemExit("ComfyUI config must use schema_version=1")
+          cfg["workflow_file"] = "comfyui_api_workflow.json"
+          (p / "comfyui.json").write_text(json.dumps(cfg, indent=2) + "\\n")
+          workflow = json.loads((p / "comfyui_api_workflow.json").read_text())
+          if not isinstance(workflow, dict) or not workflow:
+              raise SystemExit("ComfyUI API workflow must be a non-empty object")
+          PY
+          python - <<'PY'
+          import json, os, urllib.request
+          url = os.environ["COMFYUI_URL"].rstrip("/")
+          with urllib.request.urlopen(url + "/system_stats", timeout=15) as r:
+              data = json.load(r)
+          if not isinstance(data, dict) or "system" not in data:
+              raise SystemExit("ComfyUI /system_stats returned an unexpected response")
+          print("ComfyUI API is reachable; system stats received.")
+          PY
+
+      - name: Compile deterministic asset jobs
+        run: |
+          set -euo pipefail
+          test -f "$MANIFEST" || { echo "::error::Manifest not found: $MANIFEST. The repository currently does not contain the production manifest."; exit 1; }
+          python tools/hud_artisan/generate.py profile --out build/hud-artisan/engine-profile.json
+          python tools/hud_artisan/generate.py plan \
+            --manifest "$MANIFEST" \
+            --out build/hud-artisan/jobs \
+            --theme "$THEME" \
+            --seed "$SEED" \
+            --engine-contract
+
+      - name: Render all jobs through ComfyUI
+        run: |
+          set -euo pipefail
+          python tools/hud_artisan/generate.py dispatch \
+            --manifest "$MANIFEST" \
+            --jobs build/hud-artisan/jobs/jobs.json \
+            --adapter build/hud-artisan/adapter.json \
+            --drop build/hud-artisan/drop \
+            --parallel 1
+        env:
+          # Keep the adapter config private; generate.py's dispatcher consumes this file.
+          HUD_ARTISAN_ADAPTER_CONFIG: build/hud-artisan/private/comfyui.json
+
+      - name: Ingest, validate and build contact sheet
+        run: |
+          set -euo pipefail
+          python tools/hud_artisan/generate.py ingest \
+            --manifest "$MANIFEST" \
+            --jobs build/hud-artisan/jobs/jobs.json \
+            --drop build/hud-artisan/drop \
+            --out build/hud-artisan/pack
+          python tools/hud_artisan/generate.py validate \
+            --manifest "$MANIFEST" \
+            --pack build/hud-artisan/pack --pixels --engine-contract
+          python tools/hud_artisan/generate.py contact-sheet \
+            --manifest "$MANIFEST" \
+            --pack build/hud-artisan/pack \
+            --out build/hud-artisan/contact-sheet.png
+
+      - name: Upload generated pack and QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hud-artisan-comfyui-${{ github.run_number }}
+          path: |
+            build/hud-artisan/engine-profile.json
+            build/hud-artisan/jobs/
+            build/hud-artisan/drop/
+            build/hud-artisan/pack/
+            build/hud-artisan/contact-sheet.png
+          if-no-files-found: warn
+          retention-days: 14
