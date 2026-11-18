@@ -24,7 +24,7 @@ python3 tools/hud_artisan/generate.py profile \
   --out build/hud-artisan/engine-profile.json
 ~~~
 
-Compile jobs from the actual pack manifest. The 24 role guard is optional when working on a subset.
+Compile jobs from the actual pack manifest. The strict engine-contract option checks the full 92-asset count, all 24 runtime roles, safe areas, design resolution, command-card/control-group metrics and command-buttons atlas requirements. Omit it only for test fixtures or deliberate subsets.
 
 ~~~sh
 python3 tools/hud_artisan/generate.py plan \
@@ -40,12 +40,12 @@ style rules live in STYLE_BIBLE.md.
 
 ### Run a local or hosted image provider through an adapter
 
-Configure adapter.example.json with your provider CLI. The dispatcher does not use a shell string;
+Copy adapter.example.json to build/hud-artisan/adapter.json, then configure its provider CLI argv and working directory. The example points to a placeholder provider_adapter.py that you supply; no provider credentials or SDK are bundled. The dispatcher does not use a shell string;
 it executes an argv list with explicit placeholders and an environment-variable allowlist:
 
     python3 tools/hud_artisan/generate.py dispatch \
       --jobs build/hud-artisan/jobs/jobs.json \
-      --adapter tools/hud_artisan/adapter.example.json \
+      --adapter build/hud-artisan/adapter.json \
       --drop build/hud-artisan/drop --parallel 2
 
 The adapter writes one image per job. The dispatcher enforces exact dimensions and RGBA8 PNG,
@@ -92,7 +92,7 @@ dependencies; they are copied only when supplied and are never replaced with emp
 
 ## Verified engine contract
 
-engine_profile.json records known constraints: 768 design height; 2414x1080 landscape and
+engine_profile.json and the code-level engine-contract gate record known constraints: 768 design height; 2414x1080 landscape and
 1080x2414 portrait references; safe areas; a 4x3 command card with 64 px cells and 4 px gap;
 ten 44 px control groups; a 2048x2048 command-buttons atlas with 20 entries; and the 24 unique
 asset names required by PACK_ROLE_ASSETS and the pack loader tests.
