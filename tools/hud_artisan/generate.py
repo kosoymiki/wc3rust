@@ -630,6 +630,10 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     cwd=Path(cwd_value).expanduser()
     if not cwd.is_absolute():cwd=(adapter_path.resolve().parent/cwd).resolve()
     if not cwd.is_dir():raise ValueError(f"adapter working_directory missing: {cwd}")
+    image_modules=pil_modules()
+    if image_modules is None:
+        raise RuntimeError("provider dispatch requires Pillow; install tools/hud_artisan/requirements.txt")
+    Image,_,_=image_modules
     env={"PATH":os.environ.get("PATH",""),"HOME":os.environ.get("HOME","")}
     for key in allow:
         if key in os.environ:env[key]=os.environ[key]
@@ -661,6 +665,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 w,h,depth,color=png_info(out)
                 if (w,h)!=(job["width"],job["height"]):raise RuntimeError(f"output dimensions {w}x{h} != job {job['width']}x{job['height']}")
                 if (depth,color)!=(8,6):raise RuntimeError(f"output format must be RGBA8 (depth={depth}, color={color})")
+                with Image.open(out) as decoded:
+                    decoded.load()
+                    if decoded.format!="PNG" or decoded.mode!="RGBA":
+                        raise RuntimeError(f"decoded output must be PNG RGBA, got {decoded.format}/{decoded.mode}")
+                    if decoded.size!=(job["width"],job["height"]):
+                        raise RuntimeError(f"decoded image dimensions {decoded.size} != requested {(job['width'],job['height'])}")
                 status="succeeded";error=None;break
             except Exception as exc:
                 error=str(exc);history.append(f"attempt={attempt+1} error={error}")
