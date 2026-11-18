@@ -176,7 +176,9 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
             ):
                 raise ValueError(f"{name}: reference {index} requires source, license and purpose strings")
             if "file" in reference and reference["file"] is not None:
-                safe_join_any(path.parent,reference["file"])
+                reference_file=safe_join_any(path.parent,reference["file"])
+                if not reference_file.is_file():
+                    raise ValueError(f"{name}: reference {index} file does not exist: {reference['file']}")
     atlas=doc["atlas"].get("commandbuttons") if isinstance(doc["atlas"],dict) else None
     if not isinstance(atlas,dict) or not isinstance(atlas.get("entries"),list) or not atlas["entries"]:
         raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
@@ -638,6 +640,20 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                         raise ValueError(f"{jid}: provenance field {key} is required")
                 if row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
                     raise ValueError(f"{jid}: prompt hash mismatch")
+                row_refs=row.get("references")
+                if not isinstance(row_refs,list):
+                    raise ValueError(f"{jid}: provenance references must be an array")
+                for reference in row_refs:
+                    if not isinstance(reference,dict) or not all(
+                        isinstance(reference.get(key),str) and reference[key].strip()
+                        for key in ("source","license","purpose")
+                    ):
+                        raise ValueError(f"{jid}: malformed provenance reference")
+                if any(reference not in row_refs for reference in job.get("references",[])):
+                    raise ValueError(f"{jid}: asset references missing from provenance")
+                postprocessing=row.get("postprocessing")
+                if not isinstance(postprocessing,list) or any(not isinstance(value,str) or not value.strip() for value in postprocessing):
+                    raise ValueError(f"{jid}: malformed provenance postprocessing")
                 artifact=safe_join(drop,job["output"])
                 if not artifact.is_file(): raise ValueError(f"{jid}: missing generated output {job['output']}")
                 if row["output_sha256"] != sha(artifact.read_bytes()):
