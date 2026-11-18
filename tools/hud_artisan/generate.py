@@ -6,7 +6,7 @@ one PNG per job into a drop directory. Python stdlib handles planning and PNG in
 Pillow provides decode, normalization and pixel-level QA.
 """
 from __future__ import annotations
-import argparse, hashlib, json, math, re, shutil, struct, sys, zlib
+import argparse, concurrent.futures, datetime, hashlib, json, math, os, re, shutil, struct, subprocess, sys, tempfile, zlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -400,6 +400,99 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
 
+def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
+    payload=read_json(jobs_path);cfg=read_json(adapter_path)
+    jobs=payload.get("jobs")
+    if not isinstance(jobs,list) or not jobs:raise ValueError("jobs.json has no jobs[]")
+    command=cfg.get("command")
+    if not isinstance(command,list) or not command or not all(isinstance(x,str) for x in command):
+        raise ValueError("adapter.command must be a non-empty argv array; shell commands are not accepted")
+    if not any("{job_json}" in x for x in command) or not any("{output_path}" in x for x in command):
+        raise ValueError("adapter.command must include {job_json} and {output_path}")
+    provider=cfg.get("provider");model=cfg.get("model");license_name=cfg.get("license")
+    if not all(isinstance(x,str) and x.strip() for x in (provider,model,license_name)):
+        raise ValueError("adapter provider, model and license strings are required for provenance")
+    timeout=int(cfg.get("timeout_seconds",1800));retries=int(cfg.get("retries",1))
+    parallel=int(parallel_override or cfg.get("max_parallel",1))
+    if not 1<=timeout<=86400 or not 0<=retries<=5 or not 1<=parallel<=32:
+        raise ValueError("adapter timeout/retries/max_parallel outside safe limits")
+    allow=cfg.get("environment",[])
+    if not isinstance(allow,list) or any(not isinstance(x,str) for x in allow):
+        raise ValueError("adapter.environment must be an array of environment variable names")
+    ids=set();paths=set()
+    for job in jobs:
+        jid=job.get("job_id");rel=safe_rel(job.get("output",""))
+        if not isinstance(jid,str) or jid in ids:raise ValueError(f"missing/duplicate job id: {jid!r}")
+        if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
+        ids.add(jid);paths.add(str(rel))
+    work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
+    logs=drop/"reports"/"worker";logs.mkdir(parents=True,exist_ok=True)
+    drop.mkdir(parents=True,exist_ok=True)
+    work_jobs=work/"jobs";work_jobs.mkdir()
+    cwd_value=cfg.get("working_directory",".")
+    cwd=Path(cwd_value).expanduser()
+    if not cwd.is_absolute():cwd=(adapter_path.resolve().parent/cwd).resolve()
+    if not cwd.is_dir():raise ValueError(f"adapter working_directory missing: {cwd}")
+    env={"PATH":os.environ.get("PATH",""),"HOME":os.environ.get("HOME","")}
+    for key in allow:
+        if key in os.environ:env[key]=os.environ[key]
+    def run_one(job):
+        jid=job["job_id"];out=safe_join(drop,job["output"]);out.parent.mkdir(parents=True,exist_ok=True)
+        job_file=work_jobs/(jid+".json")
+        job_file.write_text(json.dumps(job,ensure_ascii=False,indent=2),encoding="utf-8")
+        replacements={"{job_json}":str(job_file),"{output_path}":str(out),"{job_id}":jid}
+        argv=[]
+        for part in command:
+            for token,value in replacements.items():part=part.replace(token,value)
+            argv.append(part)
+        history=[];status="failed";error=None
+        for attempt in range(retries+1):
+            try:
+                if out.exists():out.unlink()
+                result=subprocess.run(argv,cwd=cwd,env=env,capture_output=True,text=True,timeout=timeout,check=False)
+                history.append(f"attempt={attempt+1} exit={result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                if result.returncode!=0:raise RuntimeError(f"adapter exit code {result.returncode}")
+                if not out.is_file():raise RuntimeError("adapter returned success but output file is missing")
+                w,h,depth,color=png_info(out)
+                if (w,h)!=(job["width"],job["height"]):raise RuntimeError(f"output dimensions {w}x{h} != job {job['width']}x{job['height']}")
+                if (depth,color)!=(8,6):raise RuntimeError(f"output format must be RGBA8 (depth={depth}, color={color})")
+                status="succeeded";error=None;break
+            except Exception as exc:
+                error=str(exc);history.append(f"attempt={attempt+1} error={error}")
+        (logs/(jid+".log")).write_text("\n\n".join(history),encoding="utf-8")
+        return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
+                "error":error,"sha256":sha(out.read_bytes()) if status=="succeeded" else None}
+    try:
+        results=[]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures=[pool.submit(run_one,job) for job in jobs]
+            for future in concurrent.futures.as_completed(futures):
+                row=future.result();results.append(row)
+                print(f"HUD_ARTISAN_JOB {row['status']} id={row['job_id']} output={row['output']}")
+        results.sort(key=lambda row:row["job_id"])
+        ok=all(row["status"]=="succeeded" for row in results)
+        report={"tool":"HUD Artisan","version":VERSION,"jobs_sha256":sha(jobs_path.read_bytes()),
+                "adapter":{"provider":provider,"model":model},"parallel":parallel,"results":results,
+                "succeeded":sum(row["status"]=="succeeded" for row in results),
+                "failed":sum(row["status"]!="succeeded" for row in results)}
+        (drop/"reports").mkdir(exist_ok=True)
+        (drop/"reports"/"worker-results.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        if ok:
+            generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+            job_map={job["job_id"]:job for job in jobs}
+            records=[]
+            for row in results:
+                job=job_map[row["job_id"]]
+                records.append({"job_id":row["job_id"],"provider":provider,"model":model,
+                    "generated_at":generated_at,"license":license_name,
+                    "prompt_sha256":sha(job["prompt"].encode("utf-8")),"output_sha256":row["sha256"]})
+            (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
+                "jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
+        return 0 if ok else 1
+    finally:
+        shutil.rmtree(work,ignore_errors=True)
+
 def contact_sheet(manifest:Path,pack:Path,out:Path,cols:int,cell:int)->int:
     doc=load_manifest(manifest);mods=pil_modules()
     if not mods:raise RuntimeError("contact sheet requires Pillow")
@@ -428,6 +521,9 @@ def main(argv=None):
     q=s.add_parser("ingest",help="normalize agent PNG drop into a pack")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
     q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
+    q=s.add_parser("dispatch",help="run a provider CLI adapter over the jobs with retries and bounded concurrency")
+    q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
+    q.add_argument("--parallel",type=int)
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
     q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true")
@@ -449,6 +545,7 @@ def main(argv=None):
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
         if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
+        if a.cmd=="dispatch":return dispatch(a.jobs,a.adapter,a.drop,a.parallel)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
