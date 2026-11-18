@@ -530,8 +530,9 @@ def image_metrics(path:Path)->dict:
 
 def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contract:bool=False)->int:
     doc=load_manifest(manifest,engine_contract);fail=[];warn=[];records=[];hashes=defaultdict(list)
-    if not (pack/"manifest.json").is_file(): fail.append("pack manifest.json missing")
-    elif read_json(pack/"manifest.json")!=doc: fail.append("pack manifest differs from source manifest")
+    pack_manifest=safe_join_any(pack,"manifest.json")
+    if not pack_manifest.is_file(): fail.append("pack manifest.json missing")
+    elif read_json(pack_manifest)!=doc: fail.append("pack manifest differs from source manifest")
     by_file={a["file"]:a for a in doc["assets"]}
     for a in doc["assets"]:
         name=a["name"];rel=safe_rel(a["file"]);f=safe_join(pack,rel)
@@ -576,8 +577,9 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
     report={"tool":"HUD Artisan","version":VERSION,"manifest_sha256":sha(manifest.read_bytes()),
       "asset_count":len(doc["assets"]),"checked_count":len(records),"pixel_qa":pixels,"engine_contract":engine_contract,
       "failures":fail,"warnings":warn,"assets":records}
-    (pack/"reports").mkdir(exist_ok=True)
-    (pack/"reports"/"validation.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    report_path=safe_join_any(pack,"reports/validation.json")
+    report_path.parent.mkdir(parents=True,exist_ok=True)
+    report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     for x in warn: print("HUD_ARTISAN_WARN "+x)
     for x in fail: print("HUD_ARTISAN_FAIL "+x)
     print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
@@ -830,14 +832,17 @@ def contact_sheet(manifest:Path,pack:Path,out:Path,cols:int,cell:int)->int:
     Image,ImageDraw,_=mods;label=34;rows=math.ceil(len(doc["assets"])/cols)
     canvas=Image.new("RGB",(cols*cell,rows*(cell+label)),(28,27,25));draw=ImageDraw.Draw(canvas)
     for i,a in enumerate(doc["assets"]):
-        x=(i%cols)*cell;y=(i//cols)*(cell+label);src=pack/safe_rel(a["file"])
+        x=(i%cols)*cell;y=(i//cols)*(cell+label);src=safe_join(pack,a["file"])
         if not src.is_file():draw.text((x+8,y+8),"MISSING "+a["name"],fill=(255,80,70));continue
         with Image.open(src) as im:
             im=im.convert("RGBA");im.thumbnail((cell-20,cell-20),Image.Resampling.LANCZOS)
             tile=Image.new("RGBA",(cell-12,cell-12),(52,51,48,255))
             tile.alpha_composite(im,((tile.width-im.width)//2,(tile.height-im.height)//2));canvas.paste(tile.convert("RGB"),(x+6,y+6))
         draw.text((x+8,y+cell+2),a["name"][:40],fill=(236,224,198))
-    out.parent.mkdir(parents=True,exist_ok=True);canvas.save(out)
+    out.parent.mkdir(parents=True,exist_ok=True)
+    temporary=out.with_name(out.name+".tmp")
+    canvas.save(temporary,format="PNG")
+    temporary.replace(out)
     print(f"HUD_ARTISAN_CONTACT_SHEET {out} {canvas.width}x{canvas.height}");return 0
 
 def main(argv=None):
