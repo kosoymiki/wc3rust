@@ -1488,8 +1488,16 @@ mod tests {
         let menu = build_menu(&sim, 0);
         assert!(menu.len() >= 6, "menu {}", menu.len());
         assert_eq!(menu[0].def_id, "hhou");
-        assert_eq!(menu[1].def_id, "hgtw");
+        // The tower slot is the *base* form the data upgrades from: the peasant
+        // places a Scout Tower and `[hwtw] Upgrade=hgtw,hctw` turns it into the
+        // Guard/Cannon Tower. `hgtw`/`hctw` are upgrade-only defs and must never
+        // appear as worker placements.
+        assert_eq!(menu[1].def_id, "hwtw");
         assert!(menu.iter().any(|option| option.def_id == "htow"));
+        assert!(
+            !menu.iter().any(|option| option.def_id == "hgtw"),
+            "Guard Tower is an upgrade form, not a build menu entry"
+        );
         assert!(
             menu.iter()
                 .any(|option| def_of(option.def_id).unwrap().trains_units())
@@ -1507,15 +1515,17 @@ mod tests {
                 option.def_id
             );
         }
-        // A Watch Tower without its War Mill is dimmed even with a full bank;
-        // the Farm has no requirement and stays enabled.
-        let tower = menu
-            .iter()
-            .find(|option| option.def_id == "hgtw")
-            .expect("watch tower row");
-        assert!(
-            !tower.enabled,
-            "watch tower needs its War Mill: {tower:?}"
+        // A Guard Tower without its War Mill is *reachable in data but denied by
+        // its own `Requires=`*: the tower line is gated at the upgrade, not at
+        // the build entry.
+        let tower = sim
+            .spawn_def(0, "hwtw", Vec2::new(1200.0, 1200.0))
+            .expect("scout tower");
+        sim.step(&[]);
+        assert_eq!(
+            sim.upgrade_denial(tower, "hgtw"),
+            Some("missing requirement"),
+            "Guard Tower needs its War Mill"
         );
         let farm = menu
             .iter()
@@ -1528,18 +1538,53 @@ mod tests {
 
     #[test]
     fn every_def_is_reachable_from_the_roster_menus() {
-        let (sim, _worker) = scenario();
+        let (mut sim, _worker) = scenario();
         let builds = all_build_options(&sim, 0);
         assert!(builds.len() >= 10, "human buildings: {}", builds.len());
+        // A def is reachable when it is the worker build entry itself, when the
+        // shipped `Upgrade=` table turns a menu building into it, or when a
+        // spell places it. Nothing may be an orphan.
         for def in wc3_sim::ROSTER
             .iter()
             .filter(|def| def.race == Race::Human && def.is_building())
         {
+            // Walk the shipped `Upgrade=` chain back to whatever the worker can
+            // place (`htow -> hkee -> hcas`, `hwtw -> hgtw`). A multi-hop form is
+            // reachable when its root is, not only when its direct predecessor is
+            // on the card.
+            let mut chain = vec![def.id];
+            while let Some(previous) = wc3_sim::data::unit_upgrade_of(chain.last().copied().unwrap()) {
+                chain.push(previous);
+                if chain.len() > 8 {
+                    break;
+                }
+            }
+            let root = *chain.last().expect("chain root");
+            let in_menu = builds.iter().any(|option| option.def_id == root);
+            let spell_placed = wc3_sim::data::unit_placed_by_ability(def.id).is_some();
             assert!(
-                builds.iter().any(|option| option.def_id == def.id),
-                "missing build option {}",
+                in_menu || spell_placed,
+                "{} is unreachable: its `Upgrade=` root {root} is not a build entry and no \
+                 ability places it (chain {chain:?})",
                 def.id
             );
+            // Data reachability is not enough: the sim must accept the first hop
+            // from the menu building, otherwise the def is still dead content.
+            if chain.len() > 1 {
+                let building = sim
+                    .units_of(0)
+                    .find(|unit| unit.def().id == root)
+                    .map(|unit| unit.id);
+                if let Some(building) = building {
+                    let first_hop = chain[chain.len() - 2];
+                    assert_eq!(
+                        sim.upgrade_denial(building, first_hop),
+                        None,
+                        "{root} -> {first_hop} must be accepted (chain to {})",
+                        def.id
+                    );
+                }
+            }
         }
         // Every human unit appears in at least one producer's train menu.
         let mut seen = std::collections::BTreeSet::new();
@@ -2054,13 +2099,16 @@ mod tests {
         assert_eq!(start_locations.len(), 6, "sloc start-location markers");
         assert_eq!(mine_positions.len(), 3, "ngol/ugol gold mines");
         // `uktn` is a campaign-only unit (`analysis/war3_data/Units/
-        // CampaignUnitFunc.txt`), not a melee SLK row; `nC02`/`nC03` are
-        // map-local object-data ids. Both classes have no melee roster entry,
-        // so the melee scene drops them; the list is the exact evidence.
+        // CampaignUnitFunc.txt`) and now has a roster row, so it spawns;
+        // `nC02`/`nC03` are map-local object-data ids with no shipped table row
+        // and are dropped. The list is the exact evidence.
+        assert!(
+            def_of("uktn").is_some(),
+            "the campaign unit uktn must resolve through the roster"
+        );
         assert_eq!(
             custom_units,
             vec![
-                "uktn".to_string(),
                 "nC02".to_string(),
                 "nC03".to_string()
             ],

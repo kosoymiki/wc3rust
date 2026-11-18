@@ -138,8 +138,9 @@ pub const SAVE_MAGIC: [u8; 4] = *b"W3SV";
 /// appends the per-unit runtime `UNIT_TYPE_*` delta of
 /// `UnitAddType`/`UnitRemoveType`.  Older files are still readable through their
 /// decode arms; those versions never stored the newer state, so it restores to
-/// its neutral value.
-pub const SAVE_FORMAT_VERSION: u16 = 7;
+/// its neutral value.  Version 8 appends the per-unit in-flight building
+/// upgrade (`UpgradeJob`: target def, remaining/total ticks).
+pub const SAVE_FORMAT_VERSION: u16 = 8;
 
 /// Hard ceiling for every ID space a save can carry (`next_id`, `next_item_id`,
 /// `next_destructable_id`, `next_camp_id`, `next_projectile_id` and the script
@@ -1304,6 +1305,20 @@ fn write_unit(w: &mut W, unit: &Unit, version: u16) {
         w.i32(unit.hp_milli);
         w.i32(unit.hp_regen_milli);
     }
+    if version >= 8 {
+        // Version 8: an in-flight building upgrade (`htow` -> `hkee`). Without
+        // it a save mid-upgrade would come back as the old form with the gold
+        // already spent and no job running.
+        match unit.upgrade {
+            Some(job) => {
+                w.u8(1);
+                w.u32(u32::from(job.to_def_index));
+                w.u32(job.remaining);
+                w.u32(job.total);
+            }
+            None => w.u8(0),
+        }
+    }
 }
 
 fn read_unit(r: &mut R<'_>, version: u16) -> SaveResult<Unit> {
@@ -1453,6 +1468,32 @@ fn read_unit(r: &mut R<'_>, version: u16) -> SaveResult<Unit> {
     } else {
         (0, 0)
     };
+    let upgrade = if version >= 8 {
+        if r.u8()? == 0 {
+            None
+        } else {
+            let raw = r.u32()?;
+            let to_def_index = u16::try_from(raw).map_err(|_| SaveError::OutOfRange {
+                section: "units.upgrade.to_def_index",
+                index: raw,
+                limit: def_count(),
+            })?;
+            if data::def_at(to_def_index).is_none() {
+                return Err(SaveError::OutOfRange {
+                    section: "units.upgrade.to_def_index",
+                    index: u32::from(to_def_index),
+                    limit: def_count(),
+                });
+            }
+            Some(crate::UpgradeJob {
+                to_def_index,
+                remaining: r.u32()?,
+                total: r.u32()?,
+            })
+        }
+    } else {
+        None
+    };
 
     Ok(Unit {
         id,
@@ -1513,6 +1554,7 @@ fn read_unit(r: &mut R<'_>, version: u16) -> SaveResult<Unit> {
         // could represent.
         ethereal,
         construct,
+        upgrade,
         blocked_cells,
         rally,
         stuck_ticks,
@@ -5169,6 +5211,22 @@ fn write_command(w: &mut W, command: &crate::Command) {
             w.u32(hero.0);
             w.u32(altar.0);
         }
+        Command::Patrol { units, a, b } => {
+            w.u8(14);
+            write_units(w, units);
+            w.v2(*a);
+            w.v2(*b);
+        }
+        Command::UpgradeBuilding { building, to } => {
+            w.u8(15);
+            w.u32(building.0);
+            w.str(to);
+        }
+        Command::Research { building, upgrade } => {
+            w.u8(16);
+            w.u32(building.0);
+            w.str(upgrade);
+        }
     }
 }
 
@@ -5236,6 +5294,27 @@ fn read_command(r: &mut R<'_>) -> SaveResult<crate::Command> {
             hero: UnitId(r.u32()?),
             altar: UnitId(r.u32()?),
         },
+        14 => Command::Patrol {
+            units: read_units(r)?,
+            a: r.v2()?,
+            b: r.v2()?,
+        },
+        15 => {
+            let building = UnitId(r.u32()?);
+            let raw = r.str()?;
+            Command::UpgradeBuilding {
+                building,
+                to: intern("command.upgrade", raw)?,
+            }
+        }
+        16 => {
+            let building = UnitId(r.u32()?);
+            let raw = r.str()?;
+            Command::Research {
+                building,
+                upgrade: intern("command.research", raw)?,
+            }
+        }
         other => {
             return Err(SaveError::BadTag {
                 section: "command",
@@ -5438,6 +5517,12 @@ fn decode_v7(payload: &[u8]) -> SaveResult<Sim> {
     decode_payload(payload, 7)
 }
 
+/// Decodes the version-8 payload: version 7 plus the per-unit in-flight
+/// building upgrade (`UpgradeJob`).
+fn decode_v8(payload: &[u8]) -> SaveResult<Sim> {
+    decode_payload(payload, SAVE_FORMAT_VERSION)
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -5467,6 +5552,7 @@ impl Sim {
             5 => decode_v5(payload),
             6 => decode_v6(payload),
             7 => decode_v7(payload),
+            8 => decode_v8(payload),
             other => Err(SaveError::UnknownVersion(other)),
         }
     }

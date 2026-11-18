@@ -159,7 +159,11 @@ fn effect_handler_summon_reports_a_missing_unit_type() {
         &mut sim,
         EffectContext::new(caster),
         &[EffectSpec::Summon {
-            def_id: "hwat",
+            // `nC08` is a campaign-only rawcode from Orc01's own object data:
+            // it has no row in the shipped tables (measured by the Orc01
+            // content census), so it is the honest "unknown type" fixture.
+            // `hwat` moved into the roster when the content tables landed.
+            def_id: "nC08",
             count: 1,
             lifetime_ticks: 100,
             forward: 80.0,

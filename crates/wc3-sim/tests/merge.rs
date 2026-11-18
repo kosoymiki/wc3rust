@@ -265,13 +265,17 @@ fn build_menu_is_derived_from_the_generated_slk_roster() {
     assert_eq!(human[0], "hhou");
     // Guard/Cannon towers are Scout Tower (`hwtw`) upgrades in the TFT tables
     // (`hgtw<-hwtw`, `hctw<-hwtw`), so the Human card carries the tower *base*
-    // and the second slot is the cheapest producer (Arcane Sanctum).
-    assert_eq!(human[1], "hars");
+    // in the defence slot and never the upgrade forms.
+    assert_eq!(human[1], "hwtw");
     assert!(
-        human.contains(&"hwtw"),
-        "the upgradeable Scout Tower base is on the card: {human:?}"
+        !human.contains(&"hgtw") && !human.contains(&"hctw"),
+        "upgrade forms must not be placements: {human:?}"
     );
-    assert!(human[..4].contains(&"htow"), "hall in the first card row");
+    assert!(
+        human.contains(&"hars"),
+        "the Arcane Sanctum is on the card: {human:?}"
+    );
+    assert!(human[..5].contains(&"htow"), "hall in the first card row");
     assert!(
         human[..4].iter().any(|id| {
             wc3_sim::def_of(id)

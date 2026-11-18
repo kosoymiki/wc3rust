@@ -502,7 +502,14 @@ pub fn build_menu(race: Race) -> Vec<&'static UnitDef> {
                 def.race == race
                     && is_worker_buildable(def)
                     && !def.is_main_hall()
-                    && def.stats.damage > 0
+                    && (def.stats.damage > 0
+                        // The tower line is built as its damage-less base form
+                        // and upgraded from there (`[hwtw] Upgrade=hgtw,hctw`),
+                        // so a defence slot without a damage row still counts
+                        // when its own `Upgrade=` targets shoot.
+                        || upgrade_targets_of(def.id)
+                            .iter()
+                            .any(|target| def_of(target).is_some_and(|form| form.stats.damage > 0)))
             })
             .min_by_key(|def| def.stats.cost),
         &mut out,
@@ -792,6 +799,25 @@ pub fn unit_upgrade_of(id: &str) -> Option<&'static str> {
         .map(|(_, from)| *from)
 }
 
+/// Buildings `unit_id` can be upgraded into, from `*UnitFunc.txt` `Upgrade=`.
+///
+/// This is the engine's own upgrade table (`[htow] Upgrade=hkee`,
+/// `[hwtw] Upgrade=hgtw,hctw,hatw`, `[uzig] Upgrade=uzg1,uzg2`), stored by the
+/// generator as the inverse [`UNIT_UPGRADE_OF`] relation.  The order is the
+/// order of that static table, so it is deterministic for a command stream.
+pub fn upgrade_targets_of(unit_id: &str) -> Vec<&'static str> {
+    UNIT_UPGRADE_OF
+        .iter()
+        .filter(|(_, from)| *from == unit_id)
+        .map(|(target, _)| *target)
+        .collect()
+}
+
+/// True when `target` is one of the forms the engine upgrades `unit_id` into.
+pub fn can_upgrade_into(unit_id: &str, target: &str) -> bool {
+    unit_upgrade_of(target) == Some(unit_id)
+}
+
 /// Ability that creates this building (`egol` <- Entangle Gold Mine).
 pub fn unit_placed_by_ability(id: &str) -> Option<&'static str> {
     UNIT_PLACED_BY_ABILITY
@@ -989,10 +1015,13 @@ pub fn def_of(id: &str) -> Option<&'static UnitDef> {
         .chain(CREEP_DEFS.iter())
         .chain(SHOP_DEFS.iter())
         .chain(EXTRA_DEFS.iter())
+        .chain(TECH_DEFS.iter())
+        .chain(CAMPAIGN_DEFS.iter())
         .find(|def| def.id == id)
 }
 
-/// Definition by table index: the 99 melee roster first, then creep defs.
+/// Definition by table index: the melee roster first, then creep, shop, extra
+/// and campaign defs.  Campaign rows are last so no shipped index moves.
 pub fn def_at(index: u16) -> Option<&'static UnitDef> {
     let index = index as usize;
     if index < ROSTER.len() {
@@ -1001,8 +1030,21 @@ pub fn def_at(index: u16) -> Option<&'static UnitDef> {
         CREEP_DEFS.get(index - ROSTER.len())
     } else if index < ROSTER.len() + CREEP_DEFS.len() + SHOP_DEFS.len() {
         SHOP_DEFS.get(index - ROSTER.len() - CREEP_DEFS.len())
-    } else {
+    } else if index < ROSTER.len() + CREEP_DEFS.len() + SHOP_DEFS.len() + EXTRA_DEFS.len() {
         EXTRA_DEFS.get(index - ROSTER.len() - CREEP_DEFS.len() - SHOP_DEFS.len())
+    } else if index
+        < ROSTER.len() + CREEP_DEFS.len() + SHOP_DEFS.len() + EXTRA_DEFS.len() + TECH_DEFS.len()
+    {
+        TECH_DEFS.get(index - ROSTER.len() - CREEP_DEFS.len() - SHOP_DEFS.len() - EXTRA_DEFS.len())
+    } else {
+        CAMPAIGN_DEFS.get(
+            index
+                - ROSTER.len()
+                - CREEP_DEFS.len()
+                - SHOP_DEFS.len()
+                - EXTRA_DEFS.len()
+                - TECH_DEFS.len(),
+        )
     }
 }
 
@@ -1021,6 +1063,21 @@ pub fn def_index(id: &str) -> Option<u16> {
         .iter()
         .position(|def| def.id == id)
         .map(|index| (ROSTER.len() + CREEP_DEFS.len() + SHOP_DEFS.len() + index) as u16)
+        .or_else(|| {
+            TECH_DEFS.iter().position(|def| def.id == id).map(|index| {
+                (ROSTER.len() + CREEP_DEFS.len() + SHOP_DEFS.len() + EXTRA_DEFS.len() + index) as u16
+            })
+        })
+        .or_else(|| {
+            CAMPAIGN_DEFS.iter().position(|def| def.id == id).map(|index| {
+                (ROSTER.len()
+                    + CREEP_DEFS.len()
+                    + SHOP_DEFS.len()
+                    + EXTRA_DEFS.len()
+                    + TECH_DEFS.len()
+                    + index) as u16
+            })
+        })
 }
 
 /// Every definition for one race.

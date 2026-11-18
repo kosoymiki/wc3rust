@@ -303,6 +303,21 @@ pub struct Construction {
     pub total: u32,
 }
 
+/// In-flight building upgrade (`[htow] Upgrade=hkee` in `*UnitFunc.txt`).
+///
+/// WC3 upgrades a building in place: the same unit keeps its position, owner,
+/// rally point and production queue, pays the *target* def's gold/lumber and
+/// build time, and becomes the new def when the timer runs out with its
+/// hit-point *ratio* preserved (a half-damaged Town Hall becomes a half-damaged
+/// Keep).  Storing the target as a def index keeps the save deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpgradeJob {
+    /// Roster index of the form being built (`data::def_at`).
+    pub to_def_index: u16,
+    pub remaining: u32,
+    pub total: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Unit {
     pub id: UnitId,
@@ -391,6 +406,10 @@ pub struct Unit {
     pub ethereal: bool,
     /// Present while a building is under construction.
     pub construct: Option<Construction>,
+    /// Present while a building is upgrading into another def (`htow` ->
+    /// `hkee`).  The unit keeps its identity, position and queue; only the def
+    /// changes when the job completes.
+    pub upgrade: Option<UpgradeJob>,
     /// Pathing cells blocked by this building (empty for units).
     pub blocked_cells: Vec<(u32, u32)>,
     /// Spawn/rally point for trained units.
@@ -739,6 +758,23 @@ pub enum Command {
         units: Vec<UnitId>,
         target: UnitId,
     },
+    /// Patrol between two points (the card's Patrol order on the command
+    /// stream; `OrderSpec::Patrol` single-unit form).
+    Patrol {
+        units: Vec<UnitId>,
+        a: Vec2,
+        b: Vec2,
+    },
+    /// Start a building upgrade in place (`[htow] Upgrade=hkee`).
+    UpgradeBuilding {
+        building: UnitId,
+        to: &'static str,
+    },
+    /// Research a `Researches=` upgrade in a building.
+    Research {
+        building: UnitId,
+        upgrade: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -779,6 +815,12 @@ pub enum Event {
     UpgradeResearched {
         owner: u8,
         id: &'static str,
+    },
+    /// A building finished upgrading into another def (`htow` -> `hkee`).
+    /// Audio/HUD consume this instead of the generic build-complete sound.
+    UpgradeComplete {
+        building: UnitId,
+        to: &'static str,
     },
     /// A tree/destructable was destroyed.
     DestructableDestroyed {
@@ -1282,6 +1324,7 @@ impl Sim {
                 None
             },
             blocked_cells,
+            upgrade: None,
             rally: None,
             stuck_ticks: 0,
             stuck_attempts: 0,
@@ -1369,6 +1412,7 @@ impl Sim {
         self.advance_movement();
         self.advance_combat();
         self.advance_projectiles();
+        self.advance_upgrades();
         self.advance_production();
         self.advance_research();
         self.advance_construction();
@@ -1556,6 +1600,15 @@ impl Sim {
                 // tests; the game bridge uses `build_instant` for an atomic
                 // card placement with the explicit DENY log.
                 let _ = self.build_instant_impl(*builder, *kind, *at, "not enough gold");
+            }
+            Command::Patrol { units, a, b } => {
+                self.patrol(units, *a, *b);
+            }
+            Command::UpgradeBuilding { building, to } => {
+                let _ = self.upgrade_building(*building, to);
+            }
+            Command::Research { building, upgrade } => {
+                let _ = self.research_upgrade(*building, upgrade);
             }
             Command::Cast {
                 unit,
@@ -4865,6 +4918,19 @@ impl Sim {
         })
     }
 
+    /// True when `owner` has a finished building of `def_id`.  Used by the
+    /// building-upgrade check, which must treat the building being upgraded as
+    /// its own predecessor requirement.
+    fn owner_has_building(&self, owner: u8, def_id: &str) -> bool {
+        self.units.iter().any(|unit| {
+            unit.alive
+                && unit.owner == owner
+                && unit.is_building()
+                && unit.construct.is_none()
+                && unit.def().id == def_id
+        })
+    }
+
     fn upgrade_bonuses(
         &self,
         owner: u8,
@@ -4973,6 +5039,198 @@ impl Sim {
             remaining: upgrade.research_ticks(level + 1).max(1),
         });
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Building upgrades (`[htow] Upgrade=hkee`, `[hwtw] Upgrade=hgtw,…`)
+    // ------------------------------------------------------------------
+
+    /// Why `building` cannot upgrade into `target` right now, or `None` when it
+    /// can.  One predicate for the card affordance, the command stream and the
+    /// tests: `upgrade_building` is exactly this check plus the debit.
+    pub fn upgrade_denial(&self, building: UnitId, target: &str) -> Option<&'static str> {
+        let Some(index) = self.unit_index(building) else {
+            return Some("no building");
+        };
+        let unit = &self.units[index];
+        if !unit.alive {
+            return Some("building dead");
+        }
+        if !unit.is_building() {
+            return Some("not a building");
+        }
+        if unit.construct.is_some() {
+            return Some("under construction");
+        }
+        if unit.upgrade.is_some() {
+            return Some("already upgrading");
+        }
+        let Some(target_def) = def_of(target) else {
+            return Some("unknown building");
+        };
+        if !target_def.is_building() {
+            return Some("not a building");
+        }
+        // The chain itself is data: `[htow] Upgrade=hkee` in `*UnitFunc.txt`.
+        if !data::can_upgrade_into(unit.def().id, target) {
+            return Some("not an upgrade of this building");
+        }
+        // Every other `Requires=` row of the target still applies, except the
+        // predecessor: the building being upgraded *is* that requirement.
+        for required in target_def.requires {
+            if *required == unit.def().id {
+                continue;
+            }
+            if !self.owner_has_building(unit.owner, required) {
+                return Some("missing requirement");
+            }
+        }
+        let owner = unit.owner as usize;
+        if self.resources[owner] < target_def.stats.cost {
+            return Some("not enough gold");
+        }
+        if self.lumber[owner] < target_def.stats.lumber_cost {
+            return Some("not enough lumber");
+        }
+        None
+    }
+
+    /// Starts the in-place upgrade of `building` into `target`.
+    ///
+    /// Charge, time and stats come from the *target* unit row (WC3 upgrades pay
+    /// the new building's cost and build time); the unit keeps its identity,
+    /// position, rally point and production queue, and the hit-point ratio is
+    /// preserved on completion.
+    pub fn upgrade_building(
+        &mut self,
+        building: UnitId,
+        target: &'static str,
+    ) -> Result<(), &'static str> {
+        if let Some(reason) = self.upgrade_denial(building, target) {
+            if reason == "not enough gold" {
+                self.events.push(Event::Error("not enough gold"));
+            } else if reason == "not enough lumber" {
+                self.events.push(Event::Error("not enough lumber"));
+            } else {
+                self.events.push(Event::Error(reason));
+            }
+            return Err(reason);
+        }
+        let Some(index) = self.unit_index(building) else {
+            return Err("no building");
+        };
+        let Some(target_index) = def_index(target) else {
+            return Err("unknown building");
+        };
+        let target_def = def_at(target_index).ok_or("unknown building")?;
+        let owner = self.units[index].owner as usize;
+        self.resources[owner] -= target_def.stats.cost;
+        self.lumber[owner] -= target_def.stats.lumber_cost;
+        let ticks = target_def.stats.build_ticks.max(1);
+        self.units[index].upgrade = Some(UpgradeJob {
+            to_def_index: target_index,
+            remaining: ticks,
+            total: ticks,
+        });
+        // An upgraded building keeps its queue but does not work while the
+        // upgrade runs (WC3 greys the production queue out).
+        Ok(())
+    }
+
+    /// Ticks every in-flight building upgrade; completion swaps the def in
+    /// place.  Called from [`Sim::step`] before production so a hall that
+    /// finishes this tick can start a tier-2 unit on the same tick.
+    fn advance_upgrades(&mut self) {
+        let mut completed: Vec<usize> = Vec::new();
+        for index in 0..self.units.len() {
+            if !self.units[index].alive {
+                continue;
+            }
+            let Some(mut job) = self.units[index].upgrade else {
+                continue;
+            };
+            job.remaining = job.remaining.saturating_sub(1);
+            self.units[index].upgrade = Some(job);
+            if job.remaining == 0 {
+                completed.push(index);
+            }
+        }
+        for index in completed {
+            self.finish_upgrade(index);
+        }
+    }
+
+    /// Swaps a finished upgrade's def in place and refreshes every cached stat
+    /// from the new row (the same bonuses `spawn_def_index_at` applies).
+    fn finish_upgrade(&mut self, index: usize) {
+        let Some(job) = self.units[index].upgrade else {
+            return;
+        };
+        let Some(def) = def_at(job.to_def_index) else {
+            self.units[index].upgrade = None;
+            return;
+        };
+        let owner = self.units[index].owner;
+        let pos = self.units[index].pos;
+        let bonus = self.upgrade_bonuses(owner.min(1), def);
+        let stats = def.stats;
+        let id = self.units[index].id;
+        // Preserve the damaged fraction: a Keep built from a half-dead Town
+        // Hall starts at half its own maximum.
+        let ratio = if self.units[index].max_hp > 0 {
+            self.units[index].hp as f32 / self.units[index].max_hp as f32
+        } else {
+            1.0
+        }
+        .clamp(0.0, 1.0);
+        let new_max = stats.hp + bonus.hp + stats.hp * bonus.hp_permille / 1000;
+        let new_hp = ((new_max as f32 * ratio).round() as i32).clamp(1, new_max);
+        // Footprint can change (a Scout Tower and a Guard Tower share 3 cells,
+        // but an upgraded hall line does not always): release the old cells and
+        // claim the new ones so pathing matches the new def.
+        let old_cells = std::mem::take(&mut self.units[index].blocked_cells);
+        for &(cx, cy) in &old_cells {
+            self.grid.set_walkable(cx, cy, true);
+        }
+        let mut blocked_cells = Vec::new();
+        if stats.is_building {
+            blocked_cells = self.footprint_cells(pos, self.footprint_side_cells(def.footprint));
+            for &(cx, cy) in &blocked_cells {
+                self.grid.set_walkable(cx, cy, false);
+            }
+            self.flow_cache.clear();
+        }
+        let unit = &mut self.units[index];
+        unit.def_index = job.to_def_index;
+        unit.kind = def.kind;
+        unit.max_hp = new_max;
+        unit.hp = new_hp;
+        unit.max_mana = stats.max_mana + bonus.mana;
+        unit.mana = unit.mana.min(unit.max_mana);
+        unit.armor = stats.armor + bonus.armor;
+        unit.damage = stats.damage + bonus.damage + stats.damage * bonus.damage_permille / 1000;
+        unit.range = stats.range + bonus.range;
+        unit.speed = clamp_speed(
+            stats.speed + bonus.speed,
+            self.gameplay.min_bldg_speed,
+            self.gameplay.max_bldg_speed,
+        );
+        unit.sight = stats.sight + bonus.sight;
+        unit.attack_ticks = stats.attack_ticks;
+        unit.level = if def.hero { 1 } else { stats.level.max(1) };
+        unit.turn_rate = stats.turn_rate;
+        unit.mana_regen_milli = stats.mana_regen_milli + bonus.mana_regen_milli;
+        unit.blocked_cells = blocked_cells;
+        unit.upgrade = None;
+        let sells = def.sells_items;
+        if !sells.is_empty() && !self.shops.iter().any(|shop| shop.shop == id) {
+            self.register_shop(id, sells);
+        }
+        self.events.push(Event::UpgradeComplete {
+            building: id,
+            to: def.id,
+        });
+        self.events.push(Event::BuildingComplete(id));
     }
 
     fn advance_research(&mut self) {
@@ -6505,17 +6763,20 @@ impl Sim {
     // ------------------------------------------------------------------
 
     fn check_victory(&mut self) {
-        // WC3 melee: a side is defeated when its main hall is destroyed.
-        let hall = |owner: u8| {
-            self.units
+        // WC3 melee elimination rule: a side is defeated when it has no
+        // buildings left — not when its town hall falls. A seat with a
+        // barracks, an altar or a farm still rebuilds (this is why the game
+        // layer could not use the old hall-only verdict for melee).
+        let has_buildings = |units: &[Unit], owner: u8| {
+            units
                 .iter()
-                .any(|unit| unit.alive && unit.owner == owner && unit.def().is_main_hall())
+                .any(|unit| unit.alive && unit.owner == owner && unit.def().is_building())
         };
-        let hall0 = hall(0);
-        let hall1 = hall(1);
-        if !hall0 && hall1 {
+        let side0 = has_buildings(&self.units, 0);
+        let side1 = has_buildings(&self.units, 1);
+        if !side0 && side1 {
             self.events.push(Event::Victory(1));
-        } else if hall0 && !hall1 {
+        } else if side0 && !side1 {
             self.events.push(Event::Victory(0));
         }
     }
@@ -6609,6 +6870,13 @@ impl Sim {
                     feed(10);
                     feed(target.0 as u64);
                 }
+            }
+            // An in-flight building upgrade is live state: a save/load pair that
+            // dropped it would produce a different match from the same seed.
+            if let Some(job) = unit.upgrade {
+                feed(11);
+                feed(job.to_def_index as u64);
+                feed(job.remaining as u64);
             }
             for spec in &unit.order_queue {
                 feed(match spec {
