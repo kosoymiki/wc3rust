@@ -23,6 +23,7 @@
         "required": [
           "generated_at",
           "job_id",
+          "seed",
           "license",
           "model",
           "negative_prompt_sha256",
@@ -33,6 +34,11 @@
           "references"
         ],
         "properties": {
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
           "job_id": {
             "type": "string",
             "pattern": "^[a-f0-9]{16}$"
