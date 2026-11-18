@@ -465,19 +465,9 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
     return int(bool(fail))
 
 def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
-    plan_doc=read_json(jobs_path);doc=load_manifest(manifest,bool(plan_doc.get("engine_contract")));mods=pil_modules()
+    plan_doc,doc=verify_plan(manifest,jobs_path)
+    mods=pil_modules()
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
-    if plan_doc.get("tool")!="HUD Artisan" or plan_doc.get("schema_version")!=1:
-        raise ValueError("unsupported jobs.json tool/schema")
-    if plan_doc.get("source_manifest_sha256") != sha(manifest.read_bytes()):
-        raise ValueError("jobs.json was compiled from a different manifest revision")
-    if not isinstance(plan_doc.get("engine_contract"),bool):
-        raise ValueError("jobs.json is missing its engine_contract flag")
-    planned_jobs=plan_doc.get("jobs")
-    if not isinstance(planned_jobs,list) or not planned_jobs:
-        raise ValueError("jobs.json has no jobs[]")
-    if any(job.get("prompt_sha256")!=sha(job.get("prompt","").encode("utf-8")) for job in planned_jobs):
-        raise ValueError("jobs.json contains a prompt whose prompt_sha256 does not match")
     out=out.resolve()
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"staging output must be empty; refusing to overwrite existing files: {out}")
@@ -581,16 +571,10 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
 
-def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
-    payload=read_json(jobs_path);cfg=read_json(adapter_path)
-    if payload.get("tool")!="HUD Artisan" or payload.get("schema_version")!=1:
-        raise ValueError("unsupported jobs.json tool/schema")
-    if not isinstance(payload.get("engine_contract"),bool):
-        raise ValueError("jobs.json is missing its engine_contract flag")
-    if not re.fullmatch(r"[a-f0-9]{64}",str(payload.get("source_manifest_sha256",""))):
-        raise ValueError("jobs.json has an invalid source manifest SHA-256")
-    jobs=payload.get("jobs")
-    if not isinstance(jobs,list) or not jobs:raise ValueError("jobs.json has no jobs[]")
+def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
+    payload,manifest_doc=verify_plan(manifest_path,jobs_path)
+    cfg=read_json(adapter_path)
+    jobs=payload["jobs"]
     command=cfg.get("command")
     if not isinstance(command,list) or not command or not all(isinstance(x,str) for x in command):
         raise ValueError("adapter.command must be a non-empty argv array; shell commands are not accepted")
@@ -723,7 +707,7 @@ def main(argv=None):
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
     q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
     q=s.add_parser("dispatch",help="run a provider CLI adapter over the jobs with retries and bounded concurrency")
-    q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
     q.add_argument("--parallel",type=int)
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
@@ -746,7 +730,7 @@ def main(argv=None):
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
         if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
-        if a.cmd=="dispatch":return dispatch(a.jobs,a.adapter,a.drop,a.parallel)
+        if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
