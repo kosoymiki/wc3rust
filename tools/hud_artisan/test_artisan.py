@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """HUD Artisan tests: python -m unittest discover -s tools/hud_artisan -p 'test_*.py'"""
-import importlib.util,json,tempfile,unittest,struct,zlib,hashlib
+import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys
 from pathlib import Path
 SPEC=importlib.util.spec_from_file_location("artisan",Path(__file__).with_name("generate.py"))
 artisan=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(artisan)
@@ -37,10 +37,9 @@ class Tests(unittest.TestCase):
             m.write_text(json.dumps(doc));self.assertEqual(len(artisan.load_manifest(m)["assets"]),2)
             out=root/"plan";self.assertEqual(artisan.plan(m,out,"classic-modern",12,False),0)
             self.assertEqual(json.loads((out/"jobs.json").read_text())["job_count"],2)
-    def test_ingest_assembles_atlas_from_separate_cells(self):
-        from PIL import Image
+    def test_provider_dispatch_ingest_atlas_and_provenance(self):
         with tempfile.TemporaryDirectory() as d:
-            root=Path(d);manifest=root/"manifest.json";drop=root/"drop";out=root/"pack";drop.mkdir()
+            root=Path(d);manifest=root/"manifest.json";drop=root/"drop";out=root/"pack"
             panel={"name":"panel","file":"panels/panel.png","w":16,"h":16,"insets":{"l":2,"t":2,"r":2,"b":2},"states":["normal"]}
             atlas={"name":"atlas","file":"atlas/cmd.png","w":16,"h":16,"insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
             doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
@@ -49,26 +48,29 @@ class Tests(unittest.TestCase):
              "cell":[8,8],"entries":[{"id":"icon_a","x":0,"y":0,"w":8,"h":8}]}},
              "assets":[panel,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
             manifest.write_text(json.dumps(doc))
-            jobs=root/"jobs";artisan.plan(manifest,jobs,"classic-modern",3,False)
-            payload=json.loads((jobs/"jobs.json").read_text())
+            jobs_dir=root/"jobs";artisan.plan(manifest,jobs_dir,"classic-modern",3,False)
+            jobs=jobs_dir/"jobs.json";payload=json.loads(jobs.read_text())
             self.assertEqual(payload["job_count"],2)
-            (drop/"panels").mkdir();Image.new("RGBA",(16,16),(40,35,30,255)).save(drop/"panels/panel.png")
-            cell=Image.new("RGBA",(8,8),(0,0,0,0))
-            for x in range(2,6):
-                for y in range(2,6):cell.putpixel((x,y),(220,150,40,255))
-            (drop/"atlas_sources").mkdir();cell.save(drop/"atlas_sources/icon_a.png")
+            adapter_script=root/"provider_adapter.py"
+            adapter_script.write_text(
+                "import json,sys\nfrom PIL import Image,ImageDraw\n"
+                "j=json.load(open(sys.argv[1],encoding='utf-8'))\n"
+                "w,h=j['width'],j['height']\n"
+                "im=Image.new('RGBA',(w,h),(0,0,0,0) if j['requires_alpha'] else (40,35,30,255))\n"
+                "d=ImageDraw.Draw(im)\n"
+                "if j['requires_alpha']: d.ellipse((1,1,max(1,w-2),max(1,h-2)),fill=(220,150,40,255))\n"
+                "else: d.line((0,0,w-1,h-1),fill=(90,80,65,255),width=1)\n"
+                "im.save(sys.argv[2],format='PNG')\n",encoding="utf-8")
+            adapter=root/"adapter.json"
+            adapter.write_text(json.dumps({"provider":"test-provider","model":"test-model",
+              "license":"clean-room test fixture","working_directory":str(root),
+              "command":[sys.executable,str(adapter_script),"{job_json}","{output_path}"],
+              "environment":[],"timeout_seconds":20,"retries":1,"max_parallel":2}))
+            self.assertEqual(artisan.dispatch(jobs,adapter,drop,2),0)
+            self.assertTrue((drop/"provenance.json").is_file())
             (drop/"fonts").mkdir()
             for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
-            prov=[]
-            for job in payload["jobs"]:
-                artifact=drop/job["output"]
-                prov.append({"job_id":job["job_id"],"provider":"manual-test","model":"fixture",
-                  "generated_at":"2026-11-18T00:00:00Z","license":"clean-room test fixture",
-                  "prompt_sha256":hashlib.sha256(job["prompt"].encode()).hexdigest(),
-                  "output_sha256":hashlib.sha256(artifact.read_bytes()).hexdigest()})
-            (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"jobs":prov}))
-            rc=artisan.ingest(manifest,jobs/"jobs.json",drop,out,"strict",False)
-            self.assertEqual(rc,0)
+            self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
     def test_duplicate_name_path_guard(self):
