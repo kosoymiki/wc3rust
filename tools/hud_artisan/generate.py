@@ -105,12 +105,88 @@ def material(name:str,kind:str)->str:
     if kind=="menu-panel": return "layered dark leather and aged stone inset, thick bronze/steel outer frame and restrained parchment accents"
     return "dark slate inset, forged metal frame, bronze bevels, engraved detail and restrained enamel accents"
 
+def semantic_brief(name:str,kind:str)->str:
+    n=name.lower()
+    catalog=[
+      (("gold","coin"),"a minted gold coin with milled edge and embossed abstract crest; no lettering"),
+      (("lumber","wood"),"a bundle of cut timber logs with visible end grain and a binding"),
+      (("food","meat","supply"),"a roast, grain or ration emblem with a distinct food silhouette"),
+      (("attack","sword","damage"),"a forged blade with recognisable guard, grip and cutting edge"),
+      (("armor","armour","shield","defense"),"a heraldic shield with a raised boss and layered metal rim"),
+      (("health","life","heal","hp"),"a vitality emblem with a strong heart or healing motif"),
+      (("mana","magic","spell","rune"),"a faceted arcane crystal or contained magical-energy motif"),
+      (("move","rally"),"a directional movement arrow or rally pennant with strong forward silhouette"),
+      (("cancel","close","stop"),"a decisive crossed-blade or barred cancellation motif, not a text glyph"),
+      (("build","repair"),"a builder hammer, tool or scaffold motif"),
+      (("research","upgrade"),"an alchemical research apparatus or crafted ascending emblem"),
+      (("train","worker","peasant"),"a worker/tool insignia with a clear tool head and handle"),
+      (("patrol",),"a circular route or guard marker with one directional notch"),
+      (("fire","flame"),"a sculpted flame with bright core and dark outer silhouette"),
+      (("frost","ice"),"a six-point frost crystal with crisp separated arms"),
+      (("lightning","thunder"),"a jagged lightning bolt with a clear compact contour"),
+      (("summon",),"a summoning sigil with central focal gem and radiating structure"),
+      (("stealth","invis"),"a veiled or hooded silhouette suggesting concealment"),
+      (("teleport",),"a portal ring with central aperture and one energy arc"),
+      (("potion",),"a stoppered potion flask with distinct neck and liquid level"),
+      (("scroll",),"a rolled parchment scroll with visibly curled ends"),
+      (("boots",),"a crafted boot silhouette with reinforced sole and leather cuff"),
+      (("ring",),"a metal ring in three-quarter view with one inset gem"),
+      (("orb",),"a suspended faceted orb with controlled internal glow"),
+      (("bow",),"a recurved bow with visible string, grip and tapered limbs"),
+      (("axe",),"a forged axe head and haft with readable cutting edge"),
+      (("staff",),"a caster staff with distinct head ornament and tapered shaft"),
+      (("tower",),"a defensive tower with strong base and crenellated crown"),
+      (("castle",),"a fortified keep with distinct towers and gate"),
+      (("cavalry",),"a mounted-warrior or horse-head emblem distinct from infantry"),
+      (("infantry",),"an infantry helmet and weapon silhouette distinct from mage and worker"),
+      (("mage",),"a caster hood and arcane staff silhouette distinct from worker"),
+      (("demon",),"a horned demonic profile with one compact readable contour"),
+      (("undead",),"a bone, skull or spectral emblem with clear negative space"),
+      (("nature",),"an organic leaf, antler or life motif with layered planes"),
+    ]
+    if kind=="icon":
+        for terms,description in catalog:
+            if any(term in n for term in terms):
+                return description
+        semantic=n.replace("_"," ").replace("icon ","").replace("ability ","").replace("item ","")
+        return f"a distinctive emblem representing {semantic}; never substitute a generic rune"
+    if kind=="portrait-frame":
+        return "a portrait surround only, with an empty aperture reserved for the separately rendered face"
+    if kind=="minimap-frame":
+        return "a map viewport surround with a completely unobstructed central map window"
+    if kind=="interactive-control":
+        return "a tactile button or slot with a legible interactive surface and precise perimeter"
+    if kind=="hud-strip":
+        return "a horizontal information plate with stretch-safe centre and distinctive end caps"
+    if kind=="menu-panel":
+        return "a large menu/dialog panel with a calm content field and layered inner/outer borders"
+    if kind=="panel":
+        return "a reusable UI panel with clear perimeter, dark central field and nine-slice-safe construction"
+    return f"a functional fantasy RTS interface element representing {n.replace('_',' ')}"
+
+def state_brief(state_text:str)->str:
+    s=state_text.lower()
+    rules=[]
+    if "hover" in s: rules.append("hover state: subtle edge illumination and slight value lift; no broad glow")
+    if "pressed" in s: rules.append("pressed state: tactile depressed face, darkened inner bevel and compressed highlight")
+    if "selected" in s: rules.append("selected state: distinct restrained selection rim and unmistakable focus")
+    if "disabled" in s: rules.append("disabled state: lower saturation and luminance while preserving silhouette")
+    if "autocast" in s: rules.append("autocast state: precise small circular enchantment rim; centre symbol remains readable")
+    if "cooldown" in s: rules.append("cooldown state: preserve clear space for the engine's radial dark cooldown mask; no numbers")
+    if "active" in s: rules.append("active state: stronger focal contrast and brighter bevel")
+    if "inactive" in s: rules.append("inactive state: neutral quiet bevel with no selection highlight")
+    if "warn" in s: rules.append("warning state: restrained warm danger accent; never a broad red wash")
+    if "empty" in s: rules.append("empty state: unoccupied dark inset, with no invented item or ability")
+    return "; ".join(rules) if rules else "normal state: balanced material values and neutral illumination"
+
 def make_job(a:dict,theme:str,seed:int)->dict:
     name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
     states=", ".join(a.get("states") or []) or "normal/default state"
     alpha=kind in ("icon","cursor")
     prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
-    f"Family {kind}; state {states}. Palette: {t['palette']}. Materials: {material(name,kind)}. "
+    f"Family {kind}; state {states}. Semantic subject: {semantic_brief(name,kind)}. "
+    f"State rendering instruction: {state_brief(states)}. "
+    f"Palette: {t['palette']}. Materials: {material(name,kind)}. "
     f"Surface rendering: {t['materials']}. Ornament: {t['ornament']}. "
     f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
     "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
