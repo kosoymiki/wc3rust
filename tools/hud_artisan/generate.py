@@ -350,8 +350,12 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
     "chromatic aberration, noisy microtexture, random ornament")
     prompt_sha256=sha(prompt.encode("utf-8"))
-    job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{prompt_sha256}".encode())[:16]
-    return {"job_id":job_id,"prompt_sha256":prompt_sha256,"asset":name,"output":a["file"],
+    negative_prompt_sha256=sha(negative.encode("utf-8"))
+    spec_hash=sha(json.dumps({"prompt_sha256":prompt_sha256,"negative_prompt_sha256":negative_prompt_sha256,
+        "width":w,"height":h,"insets":ins,"requires_alpha":alpha},sort_keys=True,separators=(",",":")).encode("utf-8"))
+    job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{spec_hash}".encode())[:16]
+    return {"job_id":job_id,"prompt_sha256":prompt_sha256,
+      "negative_prompt_sha256":negative_prompt_sha256,"asset":name,"output":a["file"],
       "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":seed,"insets":ins,
       "requires_alpha":alpha,"references":a.get("references",[]),
       "prompt":prompt,"negative_prompt":negative,
@@ -638,8 +642,10 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                 for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256"):
                     if not isinstance(row.get(key),str) or not row[key].strip():
                         raise ValueError(f"{jid}: provenance field {key} is required")
-                if row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
-                    raise ValueError(f"{jid}: prompt hash mismatch")
+                if row["prompt_sha256"] != job["prompt_sha256"] or row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
+                    raise ValueError(f"{jid}: positive prompt hash mismatch")
+                if row.get("negative_prompt_sha256") != job["negative_prompt_sha256"] or row.get("negative_prompt_sha256") != sha(job["negative_prompt"].encode("utf-8")):
+                    raise ValueError(f"{jid}: negative prompt hash mismatch")
                 row_refs=row.get("references")
                 if not isinstance(row_refs,list):
                     raise ValueError(f"{jid}: provenance references must be an array")
@@ -768,9 +774,11 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         # Resolve and validate all final output paths before any worker is started.
         safe_join(drop,rel)
         if not isinstance(jid,str) or jid in ids:raise ValueError(f"missing/duplicate job id: {jid!r}")
-        prompt=job.get("prompt","")
+        prompt=job.get("prompt","");negative=job.get("negative_prompt","")
         if not isinstance(prompt,str) or job.get("prompt_sha256")!=sha(prompt.encode("utf-8")):
-            raise ValueError(f"{jid}: prompt hash mismatch in jobs.json")
+            raise ValueError(f"{jid}: positive prompt hash mismatch in jobs.json")
+        if not isinstance(negative,str) or job.get("negative_prompt_sha256")!=sha(negative.encode("utf-8")):
+            raise ValueError(f"{jid}: negative prompt hash mismatch in jobs.json")
         width,height=job.get("width"),job.get("height")
         if type(width) is not int or type(height) is not int or width<1 or height<1 or width*height>MAX_PIXELS:
             raise ValueError(f"{jid}: invalid target dimensions {width}x{height}")
@@ -864,7 +872,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 records.append({"job_id":row["job_id"],"provider":provider,"model":model,
                     "generated_at":row["generated_at"],"license":license_name,
                     "references":refs,"postprocessing":cfg.get("postprocessing",[]),
-                    "prompt_sha256":job["prompt_sha256"],"output_sha256":row["sha256"]})
+                    "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
+                    "output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
             provenance_path.write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":sha(jobs_path.read_bytes()),"jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
