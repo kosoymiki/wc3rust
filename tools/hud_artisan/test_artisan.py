@@ -271,6 +271,28 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
+    def test_ingest_failure_never_promotes_partial_pack(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);manifest=root/"manifest.json";drop=root/"drop";drop.mkdir()
+            panel={"name":"panel","file":"panels/panel.png","w":16,"h":16,
+                   "insets":{"l":2,"t":2,"r":2,"b":2},"states":["normal"]}
+            atlas={"name":"atlas","file":"atlas/cmd.png","w":16,"h":16,
+                   "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
+            doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
+             "safe_area_1080p":{"landscape":[1,1,1,1],"portrait":[1,1,1,1]},
+             "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+             "control_groups":{"count":10,"cell":[44,44]},
+             "atlas":{"commandbuttons":{"file":"atlas/cmd.png","columns":1,"rows":1,
+               "cell":[8,8],"entries":[{"id":"icon_a","x":0,"y":0,"w":8,"h":8}]}},
+             "assets":[panel,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            manifest.write_text(json.dumps(doc))
+            jobs_dir=root/"jobs"
+            self.assertEqual(artisan.plan(manifest,jobs_dir,"classic-modern",3,False),0)
+            out=root/"pack"
+            self.assertEqual(artisan.ingest(manifest,jobs_dir/"jobs.json",drop,out,"strict",False),1)
+            self.assertFalse(out.exists(),"failed ingest must not expose a partial output pack")
+            self.assertEqual(list(root.glob(".pack.hudartisan-*")),[],
+                             "failed ingestion must remove temporary staging directories")
     def test_comfyui_adapter_end_to_end_with_mocked_api(self):
         from PIL import Image
         from contextlib import redirect_stdout,redirect_stderr
