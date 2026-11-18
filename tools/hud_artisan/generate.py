@@ -121,10 +121,42 @@ def make_job(a:dict,theme:str,seed:int)->dict:
 
 def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
     doc=load_manifest(manifest,engine_contract);out.mkdir(parents=True,exist_ok=True)
-    jobs=[make_job(a,theme,seed) for a in doc["assets"]]
-    manifest_sha=sha(manifest.read_bytes())
+    atlas=doc["atlas"]["commandbuttons"]
+    atlas_file=atlas.get("file")
+    by_name={a["name"]:a for a in doc["assets"]}
+    by_file={a["file"]:a for a in doc["assets"]}
+    if atlas_file not in by_file:
+        raise ValueError("atlas.commandbuttons.file must resolve to an assets[].file entry")
+    atlas_asset=by_file[atlas_file]
+    jobs=[];cells=[]
+    # The atlas image itself is assembled from its independently generated cells.
+    # Never ask an image model to produce a single 2048x2048 sprite sheet.
+    for a in doc["assets"]:
+        if a["file"] != atlas_file:
+            jobs.append(make_job(a,theme,seed))
+    for entry in atlas["entries"]:
+        ident=str(entry.get("id","")).strip()
+        if not ident: raise ValueError("atlas cell id is empty")
+        x,y,w,h=(int(round(float(entry[k]))) for k in ("x","y","w","h"))
+        if w<1 or h<1: raise ValueError(f"atlas cell {ident}: invalid size")
+        source_asset=entry.get("source_asset") or entry.get("asset")
+        source_file=entry.get("source_file")
+        if source_asset in by_name: source_file=by_name[source_asset]["file"]
+        elif source_asset in by_file: source_file=source_asset
+        elif source_asset:
+            raise ValueError(f"atlas cell {ident}: unknown source_asset {source_asset!r}")
+        elif ident in by_name and by_name[ident]["file"] != atlas_file:
+            source_asset=ident;source_file=by_name[ident]["file"]
+        if not source_file:
+            file=f"atlas_sources/{slug(ident)}.png"
+            pseudo={"name":f"command_icon_{slug(ident)}","file":file,"w":w,"h":h,
+                    "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
+            jobs.append(make_job(pseudo,theme,seed))
+            source_file=file
+        cells.append({"id":ident,"x":x,"y":y,"w":w,"h":h,"source_asset":source_asset,"source_file":source_file})
     payload={"tool":"HUD Artisan","version":VERSION,"theme":theme,"seed":seed,
-      "source_manifest_sha256":manifest_sha,"job_count":len(jobs),"jobs":jobs}
+      "source_manifest_sha256":sha(manifest.read_bytes()),"job_count":len(jobs),"jobs":jobs,
+      "atlas":{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}}
     (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     pd=out/"prompts";pd.mkdir(exist_ok=True)
     for j in jobs:
@@ -133,29 +165,32 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
         (pd/(slug(j["asset"])+".md")).write_text(body,encoding="utf-8")
     brief=f"""# HUD Artisan agent brief
 
-{len(jobs)} independent jobs were compiled from the authoritative manifest.
+{len(jobs)} independent image jobs were compiled. The command-buttons atlas is assembled later by
+the tool from atlas cell jobs and must never be generated as a single model-created collage.
 
-- Generate exactly one asset per job. Never output a sheet, collage or screenshot.
-- Preserve each exact relative output path, native dimensions and straight alpha.
-- Respect the declared nine-slice insets: corners retain ornament; stretch zones stay calm and continuous.
-- Sibling states must be visibly distinct but use one consistent component language.
-- Icons need semantically recognisable, distinct silhouettes at 32–64 px; no generic placeholder rune.
-- Panels need material layers, controlled bevel lighting, believable occlusion and restrained wear.
-- Keep text out of images; game text is rendered by the engine.
-- Clean-room fantasy art only. No extracted game assets, game screenshots, proprietary logos or copied retail art.
-- Deliver outputs under the exact paths in your drop folder and include provenance.json with provider/model,
-  revision, seed, prompt hash, post-processing and reference-source/license details.
-- Structural PASS is not art approval. Inspect at native size and run actual game screenshot QA.
+- Generate exactly one asset per job; never output a sheet, collage or screenshot.
+- Preserve exact relative output paths, native dimensions and straight alpha.
+- Respect declared nine-slice insets; corners retain ornament and stretch zones remain calm.
+- Sibling states must be visibly distinct but coherent. Icons need distinct semantic silhouettes.
+- Panels need layered materials, controlled bevel lighting, believable occlusion and restrained wear.
+- Keep text out of images; the engine renders text.
+- Clean-room fantasy art only. No extracted game assets, screenshots, logos or copied retail artwork.
+- Deliver PNGs under the declared paths and provenance.json with provider/model/revision, seed,
+  prompt hash, references, license and post-processing.
+- Structural PASS is not art approval; inspect at native size and perform in-engine screenshot QA.
+
+The plan also contains atlas cell coordinates and source paths. The ingest step composites these
+cells into the declared atlas asset file at exact coordinates.
 
 Run:
-  python tools/hud_artisan/generate.py ingest --manifest MANIFEST --drop DROP --out PACK
+  python tools/hud_artisan/generate.py ingest --manifest MANIFEST --jobs JOBS_JSON --drop DROP --out PACK
   python tools/hud_artisan/generate.py validate --manifest MANIFEST --pack PACK --pixels
   python tools/hud_artisan/generate.py contact-sheet --manifest MANIFEST --pack PACK --out contact-sheet.png
 
-Theme={theme}; seed={seed}; source manifest SHA-256={manifest_sha}
+Theme={theme}; seed={seed}; source manifest SHA-256={sha(manifest.read_bytes())}
 """
     (out/"AGENT_BRIEF.md").write_text(brief,encoding="utf-8")
-    print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} out={out}");return 0
+    print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} atlas_cells={len(cells)} out={out}");return 0
 
 def png_info(path:Path)->tuple[int,int,int,int]:
     data=path.read_bytes()
@@ -257,12 +292,16 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
     print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
     return int(bool(fail))
 
-def ingest(manifest:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
-    doc=load_manifest(manifest);mods=pil_modules()
+def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+    doc=load_manifest(manifest);plan_doc=read_json(jobs_path);mods=pil_modules()
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
+    if plan_doc.get("source_manifest_sha256") != sha(manifest.read_bytes()):
+        raise ValueError("jobs.json was compiled from a different manifest revision")
     Image,_,_=mods;out.mkdir(parents=True,exist_ok=True);shutil.copy2(manifest,out/"manifest.json")
     (out/"fonts").mkdir(exist_ok=True);done=[];errors=[];inputs=[]
+    atlas_file=doc["atlas"]["commandbuttons"]["file"]
     for a in doc["assets"]:
+        if a["file"]==atlas_file: continue
         rel=safe_rel(a["file"]);src=drop/rel
         alt=drop/(slug(a["name"])+".png")
         if not src.is_file() and alt.is_file():src=alt
@@ -286,6 +325,30 @@ def ingest(manifest:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
                 inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha(src.read_bytes()),
                    "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
         except Exception as e:errors.append(f"{a['name']}: {e}")
+    # Import any standalone atlas-cell jobs, then composite the atlas deterministically.
+    atlas=plan_doc.get("atlas") or {}
+    declared_atlas=doc["atlas"]["commandbuttons"]
+    if atlas.get("file")!=atlas_file: errors.append("jobs.json atlas target differs from manifest")
+    else:
+        canvas=Image.new("RGBA",(int(atlas.get("width",0)),int(atlas.get("height",0))),(0,0,0,0))
+        if canvas.width<=0 or canvas.height<=0: errors.append("jobs.json atlas dimensions invalid")
+        else:
+            for cell in atlas.get("cells",[]):
+                rel=safe_rel(cell.get("source_file",""));src=(out/rel) if (out/rel).is_file() else (drop/rel)
+                try:
+                    if not src.is_file():raise ValueError(f"missing source {rel}")
+                    with Image.open(src) as im:
+                        im.load();tile=im.convert("RGBA")
+                    if tile.size!=(int(cell["w"]),int(cell["h"])):
+                        raise ValueError(f"cell source size {tile.size} != {(cell['w'],cell['h'])}")
+                    x,y=int(cell["x"]),int(cell["y"])
+                    if x<0 or y<0 or x+tile.width>canvas.width or y+tile.height>canvas.height:
+                        raise ValueError("cell outside atlas")
+                    canvas.alpha_composite(tile,(x,y))
+                except Exception as e:errors.append(f"atlas cell {cell.get('id')}: {e}")
+            atlas_dest=out/safe_rel(atlas_file);atlas_dest.parent.mkdir(parents=True,exist_ok=True)
+            canvas.save(atlas_dest,"PNG",optimize=True,compress_level=9)
+            done.append("atlas:"+atlas_file)
     for font in doc["font_files"]:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
         src=drop/"fonts"/font
@@ -293,10 +356,10 @@ def ingest(manifest:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
         else:errors.append(f"missing font dependency fonts/{font}")
     (out/"reports").mkdir(exist_ok=True)
     (out/"reports"/"ingestion.json").write_text(json.dumps({"tool":"HUD Artisan","version":VERSION,
-      "manifest_sha256":sha(manifest.read_bytes()),"ingested":done,"inputs":inputs,"errors":errors,"fit_policy":fit},
-      ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+      "manifest_sha256":sha(manifest.read_bytes()),"jobs_sha256":sha(jobs_path.read_bytes()),
+      "ingested":done,"inputs":inputs,"errors":errors,"fit_policy":fit},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     for e in errors:print("HUD_ARTISAN_FAIL "+e)
-    print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)}/{len(doc['assets'])} errors={len(errors)}")
+    print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
 
 def contact_sheet(manifest:Path,pack:Path,out:Path,cols:int,cell:int)->int:
@@ -325,7 +388,7 @@ def main(argv=None):
     q.add_argument("--theme",choices=tuple(THEMES),default="classic-modern");q.add_argument("--seed",type=int,default=20261118)
     q.add_argument("--engine-contract",action="store_true")
     q=s.add_parser("ingest",help="normalize agent PNG drop into a pack")
-    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
     q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
@@ -347,7 +410,7 @@ def main(argv=None):
             a.out.parent.mkdir(parents=True,exist_ok=True);a.out.write_text(json.dumps(profile,indent=2)+"\n",encoding="utf-8")
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
-        if a.cmd=="ingest":return ingest(a.manifest,a.drop,a.out,a.fit,a.allow_opaque)
+        if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
