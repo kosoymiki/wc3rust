@@ -54,6 +54,38 @@ def read_json(path:Path)->dict[str,Any]:
     if not isinstance(obj,dict): raise ValueError(f"{path}: JSON root must be an object")
     return obj
 
+def validate_engine_contract(doc:dict[str,Any])->None:
+    """Fail closed when a claimed production manifest drifts from the Rust HUD contract."""
+    expected_resolution={"landscape":[2414,1080],"portrait":[1080,2414]}
+    expected_safe={"landscape":[48,80,48,48],"portrait":[24,96,24,64]}
+    if doc.get("reference_resolution")!=expected_resolution:
+        raise ValueError(f"engine contract reference_resolution mismatch: expected {expected_resolution}")
+    if doc.get("safe_area_1080p")!=expected_safe:
+        raise ValueError(f"engine contract safe areas mismatch: expected {expected_safe}")
+    card=doc.get("command_card") or {}
+    if card.get("columns")!=4 or card.get("rows")!=3 or card.get("cell")!=[64,64] or card.get("gap")!=4:
+        raise ValueError("engine contract command_card must be 4x3, 64x64 cells, gap 4")
+    groups=doc.get("control_groups") or {}
+    if groups.get("count")!=10 or groups.get("cell")!=[44,44]:
+        raise ValueError("engine contract control_groups must be ten 44x44 cells")
+    assets=doc.get("assets") or []
+    if len(assets)!=92:
+        raise ValueError(f"engine contract requires 92 assets, found {len(assets)}")
+    by_file={a.get("file"):a for a in assets}
+    atlas=(doc.get("atlas") or {}).get("commandbuttons") or {}
+    atlas_file=atlas.get("file")
+    atlas_asset=by_file.get(atlas_file)
+    if not atlas_asset:
+        raise ValueError("engine contract commandbuttons atlas file must be a declared asset")
+    if (atlas_asset.get("w"),atlas_asset.get("h"))!=(2048,2048):
+        raise ValueError(f"engine contract commandbuttons atlas must be 2048x2048, found {atlas_asset.get('w')}x{atlas_asset.get('h')}")
+    entries=atlas.get("entries")
+    if not isinstance(entries,list) or len(entries)!=20:
+        raise ValueError(f"engine contract commandbuttons atlas requires 20 entries, found {len(entries) if isinstance(entries,list) else 0}")
+    names={a.get("name") for a in assets}
+    absent=sorted(set(ENGINE_ROLES)-names)
+    if absent: raise ValueError("required engine roles missing: "+", ".join(absent))
+
 def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     doc=read_json(path); missing=[k for k in REQUIRED if k not in doc]
     if missing: raise ValueError("manifest missing: "+", ".join(missing))
@@ -79,8 +111,7 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     if not isinstance(doc["font_files"],list) or len(doc["font_files"])!=5:
         raise ValueError("wc3rust pack loader requires exactly five font_files")
     if engine_contract:
-        absent=sorted(set(ENGINE_ROLES)-names)
-        if absent: raise ValueError("required engine roles missing: "+", ".join(absent))
+        validate_engine_contract(doc)
     return doc
 
 def family(name:str)->str:
@@ -175,7 +206,7 @@ def state_brief(state_text:str)->str:
     if "disabled" in s: rules.append("disabled state: lower saturation and luminance while preserving silhouette")
     if "autocast" in s: rules.append("autocast state: precise small circular enchantment rim; centre symbol remains readable")
     if "cooldown" in s: rules.append("cooldown state: preserve clear space for the engine's radial dark cooldown mask; no numbers")
-    if "active" in s: rules.append("active state: stronger focal contrast and brighter bevel")
+    if "active" in s and "inactive" not in s: rules.append("active state: stronger focal contrast and brighter bevel")
     if "inactive" in s: rules.append("inactive state: neutral quiet bevel with no selection highlight")
     if "warn" in s: rules.append("warning state: restrained warm danger accent; never a broad red wash")
     if "empty" in s: rules.append("empty state: unoccupied dark inset, with no invented item or ability")
