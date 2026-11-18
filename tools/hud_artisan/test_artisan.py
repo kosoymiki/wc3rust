@@ -296,7 +296,7 @@ class Tests(unittest.TestCase):
                 workflow={"6":{"inputs":{"text":"old-positive"}},"7":{"inputs":{"text":"old-negative"}},
                   "5":{"inputs":{"width":512,"height":512}},"3":{"inputs":{"seed":1}},"9":{"inputs":{}}}
                 (root/"workflow.json").write_text(json.dumps(workflow))
-                config={"server":f"http://127.0.0.1:{server.server_port}","workflow_file":"workflow.json",
+                config={"schema_version":1,"server":f"http://127.0.0.1:{server.server_port}","workflow_file":"workflow.json",
                   "node_inputs":{"positive_prompt":{"node_id":"6","input":"text"},
                     "negative_prompt":{"node_id":"7","input":"text"},"width":{"node_id":"5","input":"width"},
                     "height":{"node_id":"5","input":"height"},"seed":{"node_id":"3","input":"seed"}},
