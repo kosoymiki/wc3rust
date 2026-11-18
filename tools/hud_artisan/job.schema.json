@@ -141,6 +141,37 @@
     "prompt_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "references": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "license",
+          "purpose"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   }
 }
