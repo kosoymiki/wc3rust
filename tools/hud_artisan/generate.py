@@ -166,6 +166,17 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
         for key in ("visual_tags","tags"):
             if key in a and a[key] is not None and (not isinstance(a[key],list) or any(not isinstance(tag,str) for tag in a[key])):
                 raise ValueError(f"{name}: {key} must be an array of strings")
+        references=a.get("references",[])
+        if not isinstance(references,list) or len(references)>12:
+            raise ValueError(f"{name}: references must be an array with at most 12 entries")
+        for index,reference in enumerate(references):
+            if not isinstance(reference,dict) or not all(
+                isinstance(reference.get(key),str) and reference[key].strip()
+                for key in ("source","license","purpose")
+            ):
+                raise ValueError(f"{name}: reference {index} requires source, license and purpose strings")
+            if "file" in reference and reference["file"] is not None:
+                safe_join_any(path.parent,reference["file"])
     atlas=doc["atlas"].get("commandbuttons") if isinstance(doc["atlas"],dict) else None
     if not isinstance(atlas,dict) or not isinstance(atlas.get("entries"),list) or not atlas["entries"]:
         raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
@@ -226,7 +237,14 @@ def metadata_context(asset:dict[str,Any])->str:
         if isinstance(values,list):
             valid=[str(value).strip() for value in values if isinstance(value,(str,int,float)) and str(value).strip()]
             if valid: fields.append(f"{key}: {', '.join(valid[:20])}")
-    return " | ".join(fields)[:1400]
+    refs=asset.get("references",[])
+    if isinstance(refs,list):
+        for ref in refs[:8]:
+            if isinstance(ref,dict):
+                fields.append("reference: " + str(ref.get("source",""))[:180] +
+                    " [license: " + str(ref.get("license",""))[:100] +
+                    "; purpose: " + str(ref.get("purpose",""))[:160] + "]")
+    return " | ".join(fields)[:1800]
 
 def semantic_brief(asset:dict[str,Any],kind:str)->str:
     name=asset["name"];n=name.lower()
@@ -333,7 +351,8 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{prompt_sha256}".encode())[:16]
     return {"job_id":job_id,"prompt_sha256":prompt_sha256,"asset":name,"output":a["file"],
       "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":seed,"insets":ins,
-      "requires_alpha":alpha,"prompt":prompt,"negative_prompt":negative,
+      "requires_alpha":alpha,"references":a.get("references",[]),
+      "prompt":prompt,"negative_prompt":negative,
       "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
 
 def compile_jobs(doc:dict[str,Any],theme:str,seed:int)->tuple[list[dict],dict]:
@@ -814,9 +833,10 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             records=[]
             for row in results:
                 job=job_map[row["job_id"]]
+                refs=list(cfg.get("references",[]))+list(job.get("references",[]))
                 records.append({"job_id":row["job_id"],"provider":provider,"model":model,
                     "generated_at":row["generated_at"],"license":license_name,
-                    "references":cfg.get("references",[]),"postprocessing":cfg.get("postprocessing",[]),
+                    "references":refs,"postprocessing":cfg.get("postprocessing",[]),
                     "prompt_sha256":job["prompt_sha256"],"output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
             provenance_path.write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
