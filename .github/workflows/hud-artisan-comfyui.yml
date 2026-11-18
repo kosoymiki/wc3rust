@@ -74,7 +74,7 @@ jobs:
           printf '%s' "$WORKFLOW_B64" | base64 --decode > build/hud-artisan/private/comfyui_api_workflow.json
           printf '%s' "$CONFIG_B64" | base64 --decode > build/hud-artisan/private/comfyui.json
           python - <<'PY'
-          import json
+          import json, os
           from pathlib import Path
           p = Path("build/hud-artisan/private")
           cfg = json.loads((p / "comfyui.json").read_text())
@@ -119,9 +119,6 @@ jobs:
             --adapter build/hud-artisan/adapter.json \
             --drop build/hud-artisan/drop \
             --parallel 1
-        env:
-          # Keep the adapter config private; generate.py's dispatcher consumes this file.
-          HUD_ARTISAN_ADAPTER_CONFIG: build/hud-artisan/private/comfyui.json
 
       - name: Ingest, validate and build contact sheet
         run: |
