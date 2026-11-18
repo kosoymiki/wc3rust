@@ -305,7 +305,7 @@ class Tests(unittest.TestCase):
               "output_node_id":"9","request_timeout_seconds":5,"max_wait_seconds":5,"poll_interval_seconds":0.2}
             config_path=root/"comfy.json";config_path.write_text(json.dumps(config))
             job={"job_id":"a1b2c3d4e5f60718","prompt":"a sculpted gold emblem","negative_prompt":"text, watermark",
-              "width":8,"height":8,"requires_alpha":True}
+              "width":8,"height":8,"seed":123456789,"family":"icon","requires_alpha":True}
             job_path=root/"job.json";job_path.write_text(json.dumps(job))
             output=root/"out.png";stderr=io.StringIO()
             with redirect_stdout(io.StringIO()),redirect_stderr(stderr):
@@ -317,8 +317,14 @@ class Tests(unittest.TestCase):
             self.assertEqual(sent["7"]["inputs"]["text"],job["negative_prompt"])
             self.assertEqual(sent["5"]["inputs"]["width"],8)
             self.assertEqual(sent["5"]["inputs"]["height"],8)
-            self.assertEqual(sent["3"]["inputs"]["seed"],int(job["job_id"][:8],16))
+            self.assertEqual(sent["3"]["inputs"]["seed"],job["seed"])
             self.assertEqual(artisan.png_info(output),(8,8,8,6))
+            from unittest import mock
+            with mock.patch.object(comfy,"open_http",return_value=io.BytesIO(b"image-bytes")) as open_local:
+                downloaded=comfy.download_image("http://127.0.0.1:8188",
+                    {"filename":"frame.png","subfolder":"","type":"output"},5)
+            self.assertEqual(downloaded,b"image-bytes")
+            open_local.assert_called_once()
     def test_duplicate_name_path_guard(self):
         with tempfile.TemporaryDirectory() as d:
             m=Path(d)/"m.json";a={"name":"a","file":"same.png","w":1,"h":1,"insets":{"l":0,"t":0,"r":0,"b":0}}
@@ -326,4 +332,44 @@ class Tests(unittest.TestCase):
              "atlas":{"commandbuttons":{"entries":[{"id":"x"}]}},"assets":[a,{**a,"name":"b"}],"font_files":["a","b","c","d","e"]}
             m.write_text(json.dumps(doc))
             with self.assertRaises(ValueError):artisan.load_manifest(m)
+
+    def test_semantic_family_order_and_transparency_contract(self):
+        self.assertEqual(artisan.family("icon_minimap_scout"),"icon")
+        self.assertEqual(artisan.family("minimap_header_normal_216x20"),"hud-strip")
+        self.assertEqual(artisan.family("minimap_frame_normal_216"),"minimap-frame")
+        self.assertEqual(artisan.family("portrait_frame_hero_128"),"portrait-frame")
+        icon={"name":"portrait_frame_hero_128","file":"portrait.png","w":128,"h":128,
+              "insets":{"l":16,"t":16,"r":16,"b":16},"states":["normal"]}
+        job=artisan.make_job(icon,"classic-modern",73)
+        self.assertTrue(job["requires_alpha"])
+        self.assertIn("complete central aperture must be genuinely transparent",job["prompt"])
+        self.assertEqual(job["seed"],artisan.make_job(icon,"classic-modern",73)["seed"])
+        sibling={**icon,"name":"minimap_frame_normal_216"}
+        self.assertNotEqual(job["seed"],artisan.make_job(sibling,"classic-modern",73)["seed"])
+        header={**icon,"name":"minimap_header_normal_216x20"}
+        self.assertFalse(artisan.make_job(header,"classic-modern",73)["requires_alpha"])
+    def test_center_aperture_metric_detects_filled_frame(self):
+        from PIL import Image,ImageDraw
+        valid=Image.new("RGBA",(100,100),(0,0,0,0));draw=ImageDraw.Draw(valid)
+        draw.rectangle((0,0,99,99),fill=(150,100,40,255))
+        draw.rectangle((18,18,81,81),fill=(0,0,0,0))
+        self.assertGreaterEqual(artisan.center_transparent_fraction(valid),0.97)
+        invalid=Image.new("RGBA",(100,100),(120,80,30,255))
+        self.assertLess(artisan.center_transparent_fraction(invalid),0.97)
+    def test_comfyui_loopback_download_uses_proxy_bypass_transport(self):
+        import importlib.util
+        from unittest import mock
+        spec=importlib.util.spec_from_file_location("comfy_adapter",Path(__file__).with_name("comfyui_adapter.py"))
+        comfy=importlib.util.module_from_spec(spec);spec.loader.exec_module(comfy)
+        request=comfy.request.Request("http://127.0.0.1:8188/view")
+        opener=mock.Mock()
+        with mock.patch.object(comfy.request,"build_opener",return_value=opener) as build, \\
+             mock.patch.object(comfy.request,"urlopen") as urlopen:
+            comfy.open_http(request,"http://127.0.0.1:8188",5)
+        build.assert_called_once()
+        handler=build.call_args.args[0]
+        self.assertIsInstance(handler,comfy.request.ProxyHandler)
+        self.assertEqual(handler.proxies,{})
+        opener.open.assert_called_once_with(request,timeout=5)
+        urlopen.assert_not_called()
 if __name__=="__main__":unittest.main()
