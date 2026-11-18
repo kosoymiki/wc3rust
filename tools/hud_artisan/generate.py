@@ -360,7 +360,7 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
     "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
     "Strong silhouette and hierarchy at native UI scale; believable bevels, subtle wear, consistent light direction, "
-    "clean anti-aliased edges, no clutter. "+aperture_instruction))
+    "clean anti-aliased edges, no clutter. "+aperture_instruction)
     negative=("text, typography, letters, digits, words, logos, watermark, signature, screenshot, mockup, "
     "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
@@ -669,9 +669,11 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                 raise ValueError(f"provenance job set mismatch: expected {len(expected)}, received {len(by_id)}")
             for jid,job in expected.items():
                 row=by_id[jid]
-                for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256","seed"):
+                for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256"):
                     if not isinstance(row.get(key),str) or not row[key].strip():
                         raise ValueError(f"{jid}: provenance field {key} is required")
+                if type(row.get("seed")) is not int:
+                    raise ValueError(f"{jid}: provenance field seed must be an integer")
                 if row["prompt_sha256"] != job["prompt_sha256"] or row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
                     raise ValueError(f"{jid}: positive prompt hash mismatch")
                 if type(row["seed"]) is not int or row["seed"] != job["seed"]:
