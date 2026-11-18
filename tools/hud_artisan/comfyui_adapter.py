@@ -99,23 +99,32 @@ def main(argv=None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise ComfyError("Pillow is required; install tools/hud_artisan/requirements.txt") from exc
 
         job = read_json(args.job_json)
         cfg = read_json(args.config)
         if cfg.get("schema_version") != 1:
             raise ComfyError("unsupported ComfyUI adapter config schema_version (expected 1)")
         base = os.environ.get("COMFYUI_URL", cfg.get("server", "http://127.0.0.1:8188"))
+        if not isinstance(base,str) or not base.strip():
+            raise ComfyError("ComfyUI server URL must be a non-empty string")
         parsed = parse.urlsplit(base)
         if (parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password
             or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
             raise ComfyError("server must be a root http(s) URL without embedded credentials, path, query or fragment")
-        timeout = int(cfg.get("request_timeout_seconds", 60))
-        max_wait = int(cfg.get("max_wait_seconds", 1800))
-        interval = float(cfg.get("poll_interval_seconds", 1.0))
-        if not 1 <= timeout <= 300 or not 1 <= max_wait <= 86400 or not 0.2 <= interval <= 30:
+        timeout = cfg.get("request_timeout_seconds", 60)
+        max_wait = cfg.get("max_wait_seconds", 1800)
+        interval = cfg.get("poll_interval_seconds", 1.0)
+        if (type(timeout) is not int or type(max_wait) is not int or type(interval) not in (int,float)
+            or not 1 <= timeout <= 300 or not 1 <= max_wait <= 86400 or not 0.2 <= interval <= 30):
             raise ComfyError("invalid request timeout / max wait / poll interval")
-        workflow_file = Path(cfg.get("workflow_file", ""))
+        workflow_value = cfg.get("workflow_file")
+        if not isinstance(workflow_value,str) or not workflow_value.strip():
+            raise ComfyError("config.workflow_file must be a non-empty path")
+        workflow_file = Path(workflow_value)
         if not workflow_file.is_absolute():
             workflow_file = (args.config.resolve().parent / workflow_file).resolve()
         workflow = read_json(workflow_file)
