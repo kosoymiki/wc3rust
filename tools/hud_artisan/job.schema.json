@@ -5,21 +5,22 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "job_id",
     "asset",
-    "output",
-    "width",
-    "height",
     "family",
+    "height",
+    "insets",
+    "job_id",
+    "negative_prompt",
+    "negative_prompt_sha256",
+    "output",
+    "output_contract",
+    "prompt",
+    "prompt_sha256",
+    "requires_alpha",
+    "seed",
     "state",
     "theme",
-    "seed",
-    "insets",
-    "requires_alpha",
-    "prompt",
-    "negative_prompt",
-    "output_contract",
-    "prompt_sha256"
+    "width"
   ],
   "properties": {
     "job_id": {
@@ -172,6 +173,10 @@
           }
         }
       }
+    },
+    "negative_prompt_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
     }
   }
 }
