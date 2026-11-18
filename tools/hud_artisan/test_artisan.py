@@ -37,6 +37,32 @@ class Tests(unittest.TestCase):
             m.write_text(json.dumps(doc));self.assertEqual(len(artisan.load_manifest(m)["assets"]),2)
             out=root/"plan";self.assertEqual(artisan.plan(m,out,"classic-modern",12,False),0)
             self.assertEqual(json.loads((out/"jobs.json").read_text())["job_count"],2)
+    def test_ingest_assembles_atlas_from_separate_cells(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);manifest=root/"manifest.json";drop=root/"drop";out=root/"pack";drop.mkdir()
+            panel={"name":"panel","file":"panels/panel.png","w":16,"h":16,"insets":{"l":2,"t":2,"r":2,"b":2},"states":["normal"]}
+            atlas={"name":"atlas","file":"atlas/cmd.png","w":16,"h":16,"insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
+            doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
+             "safe_area_1080p":{"landscape":[1,1,1,1],"portrait":[1,1,1,1]},"command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+             "control_groups":{"count":10,"cell":[44,44]},"atlas":{"commandbuttons":{"file":"atlas/cmd.png","columns":1,"rows":1,
+             "cell":[8,8],"entries":[{"id":"icon_a","x":0,"y":0,"w":8,"h":8}]}},
+             "assets":[panel,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            manifest.write_text(json.dumps(doc))
+            jobs=root/"jobs";artisan.plan(manifest,jobs,"classic-modern",3,False)
+            payload=json.loads((jobs/"jobs.json").read_text())
+            self.assertEqual(payload["job_count"],2)
+            Image.new("RGBA",(16,16),(40,35,30,255)).save(drop/"panels/panel.png")
+            cell=Image.new("RGBA",(8,8),(0,0,0,0))
+            for x in range(2,6):
+                for y in range(2,6):cell.putpixel((x,y),(220,150,40,255))
+            (drop/"atlas_sources").mkdir();cell.save(drop/"atlas_sources/icon-a.png")
+            (drop/"fonts").mkdir()
+            for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
+            rc=artisan.ingest(manifest,jobs/"jobs.json",drop,out,"strict",False)
+            self.assertEqual(rc,0)
+            self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
+            self.assertEqual(artisan.validate(manifest,out,False,False),0)
     def test_duplicate_name_path_guard(self):
         with tempfile.TemporaryDirectory() as d:
             m=Path(d)/"m.json";a={"name":"a","file":"same.png","w":1,"h":1,"insets":{"l":0,"t":0,"r":0,"b":0}}
