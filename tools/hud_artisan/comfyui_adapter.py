@@ -95,6 +95,8 @@ def main(argv=None) -> int:
 
         job = read_json(args.job_json)
         cfg = read_json(args.config)
+        if cfg.get("schema_version") != 1:
+            raise ComfyError("unsupported ComfyUI adapter config schema_version (expected 1)")
         base = os.environ.get("COMFYUI_URL", cfg.get("server", "http://127.0.0.1:8188"))
         parsed = parse.urlsplit(base)
         if (parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password
