@@ -114,7 +114,7 @@ def semantic_brief(name:str,kind:str)->str:
       (("attack","sword","damage"),"a forged blade with recognisable guard, grip and cutting edge"),
       (("armor","armour","shield","defense"),"a heraldic shield with a raised boss and layered metal rim"),
       (("health","life","heal","hp"),"a vitality emblem with a strong heart or healing motif"),
-      (("mana","magic","spell","rune"),"a faceted arcane crystal or contained magical-energy motif"),
+      (("mana","magic","rune"),"a faceted arcane crystal or contained magical-energy motif"),
       (("move","rally"),"a directional movement arrow or rally pennant with strong forward silhouette"),
       (("cancel","close","stop"),"a decisive crossed-blade or barred cancellation motif, not a text glyph"),
       (("build","repair"),"a builder hammer, tool or scaffold motif"),
@@ -149,6 +149,8 @@ def semantic_brief(name:str,kind:str)->str:
             if any(term in n for term in terms):
                 return description
         semantic=n.replace("_"," ").replace("icon ","").replace("ability ","").replace("item ","")
+        if "spell" in n:
+            return f"an original spell emblem for {semantic}, with an effect-specific silhouette and no generic placeholder rune"
         return f"a distinctive emblem representing {semantic}; never substitute a generic rune"
     if kind=="portrait-frame":
         return "a portrait surround only, with an empty aperture reserved for the separately rendered face"
