@@ -380,6 +380,12 @@ def compile_jobs(doc:dict[str,Any],theme:str,seed:int)->tuple[list[dict],dict]:
                     "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
             jobs.append(make_job(pseudo,theme,seed))
             source_file=file
+        else:
+            if source_file==atlas_file:
+                raise ValueError(f"atlas cell {ident}: atlas cannot use itself as a cell source")
+            source=by_file[source_file]
+            if (source["w"],source["h"])!=(w,h):
+                raise ValueError(f"atlas cell {ident}: source asset {source['name']} is {source['w']}x{source['h']}, cell is {w}x{h}")
         cells.append({"id":ident,"x":x,"y":y,"w":w,"h":h,"source_asset":source_asset,"source_file":source_file})
     outputs=[str(safe_rel(job["output"])) for job in jobs]
     if len(outputs)!=len(set(outputs)):
