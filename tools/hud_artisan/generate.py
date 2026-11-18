@@ -58,6 +58,8 @@ def validate_engine_contract(doc:dict[str,Any])->None:
     """Fail closed when a claimed production manifest drifts from the Rust HUD contract."""
     expected_resolution={"landscape":[2414,1080],"portrait":[1080,2414]}
     expected_safe={"landscape":[48,80,48,48],"portrait":[24,96,24,64]}
+    if doc.get("design_height")!=768:
+        raise ValueError(f"engine contract design_height must be 768, found {doc.get('design_height')}")
     if doc.get("reference_resolution")!=expected_resolution:
         raise ValueError(f"engine contract reference_resolution mismatch: expected {expected_resolution}")
     if doc.get("safe_area_1080p")!=expected_safe:
@@ -110,6 +112,9 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
         raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
     if not isinstance(doc["font_files"],list) or len(doc["font_files"])!=5:
         raise ValueError("wc3rust pack loader requires exactly five font_files")
+    for font in doc["font_files"]:
+        if not isinstance(font,str) or not font or Path(font).name!=font or font in (".",".."):
+            raise ValueError(f"font_files entries must be safe basenames, got {font!r}")
     if engine_contract:
         validate_engine_contract(doc)
     return doc
