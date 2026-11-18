@@ -236,7 +236,7 @@ class Tests(unittest.TestCase):
                 "else: d.line((0,0,w-1,h-1),fill=(90,80,65,255),width=1)\n"
                 "im.save(sys.argv[2],format='PNG')\n",encoding="utf-8")
             adapter=root/"adapter.json"
-            adapter.write_text(json.dumps({"provider":"test-provider","model":"test-model",
+            adapter.write_text(json.dumps({"schema_version":1,"provider":"test-provider","model":"test-model",
               "license":"clean-room test fixture","working_directory":str(root),
               "command":[sys.executable,str(adapter_script),"{job_json}","{output_path}"],
               "environment":["HUD_ARTISAN_TEST_SECRET"],"timeout_seconds":20,"retries":1,"max_parallel":2}))
