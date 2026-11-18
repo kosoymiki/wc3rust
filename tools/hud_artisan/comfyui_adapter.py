@@ -120,10 +120,13 @@ def main(argv=None) -> int:
         for key in ("prompt", "negative_prompt"):
             if not isinstance(job.get(key), str) or not job[key].strip():
                 raise ComfyError(f"job.{key} must be a non-empty string")
-        for key in ("width", "height", "seed"):
+        for key in ("width", "height"):
             value = job.get(key)
-            if type(value) is not int or value < 1 or value > (8192 if key != "seed" else 4294967295):
+            if type(value) is not int or value < 1 or value > 8192:
                 raise ComfyError(f"job.{key} is outside the supported integer range")
+        seed = job.get("seed")
+        if type(seed) is not int or seed < 0 or seed > 4294967295:
+            raise ComfyError("job.seed must be an unsigned 32-bit integer")
         if Path(args.output).suffix.lower() != ".png":
             raise ComfyError("output path must end in .png")
         args.output.parent.mkdir(parents=True, exist_ok=True)
