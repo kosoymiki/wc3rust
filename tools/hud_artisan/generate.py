@@ -729,6 +729,10 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
 def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
     cfg=read_json(adapter_path)
+    if cfg.get("schema_version")!=1:
+        raise ValueError("unsupported adapter config schema_version (expected 1)")
+    if "name" in cfg and (not isinstance(cfg["name"],str) or not cfg["name"].strip()):
+        raise ValueError("adapter.name must be a non-empty string")
     jobs=payload["jobs"]
     command=cfg.get("command")
     if not isinstance(command,list) or not command or not all(isinstance(x,str) for x in command):
@@ -738,8 +742,11 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     provider=cfg.get("provider");model=cfg.get("model");license_name=cfg.get("license")
     if not all(isinstance(x,str) and x.strip() for x in (provider,model,license_name)):
         raise ValueError("adapter provider, model and license strings are required for provenance")
-    timeout=int(cfg.get("timeout_seconds",1800));retries=int(cfg.get("retries",1))
-    parallel=int(parallel_override if parallel_override is not None else cfg.get("max_parallel",1))
+    timeout=cfg.get("timeout_seconds",1800);retries=cfg.get("retries",1)
+    configured_parallel=cfg.get("max_parallel",1)
+    if any(type(value) is not int for value in (timeout,retries,configured_parallel)):
+        raise ValueError("adapter timeout_seconds, retries and max_parallel must be integers")
+    parallel=int(parallel_override if parallel_override is not None else configured_parallel)
     if not 1<=timeout<=86400 or not 0<=retries<=5 or not 1<=parallel<=MAX_PARALLEL:
         raise ValueError(f"adapter timeout/retries/max_parallel outside safe limits (parallel max {MAX_PARALLEL})")
     allow=cfg.get("environment",[])
@@ -758,6 +765,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     ids=set();paths=set()
     for job in jobs:
         jid=job.get("job_id");rel=safe_rel(job.get("output",""))
+        # Resolve and validate all final output paths before any worker is started.
+        safe_join(drop,rel)
         if not isinstance(jid,str) or jid in ids:raise ValueError(f"missing/duplicate job id: {jid!r}")
         prompt=job.get("prompt","")
         if not isinstance(prompt,str) or job.get("prompt_sha256")!=sha(prompt.encode("utf-8")):
@@ -768,6 +777,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
         ids.add(jid);paths.add(str(rel))
     cwd_value=cfg.get("working_directory",".")
+    if not isinstance(cwd_value,str) or not cwd_value.strip():
+        raise ValueError("adapter.working_directory must be a non-empty string")
     cwd=Path(cwd_value).expanduser()
     if not cwd.is_absolute():cwd=(adapter_path.resolve().parent/cwd).resolve()
     if not cwd.is_dir():raise ValueError(f"adapter working_directory missing: {cwd}")
