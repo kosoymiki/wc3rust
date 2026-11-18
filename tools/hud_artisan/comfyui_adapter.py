@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -96,8 +97,9 @@ def main(argv=None) -> int:
         cfg = read_json(args.config)
         base = os.environ.get("COMFYUI_URL", cfg.get("server", "http://127.0.0.1:8188"))
         parsed = parse.urlsplit(base)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
-            raise ComfyError("server must be an http(s) URL without embedded credentials")
+        if (parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+            raise ComfyError("server must be a root http(s) URL without embedded credentials, path, query or fragment")
         timeout = int(cfg.get("request_timeout_seconds", 60))
         max_wait = int(cfg.get("max_wait_seconds", 1800))
         interval = float(cfg.get("poll_interval_seconds", 1.0))
@@ -140,8 +142,9 @@ def main(argv=None) -> int:
             if images:
                 image_meta = images[0]
                 break
-            if record.get("status", {}).get("status_str") == "error":
-                raise ComfyError(f"ComfyUI generation failed: {record.get('status')}")
+            status = record.get("status", {})
+            if isinstance(status, dict) and status.get("status_str") == "error":
+                raise ComfyError(f"ComfyUI generation failed: {status}")
             time.sleep(interval)
         if image_meta is None:
             raise ComfyError(f"ComfyUI job timed out after {max_wait}s (prompt_id={prompt_id})")
@@ -158,9 +161,13 @@ def main(argv=None) -> int:
                 if job.get("requires_alpha") and rgba.getchannel("A").getextrema() == (255, 255):
                     raise ComfyError("this job requires a transparent silhouette; workflow output is fully opaque")
                 args.output.parent.mkdir(parents=True, exist_ok=True)
-                temporary = args.output.with_name(args.output.name + ".tmp")
-                rgba.save(temporary, format="PNG", optimize=True, compress_level=9)
-                temporary.replace(args.output)
+                with tempfile.NamedTemporaryFile(dir=args.output.parent, suffix=".png.tmp", delete=False) as tmp:
+                    temporary = Path(tmp.name)
+                try:
+                    rgba.save(temporary, format="PNG", optimize=True, compress_level=9)
+                    temporary.replace(args.output)
+                finally:
+                    temporary.unlink(missing_ok=True)
         except ComfyError:
             raise
         except Exception as exc:
