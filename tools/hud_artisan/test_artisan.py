@@ -48,6 +48,27 @@ class Tests(unittest.TestCase):
             self.assertEqual(payload["atlas"]["cells"][0]["source_file"],"icons/a.png")
             self.assertEqual(payload["atlas"]["cells"][0]["source_asset"],"icon_a")
             artisan.verify_plan(m,out/"jobs.json")
+    def test_atlas_rejects_mismatched_source_dimensions_and_self_reference(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m=root/"manifest.json"
+            icon={"name":"icon_a","file":"icons/a.png","w":16,"h":16,
+                  "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
+            atlas={"name":"atlas","file":"atlas/commands.png","w":32,"h":32,
+                   "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
+            def document(source,cell_w=8,cell_h=8):
+                return {"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
+                 "safe_area_1080p":{"landscape":[1,1,1,1],"portrait":[1,1,1,1]},
+                 "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+                 "control_groups":{"count":10,"cell":[44,44]},
+                 "atlas":{"commandbuttons":{"file":"atlas/commands.png","entries":[
+                    {"id":"cell_a","source_asset":source,"x":0,"y":0,"w":cell_w,"h":cell_h}]}},
+                 "assets":[icon,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            m.write_text(json.dumps(document("icon_a")))
+            with self.assertRaisesRegex(ValueError,"source asset icon_a is 16x16"):
+                artisan.plan(m,root/"plan-bad-size","classic-modern",2,False)
+            m.write_text(json.dumps(document("atlas")))
+            with self.assertRaisesRegex(ValueError,"atlas cannot use itself"):
+                artisan.plan(m,root/"plan-self","classic-modern",2,False)
     def test_symlink_alias_rejected_even_when_target_is_inside_root(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);target=root/"real.png";alias=root/"alias.png"
