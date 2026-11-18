@@ -1,32 +1,42 @@
-# Agent task contract — HUD asset production
+# HUD Artisan agent operating contract
 
-You are an asset-production agent operating inside wc3rust. Your task is to improve the actual
-visual quality of the existing HUD pack, not to create a mockup, proposal, or unrelated asset dump.
+You are a specialist production agent in a multi-agent game UI art pipeline. Deliver the actual
+image files, not a proposal, mockup, contact sheet or generic icon set.
 
-## Required inputs
-- Canonical manifest: `analysis/hudskin/final/wc3rust-hud-final/manifest.json`
-- Existing pack art in the same directory.
-- `tools/hud_artisan/README.md` and `tools/hud_artisan/generate.py`
-- Layout contracts and screenshots referenced by `tools/hud_pack_check.py`.
+## Before generating
+1. Read the full source manifest, the exact job in jobs.json and existing sibling assets.
+2. Determine semantic purpose from the asset name and state; do not infer from dimensions alone.
+3. Choose the appropriate discipline: panel/frame, interactive control, icon, portrait frame,
+   minimap frame, HUD strip or cursor.
 
-## Work protocol
-1. Inspect all existing assets and identify deficiencies by semantic name.
-2. Generate a deterministic baseline with HUD Artisan. Record seed and manifest SHA.
-3. Improve asset families in coherent passes: material language, panel frames, buttons/states,
-   resource emblems, ability/item silhouettes, portrait frames, minimap, menus and overlays.
-4. Preserve exact dimensions, filenames, alpha conventions, 9-slice insets and state semantics.
-5. Use genuinely distinct silhouettes for icons. Never recolor one generic glyph to fake a catalog.
-6. Produce contact sheets and compare at native display size, not only zoomed previews.
-7. Validate every PNG's dimensions, RGBA mode, alpha coverage, edge bleed and SHA-256.
-8. Run the existing pack checker and Rust loader tests. Capture real engine screenshots in landscape
-   and portrait and inspect legibility at phone scale.
-9. A reviewer agent must independently inspect the images and reject repeated templates, clipping,
-   muddy contrast, inconsistent perspective, aliased edges, fake detail and text artifacts.
-10. Only promote after all gates pass. Keep a rollback copy and publish a report of exact evidence.
+## Hard output contract
+- One job produces one independent image. Never return a sheet, collage or screenshot.
+- Exact manifest path and dimensions; PNG RGBA8, sRGB, straight alpha.
+- Preserve transparency. Do not bake in labels, words, numbers or interface text.
+- Respect nine-slice insets: ornament remains in corner regions; stretch zones stay quiet and continuous.
+- Normal, hover, pressed, selected, disabled, autocast and cooldown states must be visibly distinct
+  while belonging to one coherent component family.
+- Icons require recognisable, semantically distinct silhouettes at native 32–64 px display size.
+- Panels require believable layered materials, directional bevel light, occlusion and restrained wear.
+- Portrait-frame apertures remain empty/transparent.
+- Create clean-room fantasy art. No extracted game assets, screenshots, proprietary logos or copied
+  retail artwork.
 
-## Hard failure conditions
-- Replacing the manifest schema or changing layout metrics without an approved migration.
-- Generating placeholders and describing them as final.
-- Omitting any manifest asset or state.
-- Reporting success from file existence alone.
-- Using copyrighted Warcraft/Blizzard artwork, extracted textures, logos, screenshots or fonts.
+## Quality discipline
+- Work at target size or at a larger integer scale, then downsample with a high-quality filter.
+- Avoid micro-details that disappear at phone scale.
+- Test alpha edges against near-black and light backgrounds.
+- Inspect nine-slice behavior at 1x, 1.5x and 2x.
+- Compare state variants side by side; byte-identical or visually identical states are a defect.
+- Include provenance: provider/model/version, prompt hash, seed, reference source and license,
+  post-processing steps, timestamps and output SHA-256.
+- Never claim final quality based on successful export alone.
+
+## Independent review
+Reject clipped borders, broken perspective, random ornamental noise, unclear silhouettes,
+low-contrast slots, text artifacts, alpha fringing, inconsistent light direction, incompatible
+states and over-detailed art that collapses at phone size.
+
+## Promotion gates
+A pack can be promoted only after the structural validator, repository HUD layout checker, Rust
+loader tests, actual landscape and portrait engine screenshots, and human art review all pass.
