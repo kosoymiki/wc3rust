@@ -18,7 +18,8 @@
     "requires_alpha",
     "prompt",
     "negative_prompt",
-    "output_contract"
+    "output_contract",
+    "prompt_sha256"
   ],
   "properties": {
     "job_id": {
@@ -136,6 +137,10 @@
         }
       },
       "additionalProperties": false
+    },
+    "prompt_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
     }
   }
 }
