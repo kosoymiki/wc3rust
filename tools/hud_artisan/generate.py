@@ -236,7 +236,9 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
     "chromatic aberration, noisy microtexture, random ornament")
-    return {"job_id":sha(f"{name}:{w}x{h}:{seed}:{theme}".encode())[:16],"asset":name,"output":a["file"],
+    prompt_sha256=sha(prompt.encode("utf-8"))
+    job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{prompt_sha256}".encode())[:16]
+    return {"job_id":job_id,"prompt_sha256":prompt_sha256,"asset":name,"output":a["file"],
       "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":seed,"insets":ins,
       "requires_alpha":alpha,"prompt":prompt,"negative_prompt":negative,
       "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
@@ -284,8 +286,8 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
             jobs.append(make_job(pseudo,theme,seed))
             source_file=file
         cells.append({"id":ident,"x":x,"y":y,"w":w,"h":h,"source_asset":source_asset,"source_file":source_file})
-    payload={"tool":"HUD Artisan","version":VERSION,"theme":theme,"seed":seed,
-      "source_manifest_sha256":sha(manifest.read_bytes()),"job_count":len(jobs),"jobs":jobs,
+    payload={"tool":"HUD Artisan","schema_version":1,"version":VERSION,"theme":theme,"seed":seed,
+      "engine_contract":engine_contract,"source_manifest_sha256":sha(manifest.read_bytes()),"job_count":len(jobs),"jobs":jobs,
       "atlas":{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}}
     (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     pd=out/"prompts"
@@ -430,10 +432,16 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
     return int(bool(fail))
 
 def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
-    doc=load_manifest(manifest);plan_doc=read_json(jobs_path);mods=pil_modules()
+    plan_doc=read_json(jobs_path);doc=load_manifest(manifest,bool(plan_doc.get("engine_contract")));mods=pil_modules()
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
+    if plan_doc.get("tool")!="HUD Artisan" or plan_doc.get("schema_version")!=1:
+        raise ValueError("unsupported jobs.json tool/schema")
     if plan_doc.get("source_manifest_sha256") != sha(manifest.read_bytes()):
         raise ValueError("jobs.json was compiled from a different manifest revision")
+    if not isinstance(plan_doc.get("engine_contract"),bool):
+        raise ValueError("jobs.json is missing its engine_contract flag")
+    if any(job.get("prompt_sha256")!=sha(job.get("prompt","").encode("utf-8")) for job in plan_doc.get("jobs",[])):
+        raise ValueError("jobs.json contains a prompt whose prompt_sha256 does not match")
     out=out.resolve()
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"staging output must be empty; refusing to overwrite existing files: {out}")
