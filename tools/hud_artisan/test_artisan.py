@@ -109,7 +109,8 @@ class Tests(unittest.TestCase):
     def test_engine_contract_exact_manifest(self):
         assets=[]
         for i,name in enumerate(artisan.ENGINE_ROLES):
-            assets.append({"name":name,"file":f"assets/{i}.png","w":64,"h":64})
+            w,h=artisan.ENGINE_ROLE_DIMENSIONS[name]
+            assets.append({"name":name,"file":f"assets/{i}.png","w":w,"h":h})
         assets.append({"name":"commandbuttons_atlas","file":"atlas/commandbuttons.png","w":2048,"h":2048})
         for i in range(67):
             assets.append({"name":f"extra_{i}","file":f"extra/{i}.png","w":64,"h":64})
@@ -120,6 +121,11 @@ class Tests(unittest.TestCase):
           "assets":assets,"atlas":{"commandbuttons":{"file":"atlas/commandbuttons.png","entries":[{} for _ in range(20)]}}}
         self.assertEqual(len(assets),92)
         artisan.validate_engine_contract(doc)
+        wrong=next(a for a in assets if a["name"]=="button_glow_64")
+        wrong["w"]=63
+        with self.assertRaisesRegex(ValueError,"button_glow_64 must be 64x64"):
+            artisan.validate_engine_contract(doc)
+        wrong["w"]=64
         doc["atlas"]["commandbuttons"]["entries"].pop()
         with self.assertRaisesRegex(ValueError,"20 entries"):
             artisan.validate_engine_contract(doc)
