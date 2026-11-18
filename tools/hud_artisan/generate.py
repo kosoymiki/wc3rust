@@ -37,8 +37,10 @@ THEMES = {
 def sha(data:bytes)->str: return hashlib.sha256(data).hexdigest()
 def slug(s:str)->str: return re.sub(r"[^a-z0-9_-]+","-",s.lower()).strip("-") or "asset"
 def safe_rel(value:str)->Path:
+    if not isinstance(value,str) or not value or "\\" in value:
+        raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     p=Path(value)
-    if not isinstance(value,str) or not value or "\\" in value or p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
+    if p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
         raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     return p
 
@@ -105,6 +107,8 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
             if k not in a: raise ValueError(f"assets[{i}] missing {k}")
         name=a["name"]
         if not isinstance(name,str) or not name.strip() or name in names: raise ValueError(f"invalid/duplicate asset name: {name!r}")
+        if not isinstance(a["file"],str):
+            raise ValueError(f"{name}: file must be a relative PNG path")
         names.add(name); rel=safe_rel(a["file"])
         if str(rel) in files: raise ValueError(f"duplicate asset file: {rel}")
         files.add(str(rel)); w,h=a["w"],a["h"]
@@ -127,6 +131,18 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     atlas=doc["atlas"].get("commandbuttons") if isinstance(doc["atlas"],dict) else None
     if not isinstance(atlas,dict) or not isinstance(atlas.get("entries"),list) or not atlas["entries"]:
         raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
+    for index,entry in enumerate(atlas["entries"]):
+        if not isinstance(entry,dict):
+            raise ValueError(f"atlas entry {index} must be an object")
+        if not isinstance(entry.get("id"),str) or not entry["id"].strip():
+            raise ValueError(f"atlas entry {index} requires a non-empty string id")
+        for key in ("x","y","w","h"):
+            value=entry.get(key)
+            if type(value) not in (int,float) or not math.isfinite(value) or not float(value).is_integer():
+                raise ValueError(f"atlas entry {entry['id']}: {key} must be a finite integer")
+        for key in ("source_asset","asset","source_file"):
+            if key in entry and entry[key] is not None and not isinstance(entry[key],str):
+                raise ValueError(f"atlas entry {entry['id']}: {key} must be a string")
     if not isinstance(doc["font_files"],list) or len(doc["font_files"])!=5:
         raise ValueError("wc3rust pack loader requires exactly five font_files")
     for font in doc["font_files"]:
@@ -327,6 +343,9 @@ def compile_jobs(doc:dict[str,Any],theme:str,seed:int)->tuple[list[dict],dict]:
             jobs.append(make_job(pseudo,theme,seed))
             source_file=file
         cells.append({"id":ident,"x":x,"y":y,"w":w,"h":h,"source_asset":source_asset,"source_file":source_file})
+    outputs=[str(safe_rel(job["output"])) for job in jobs]
+    if len(outputs)!=len(set(outputs)):
+        raise ValueError("compiled jobs contain duplicate output paths")
     return jobs,{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}
 
 def verify_plan(manifest:Path,jobs_path:Path)->tuple[dict[str,Any],dict[str,Any]]:
