@@ -1,66 +1,99 @@
 # HUD Artisan 1.0
 
-HUD Artisan is the provider-neutral art production pipeline for wc3rust. It compiles the canonical
-HUD manifest into independent machine-readable jobs. Any coding/art agent or image model can
-consume jobs.json, generate one image per job and return files in the drop directory.
+HUD Artisan is the provider-neutral art-production and quality-assurance pipeline for wc3rust.
+It compiles the authoritative HUD manifest into independent generation jobs. Any image model,
+human artist or coding agent can consume the jobs, deliver PNG files, and return them through a
+strict, provenance-verified import stage.
 
 ## Install
 
-Python 3.10+ is required. Planning and PNG structure checks use only the standard library.
-Pillow is required for image normalization, pixel QA and contact sheets.
+Python 3.10+ is required. Planning and PNG structure validation use the standard library.
+Pillow is required for normalization, pixel inspection and contact sheets.
 
-    python3 -m pip install -r tools/hud_artisan/requirements.txt
-    python3 -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
+~~~sh
+python3 -m pip install -r tools/hud_artisan/requirements.txt
+python3 -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
+~~~
 
-## Workflow
+## End-to-end pipeline
 
-First inspect the engine contract reference. It is explicitly NOT an invented runtime manifest:
+First write the verified engine contract reference. It is explicitly not an invented asset manifest.
 
-    python3 tools/hud_artisan/generate.py profile --out build/hud-artisan/engine-profile.json
+~~~sh
+python3 tools/hud_artisan/generate.py profile \
+  --out build/hud-artisan/engine-profile.json
+~~~
 
-Compile one task per real manifest asset:
+Compile jobs from the actual pack manifest. The 24 role guard is optional when working on a subset.
 
-    python3 tools/hud_artisan/generate.py plan       --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json       --out build/hud-artisan/jobs --theme classic-modern --seed 20261118 --engine-contract
+~~~sh
+python3 tools/hud_artisan/generate.py plan \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
+  --out build/hud-artisan/jobs \
+  --theme classic-modern --seed 20261118 --engine-contract
+~~~
 
-Agents read jobs.json and AGENT_BRIEF.md; each returns exactly one PNG under its declared relative path
-in the drop folder. Import to a separate staging directory:
+Agents read jobs.json and AGENT_BRIEF.md and write one PNG per job into the drop directory.
+The atlas is not a single generative image: its individual cells are separate jobs or explicitly
+mapped source assets, then HUD Artisan composites the command-buttons atlas using exact manifest
+coordinates. This avoids model-created grids, inconsistent cell sizes and hidden overlaps.
 
-    python3 tools/hud_artisan/generate.py ingest       --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json       --drop build/hud-artisan/drop --out build/hud-artisan/pack
+Import outputs into an isolated staging pack. The plan file is mandatory; it binds generated outputs
+to the exact manifest SHA, job IDs and prompts.
 
-Run technical QA and build a human review sheet:
+~~~sh
+python3 tools/hud_artisan/generate.py ingest \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
+  --jobs build/hud-artisan/jobs/jobs.json \
+  --drop build/hud-artisan/drop \
+  --out build/hud-artisan/pack
+~~~
 
-    python3 tools/hud_artisan/generate.py validate       --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json       --pack build/hud-artisan/pack --pixels
-    python3 tools/hud_artisan/generate.py contact-sheet       --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json       --pack build/hud-artisan/pack --out build/hud-artisan/contact-sheet.png
+Each job requires provenance in drop/provenance.json. The importer checks the job set, provider,
+model, generation timestamp, license declaration, prompt SHA-256 and generated PNG SHA-256 before
+importing. This makes the output auditable and detects stale or substituted files.
 
-Strict dimension matching is the default. Use contain/crop only when explicitly acceptable; non-uniform
-stretch is never a default. Opaque icons are rejected unless overridden. Font files are dependencies
-and are never fabricated or replaced with empty stubs.
+Run structural and pixel QA:
+
+~~~sh
+python3 tools/hud_artisan/generate.py validate \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
+  --pack build/hud-artisan/pack --pixels
+python3 tools/hud_artisan/generate.py contact-sheet \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
+  --pack build/hud-artisan/pack \
+  --out build/hud-artisan/contact-sheet.png
+~~~
+
+Strict dimensions are the default. Use contain/crop only when explicitly acceptable. Non-uniform
+stretch is never implicit. Opaque icons are rejected unless overridden. Five font files are runtime
+dependencies; they are copied only when supplied and are never replaced with empty stubs.
 
 ## Verified engine contract
 
-The profile records known constraints: design height 768; 2414x1080 landscape and 1080x2414 portrait
-references; safe areas; 4x3 command card with 64 px cells and 4 px gap; ten 44 px control groups;
-2048x2048 command-buttons atlas with twenty entries; and 24 unique asset names required by the Rust
-skin/pack role contract and loader tests.
+engine_profile.json records known constraints: 768 design height; 2414x1080 landscape and
+1080x2414 portrait references; safe areas; a 4x3 command card with 64 px cells and 4 px gap;
+ten 44 px control groups; a 2048x2048 command-buttons atlas with 20 entries; and the 24 unique
+asset names required by PACK_ROLE_ASSETS and the pack loader tests.
 
-The current repository tree does not contain the referenced final asset manifest or its PNG/font
-payload. The generator therefore requires a real manifest for planning and refuses to invent missing
-asset paths, dimensions, nine-slice insets, fonts or the remaining asset inventory. This prevents a
-false-success output that looks plausible but cannot load in the engine.
+The current repository tree does not contain the referenced final pack manifest or its PNG/font
+payload. HUD Artisan therefore requires a real manifest for generation and refuses to guess the
+missing filenames, dimensions, 9-slice insets, font binaries or complete 92-asset inventory. This
+is intentional: a plausible-looking fabricated manifest is not an engine-compatible pack.
 
 ## Quality gates
 
-Manifest checks: required top-level schema, unique names and paths, safe relative PNG paths, bounded
-dimensions, finite non-negative insets, exactly five font file declarations and non-empty atlas cells.
-
-PNG checks: signature, chunk bounds, every CRC, valid IHDR, exact dimensions, RGBA8, IDAT, IEND and
-no trailing bytes. Pixel QA checks decodability, alpha bounds, sampled colour diversity and variance;
-these heuristics catch blank/flat placeholders but do not replace art review.
-
-Atlas checks: atlas file must resolve to an assets entry; all cells must be in bounds and non-overlapping.
-Delivery checks: every image and all five fonts must exist; byte-identical duplicate images fail.
-Runtime acceptance additionally requires tools/hud_pack_check.py, Rust loader tests, in-engine
-landscape/portrait screenshots and human art review.
+- Manifest: required schema, unique names/paths, safe relative PNG paths, bounded dimensions,
+  finite non-negative insets, exactly five font declarations and non-empty atlas cell records.
+- PNG: signature, chunk bounds, CRCs, IHDR, exact dimensions, RGBA8, IDAT, IEND and no trailing data.
+- Pixel QA: full decode, non-empty alpha bounds, sampled colour diversity and image variance.
+  Heuristics catch blank or flat placeholders; they do not declare art beautiful.
+- Atlas: atlas image resolves to a manifest asset; cells are in bounds and do not overlap.
+- Provenance: every image job must match a job ID, prompt hash and output hash.
+- Delivery: every declared PNG, atlas and all five font dependencies must exist; byte-identical
+  assets fail.
+- Runtime acceptance: also run tools/hud_pack_check.py, Rust loader tests, actual landscape and
+  portrait screenshots, and human art review.
 
 A structural PASS is not artistic approval. Inspect each image at native phone size and reject
 low-quality model output even when its file contract passes.
