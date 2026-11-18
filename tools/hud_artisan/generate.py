@@ -25,6 +25,32 @@ ENGINE_ROLES = [
 "button_border_autocast_64","button_border_disabled_64","button_border_empty_64","control_group_button_active_44","control_group_button_inactive_44",
 "selection_panel_normal_240x180","menu_button_normal_256x64","score_panel_normal_1024x512","menu_button_pressed_256x64",
 "loading_frame_normal_1024x512","minimap_frame_normal_216"]
+ENGINE_ROLE_DIMENSIONS = {
+    "console_left_cap_normal_256x288": (256,288),
+    "console_left_mid_normal_256x288": (256,288),
+    "console_right_mid_normal_256x288": (256,288),
+    "console_right_cap_normal_256x288": (256,288),
+    "topbar_plate_normal_720x32": (720,32),
+    "menu_panel_normal_512x384": (512,384),
+    "resource_pill_normal_236x32": (236,32),
+    "portrait_frame_normal_128": (128,128),
+    "build_progress_normal_64x8": (64,8),
+    "tooltip_panel_normal_384x256": (384,256),
+    "button_border_normal_64": (64,64),
+    "button_glow_64": (64,64),
+    "button_border_pressed_64": (64,64),
+    "button_border_autocast_64": (64,64),
+    "button_border_disabled_64": (64,64),
+    "button_border_empty_64": (64,64),
+    "control_group_button_active_44": (44,44),
+    "control_group_button_inactive_44": (44,44),
+    "selection_panel_normal_240x180": (240,180),
+    "menu_button_normal_256x64": (256,64),
+    "score_panel_normal_1024x512": (1024,512),
+    "menu_button_pressed_256x64": (256,64),
+    "loading_frame_normal_1024x512": (1024,512),
+    "minimap_frame_normal_216": (216,216),
+}
 THEMES = {
 "classic-modern":{"palette":"aged bronze, hammered iron, warm dark stone, restrained emerald enamel and parchment highlights",
  "materials":"layered forged metal, brushed bronze bevels, worn stone/leather, dark inset surfaces and directional warm light",
@@ -100,9 +126,13 @@ def validate_engine_contract(doc:dict[str,Any])->None:
     entries=atlas.get("entries")
     if not isinstance(entries,list) or len(entries)!=20:
         raise ValueError(f"engine contract commandbuttons atlas requires 20 entries, found {len(entries) if isinstance(entries,list) else 0}")
-    names={a.get("name") for a in assets}
-    absent=sorted(set(ENGINE_ROLES)-names)
+    by_name={a.get("name"):a for a in assets}
+    absent=sorted(set(ENGINE_ROLES)-set(by_name))
     if absent: raise ValueError("required engine roles missing: "+", ".join(absent))
+    for name,expected_size in ENGINE_ROLE_DIMENSIONS.items():
+        actual=(by_name[name].get("w"),by_name[name].get("h"))
+        if actual!=expected_size:
+            raise ValueError(f"engine role {name} must be {expected_size[0]}x{expected_size[1]}, found {actual[0]}x{actual[1]}")
 
 def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     doc=read_json(path); missing=[k for k in REQUIRED if k not in doc]
