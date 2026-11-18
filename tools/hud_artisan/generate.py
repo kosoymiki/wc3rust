@@ -108,6 +108,17 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
         if not isinstance(ins,dict) or any(k not in ins for k in ("l","t","r","b")): raise ValueError(f"{name}: insets need l,t,r,b")
         vals=[float(ins[k]) for k in ("l","t","r","b")]
         if any(not math.isfinite(v) or v<0 for v in vals): raise ValueError(f"{name}: insets must be finite and non-negative")
+        states=a.get("states",[])
+        if not isinstance(states,list) or any(not isinstance(state,str) for state in states):
+            raise ValueError(f"{name}: states must be an array of strings")
+        for key in ("semantic","meaning","icon_concept","visual_description","description","purpose",
+                    "art_direction","composition","silhouette","artist_notes","material","palette",
+                    "faction","race","culture","unit_name","ability_name","item_name","object_id","ability_id","item_id"):
+            if key in a and a[key] is not None and not isinstance(a[key],str):
+                raise ValueError(f"{name}: {key} must be a string")
+        for key in ("visual_tags","tags"):
+            if key in a and a[key] is not None and (not isinstance(a[key],list) or any(not isinstance(tag,str) for tag in a[key])):
+                raise ValueError(f"{name}: {key} must be an array of strings")
     atlas=doc["atlas"].get("commandbuttons") if isinstance(doc["atlas"],dict) else None
     if not isinstance(atlas,dict) or not isinstance(atlas.get("entries"),list) or not atlas["entries"]:
         raise ValueError("atlas.commandbuttons.entries must be a non-empty array")
