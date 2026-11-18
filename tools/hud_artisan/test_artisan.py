@@ -48,6 +48,18 @@ class Tests(unittest.TestCase):
             self.assertEqual(payload["atlas"]["cells"][0]["source_file"],"icons/a.png")
             self.assertEqual(payload["atlas"]["cells"][0]["source_asset"],"icon_a")
             artisan.verify_plan(m,out/"jobs.json")
+    def test_symlink_alias_rejected_even_when_target_is_inside_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);target=root/"real.png";alias=root/"alias.png"
+            target.write_bytes(b"x")
+            try:
+                alias.symlink_to(target)
+            except (OSError,NotImplementedError):
+                self.skipTest("symlink creation is unavailable on this platform")
+            with self.assertRaisesRegex(ValueError,"symlink path is not allowed"):
+                artisan.safe_join(root,"alias.png")
+            with self.assertRaisesRegex(ValueError,"symlink path is not allowed"):
+                artisan.safe_join_any(root,"alias.png")
     def test_traversal_rejected(self):
         for x in ("../x.png","/tmp/x.png",""): 
             with self.assertRaises(ValueError):artisan.safe_rel(x)
