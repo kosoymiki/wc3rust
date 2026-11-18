@@ -25,6 +25,7 @@
           "job_id",
           "license",
           "model",
+          "negative_prompt_sha256",
           "output_sha256",
           "postprocessing",
           "prompt_sha256",
@@ -92,6 +93,10 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "negative_prompt_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           }
         }
       }
