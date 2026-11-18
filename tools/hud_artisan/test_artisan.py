@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """HUD Artisan tests: python -m unittest discover -s tools/hud_artisan -p 'test_*.py'"""
 import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys,os
+from jsonschema import Draft202012Validator, RefResolver
 from pathlib import Path
 SPEC=importlib.util.spec_from_file_location("artisan",Path(__file__).with_name("generate.py"))
 artisan=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(artisan)
@@ -94,7 +95,12 @@ class Tests(unittest.TestCase):
              "assets":[a,at],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
             m.write_text(json.dumps(doc));self.assertEqual(len(artisan.load_manifest(m)["assets"]),2)
             out=root/"plan";self.assertEqual(artisan.plan(m,out,"classic-modern",12,False),0)
-            self.assertEqual(json.loads((out/"jobs.json").read_text())["job_count"],2)
+            plan_data=json.loads((out/"jobs.json").read_text())
+            self.assertEqual(plan_data["job_count"],2)
+            plan_schema=json.loads((Path(__file__).with_name("plan.schema.json")).read_text())
+            job_schema=json.loads((Path(__file__).with_name("job.schema.json")).read_text())
+            resolver=RefResolver.from_schema(plan_schema,store={job_schema["$id"]:job_schema})
+            Draft202012Validator(plan_schema,resolver=resolver).validate(plan_data)
             plan_doc,manifest_doc=artisan.verify_plan(m,out/"jobs.json")
             self.assertEqual(plan_doc["source_manifest_sha256"],hashlib.sha256(m.read_bytes()).hexdigest())
             tampered=json.loads((out/"jobs.json").read_text())
@@ -143,6 +149,8 @@ class Tests(unittest.TestCase):
             finally:
                 os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
+            provenance_schema=json.loads((Path(__file__).with_name("provenance.schema.json")).read_text())
+            Draft202012Validator(provenance_schema).validate(json.loads((drop/"provenance.json").read_text()))
             logs=list((drop/"reports"/"worker").glob("*.log"))
             self.assertTrue(logs)
             combined="".join(path.read_text() for path in logs)
