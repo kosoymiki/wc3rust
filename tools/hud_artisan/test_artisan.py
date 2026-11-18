@@ -52,11 +52,11 @@ class Tests(unittest.TestCase):
             jobs=root/"jobs";artisan.plan(manifest,jobs,"classic-modern",3,False)
             payload=json.loads((jobs/"jobs.json").read_text())
             self.assertEqual(payload["job_count"],2)
-            Image.new("RGBA",(16,16),(40,35,30,255)).save(drop/"panels/panel.png")
+            (drop/"panels").mkdir();Image.new("RGBA",(16,16),(40,35,30,255)).save(drop/"panels/panel.png")
             cell=Image.new("RGBA",(8,8),(0,0,0,0))
             for x in range(2,6):
                 for y in range(2,6):cell.putpixel((x,y),(220,150,40,255))
-            (drop/"atlas_sources").mkdir();cell.save(drop/"atlas_sources/icon-a.png")
+            (drop/"atlas_sources").mkdir();cell.save(drop/"atlas_sources/icon_a.png")
             (drop/"fonts").mkdir()
             for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
             rc=artisan.ingest(manifest,jobs/"jobs.json",drop,out,"strict",False)
