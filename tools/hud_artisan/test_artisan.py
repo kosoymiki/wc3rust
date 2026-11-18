@@ -19,6 +19,35 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/"a.png";b=bytearray(png(8,8,(1,2,3,255)));b[29]^=1;p.write_bytes(b)
             with self.assertRaises(ValueError):artisan.png_info(p)
+    def test_png_rejects_misordered_ihdr(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"bad.png";good=png(8,8,(1,2,3,255));pos=8;chunks=[]
+            while pos<len(good):
+                n=struct.unpack(">I",good[pos:pos+4])[0]
+                end=pos+12+n;chunks.append(good[pos:end]);pos=end
+            p.write_bytes(good[:8]+chunks[1]+chunks[0]+chunks[2])
+            with self.assertRaisesRegex(ValueError,"IHDR must be the first"):
+                artisan.png_info(p)
+    def test_atlas_cell_can_reuse_declared_manifest_asset(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m=root/"manifest.json"
+            icon={"name":"icon_a","file":"icons/a.png","w":8,"h":8,
+                  "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
+            atlas={"name":"atlas","file":"atlas/commands.png","w":16,"h":16,
+                   "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
+            doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
+             "safe_area_1080p":{"landscape":[1,1,1,1],"portrait":[1,1,1,1]},
+             "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+             "control_groups":{"count":10,"cell":[44,44]},
+             "atlas":{"commandbuttons":{"file":"atlas/commands.png","entries":[{"id":"icon_a","x":0,"y":0,"w":8,"h":8}]}},
+             "assets":[icon,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            m.write_text(json.dumps(doc));out=root/"plan"
+            self.assertEqual(artisan.plan(m,out,"classic-modern",7,False),0)
+            payload=json.loads((out/"jobs.json").read_text())
+            self.assertEqual(payload["job_count"],1)
+            self.assertEqual(payload["atlas"]["cells"][0]["source_file"],"icons/a.png")
+            self.assertEqual(payload["atlas"]["cells"][0]["source_asset"],"icon_a")
+            artisan.verify_plan(m,out/"jobs.json")
     def test_traversal_rejected(self):
         for x in ("../x.png","/tmp/x.png",""): 
             with self.assertRaises(ValueError):artisan.safe_rel(x)
