@@ -293,6 +293,7 @@ class Tests(unittest.TestCase):
             def fake_download_image(base,image_meta,timeout):
                 self.assertEqual(image_meta["filename"],"frame.png")
                 return image_bytes
+            real_download_image=comfy.download_image
             comfy.http_json=fake_http_json
             comfy.download_image=fake_download_image
             workflow={"6":{"inputs":{"text":"old-positive"}},"7":{"inputs":{"text":"old-negative"}},
@@ -320,6 +321,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(sent["3"]["inputs"]["seed"],job["seed"])
             self.assertEqual(artisan.png_info(output),(8,8,8,6))
             from unittest import mock
+            comfy.download_image=real_download_image
             with mock.patch.object(comfy,"open_http",return_value=io.BytesIO(b"image-bytes")) as open_local:
                 downloaded=comfy.download_image("http://127.0.0.1:8188",
                     {"filename":"frame.png","subfolder":"","type":"output"},5)
