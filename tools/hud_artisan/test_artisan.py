@@ -51,7 +51,7 @@ class Tests(unittest.TestCase):
         assets.append({"name":"commandbuttons_atlas","file":"atlas/commandbuttons.png","w":2048,"h":2048})
         for i in range(67):
             assets.append({"name":f"extra_{i}","file":f"extra/{i}.png","w":64,"h":64})
-        doc={"reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
+        doc={"design_height":768,"reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
           "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
           "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
           "control_groups":{"count":10,"cell":[44,44]},
@@ -61,6 +61,17 @@ class Tests(unittest.TestCase):
         doc["atlas"]["commandbuttons"]["entries"].pop()
         with self.assertRaisesRegex(ValueError,"20 entries"):
             artisan.validate_engine_contract(doc)
+    def test_font_path_traversal_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            m=Path(d)/"m.json"
+            a={"name":"a","file":"a.png","w":8,"h":8,"insets":{"l":0,"t":0,"r":0,"b":0}}
+            atlas={"name":"atlas","file":"atlas.png","w":8,"h":8,"insets":{"l":0,"t":0,"r":0,"b":0}}
+            doc={"design_height":768,"reference_resolution":{},"safe_area_1080p":{},"command_card":{},"control_groups":{},
+              "atlas":{"commandbuttons":{"file":"atlas.png","entries":[{"id":"a","x":0,"y":0,"w":4,"h":4}]}},
+              "assets":[a,atlas],"font_files":["../evil.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            m.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError,"safe basenames"):
+                artisan.load_manifest(m)
     def test_engine_roles(self):self.assertEqual(len(artisan.ENGINE_ROLES),24)
     def test_manifest_and_plan(self):
         with tempfile.TemporaryDirectory() as d:
