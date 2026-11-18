@@ -33,6 +33,27 @@ python3 tools/hud_artisan/generate.py plan \
   --theme classic-modern --seed 20261118 --engine-contract
 ~~~
 
+The plan is deterministic for a fixed manifest, theme and seed. Individual prompts include the
+semantic object (not just an asset filename), exact target dimensions, visual family, UI state,
+palette, material system, safe 9-slice insets, alpha requirements and negative prompt. The visual
+style rules live in STYLE_BIBLE.md.
+
+### Run a local or hosted image provider through an adapter
+
+Configure adapter.example.json with your provider CLI. The dispatcher does not use a shell string;
+it executes an argv list with explicit placeholders and an environment-variable allowlist:
+
+    python3 tools/hud_artisan/generate.py dispatch \
+      --jobs build/hud-artisan/jobs/jobs.json \
+      --adapter tools/hud_artisan/adapter.example.json \
+      --drop build/hud-artisan/drop --parallel 2
+
+The adapter writes one image per job. The dispatcher enforces exact dimensions and RGBA8 PNG,
+uses bounded concurrency, retries and per-job timeouts, and writes worker logs. API secrets are
+passed only through explicitly allowlisted environment variable names; they are not copied into
+job files or reports. Each successful job gets an auditable provenance record. See
+PROVIDER_PROTOCOL.md and provenance.schema.json.
+
 Agents read jobs.json and AGENT_BRIEF.md and write one PNG per job into the drop directory.
 The atlas is not a single generative image: its individual cells are separate jobs or explicitly
 mapped source assets, then HUD Artisan composites the command-buttons atlas using exact manifest
