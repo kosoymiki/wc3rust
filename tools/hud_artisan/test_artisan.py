@@ -13,6 +13,21 @@ def png(w,h,rgba):
     raw=b"".join(b"\0"+bytes(rgba*w) for _ in range(h))
     return b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",w,h,8,6,0,0,0))+chunk(b"IDAT",zlib.compress(raw))+chunk(b"IEND",b"")
 class Tests(unittest.TestCase):
+    def test_published_adapter_schemas_validate_examples(self):
+        base=Path(__file__).parent
+        pairs=[
+            ("adapter.schema.json","adapter.example.json"),
+            ("comfyui.schema.json","comfyui.example.json"),
+            ("job.schema.json",None),
+            ("provenance.schema.json",None),
+            ("plan.schema.json",None),
+        ]
+        for schema_name,example_name in pairs:
+            schema=json.loads((base/schema_name).read_text())
+            Draft202012Validator.check_schema(schema)
+            if example_name:
+                example=json.loads((base/example_name).read_text())
+                Draft202012Validator(schema).validate(example)
     def test_png_parse(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/"a.png";p.write_bytes(png(17,11,(1,2,3,255)))
