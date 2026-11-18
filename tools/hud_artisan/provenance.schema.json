@@ -21,13 +21,15 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "job_id",
-          "provider",
-          "model",
           "generated_at",
+          "job_id",
           "license",
+          "model",
+          "output_sha256",
+          "postprocessing",
           "prompt_sha256",
-          "output_sha256"
+          "provider",
+          "references"
         ],
         "properties": {
           "job_id": {
