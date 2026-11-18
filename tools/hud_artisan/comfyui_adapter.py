@@ -18,6 +18,14 @@ from urllib import error, parse, request
 
 MAX_RESPONSE_BYTES = 256 * 1024 * 1024
 
+def open_http(req, base: str, timeout: int):
+    """Bypass environment proxies for loopback; keep normal proxy support for remote hosts."""
+    hostname = parse.urlsplit(base).hostname
+    if hostname in ("127.0.0.1", "localhost", "::1"):
+        opener = request.build_opener(request.ProxyHandler({}))
+        return opener.open(req, timeout=timeout)
+    return request.urlopen(req, timeout=timeout)
+
 class ComfyError(RuntimeError):
     pass
 
@@ -37,7 +45,7 @@ def http_json(base: str, endpoint: str, payload=None, timeout: int = 60):
         headers["Content-Type"] = "application/json"
     req = request.Request(base.rstrip("/") + endpoint, data=data, headers=headers)
     try:
-        with request.urlopen(req, timeout=timeout) as response:
+        with open_http(req, base, timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except error.HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", "replace")
