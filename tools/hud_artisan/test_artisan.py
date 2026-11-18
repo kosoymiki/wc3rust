@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """HUD Artisan tests: python -m unittest discover -s tools/hud_artisan -p 'test_*.py'"""
-import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys
+import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys,os
 from pathlib import Path
 SPEC=importlib.util.spec_from_file_location("artisan",Path(__file__).with_name("generate.py"))
 artisan=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(artisan)
@@ -74,6 +74,10 @@ class Tests(unittest.TestCase):
             m.write_text(json.dumps(doc));self.assertEqual(len(artisan.load_manifest(m)["assets"]),2)
             out=root/"plan";self.assertEqual(artisan.plan(m,out,"classic-modern",12,False),0)
             self.assertEqual(json.loads((out/"jobs.json").read_text())["job_count"],2)
+            doc["atlas"]["commandbuttons"]["entries"].append({"id":"overlap","x":0,"y":0,"w":64,"h":64})
+            m.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError,"overlap"):
+                artisan.plan(m,root/"bad-plan","classic-modern",12,False)
     def test_provider_dispatch_ingest_atlas_and_provenance(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);manifest=root/"manifest.json";drop=root/"drop";out=root/"pack"
@@ -90,7 +94,8 @@ class Tests(unittest.TestCase):
             self.assertEqual(payload["job_count"],2)
             adapter_script=root/"provider_adapter.py"
             adapter_script.write_text(
-                "import json,sys\nfrom PIL import Image,ImageDraw\n"
+                "import json,sys,os\nfrom PIL import Image,ImageDraw\n"
+                "print(os.environ.get('HUD_ARTISAN_TEST_SECRET',''))\n"
                 "j=json.load(open(sys.argv[1],encoding='utf-8'))\n"
                 "w,h=j['width'],j['height']\n"
                 "im=Image.new('RGBA',(w,h),(0,0,0,0) if j['requires_alpha'] else (40,35,30,255))\n"
@@ -102,9 +107,18 @@ class Tests(unittest.TestCase):
             adapter.write_text(json.dumps({"provider":"test-provider","model":"test-model",
               "license":"clean-room test fixture","working_directory":str(root),
               "command":[sys.executable,str(adapter_script),"{job_json}","{output_path}"],
-              "environment":[],"timeout_seconds":20,"retries":1,"max_parallel":2}))
-            self.assertEqual(artisan.dispatch(jobs,adapter,drop,2),0)
+              "environment":["HUD_ARTISAN_TEST_SECRET"],"timeout_seconds":20,"retries":1,"max_parallel":2}))
+            os.environ["HUD_ARTISAN_TEST_SECRET"]="TOP-SECRET-DO-NOT-LOG"
+            try:
+                self.assertEqual(artisan.dispatch(jobs,adapter,drop,2),0)
+            finally:
+                os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
+            logs=list((drop/"reports"/"worker").glob("*.log"))
+            self.assertTrue(logs)
+            combined="".join(path.read_text() for path in logs)
+            self.assertIn("[REDACTED]",combined)
+            self.assertNotIn("TOP-SECRET-DO-NOT-LOG",combined)
             (drop/"fonts").mkdir()
             for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
