@@ -260,7 +260,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
     def test_comfyui_adapter_end_to_end_against_fake_api(self):
         from PIL import Image
-        from contextlib import redirect_stdout
+        from contextlib import redirect_stdout,redirect_stderr
         import importlib.util
         spec=importlib.util.spec_from_file_location("comfy_adapter",Path(__file__).with_name("comfyui_adapter.py"))
         comfy=importlib.util.module_from_spec(spec);spec.loader.exec_module(comfy)
@@ -281,6 +281,7 @@ class Tests(unittest.TestCase):
                     captured["request"]=json.loads(self.rfile.read(n))
                     self.send_json({"prompt_id":"fake-prompt-1"})
                 def do_GET(self):
+                    captured.setdefault("get_paths",[]).append(self.path)
                     path=urlsplit(self.path)
                     if path.path=="/history/fake-prompt-1":
                         return self.send_json({"fake-prompt-1":{"outputs":{"9":{"images":[
@@ -306,9 +307,10 @@ class Tests(unittest.TestCase):
                   "width":8,"height":8,"requires_alpha":True}
                 job_path=root/"job.json";job_path.write_text(json.dumps(job))
                 output=root/"out.png"
-                with redirect_stdout(io.StringIO()):
+                stderr_buffer=io.StringIO()
+                with redirect_stdout(io.StringIO()),redirect_stderr(stderr_buffer):
                     rc=comfy.main(["--config",str(config_path),"--job-json",str(job_path),"--output",str(output)])
-                self.assertEqual(rc,0)
+                self.assertEqual(rc,0,stderr_buffer.getvalue()+" paths="+repr(captured.get("get_paths")))
                 sent=captured["request"]["prompt"]
                 self.assertEqual(sent["6"]["inputs"]["text"],job["prompt"])
                 self.assertEqual(sent["7"]["inputs"]["text"],job["negative_prompt"])
