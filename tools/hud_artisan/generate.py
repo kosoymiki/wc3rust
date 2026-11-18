@@ -242,8 +242,10 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
     states=", ".join(a.get("states") or []) or "normal/default state"
     alpha=kind in ("icon","cursor")
+    semantic=semantic_brief(a,kind)
+    context=metadata_context(a) or "no additional semantic metadata supplied"
     prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
-    f"Family {kind}; state {states}. Semantic subject: {semantic_brief(a,kind)}. Manifest context: {metadata_context(a) or "no additional semantic metadata supplied"}. "
+    f"Family {kind}; state {states}. Semantic subject: {semantic}. Manifest context: {context}. "
     f"State rendering instruction: {state_brief(states)}. "
     f"Palette: {t['palette']}. Materials: {material(name,kind)}. "
     f"Surface rendering: {t['materials']}. Ornament: {t['ornament']}. "
