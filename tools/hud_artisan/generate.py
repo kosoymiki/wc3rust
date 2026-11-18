@@ -640,7 +640,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
     print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
     return int(bool(fail))
 
-def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
     plan_doc,doc=verify_plan(manifest,jobs_path)
     mods=pil_modules()
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
@@ -769,8 +769,33 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
       "provenance_sha256":sha(provenance_path.read_bytes()) if provenance_path.is_file() else None,
       "ingested":done,"inputs":inputs,"errors":errors,"fit_policy":fit},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     for error in errors:print("HUD_ARTISAN_FAIL "+error)
-    print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
+    print(f"HUD_ARTISAN_INGEST_STAGE {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
+
+def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+    """Build in a sibling temp directory and atomically promote only a complete pack."""
+    requested=out.expanduser()
+    if requested.is_symlink():
+        raise ValueError(f"ingest destination must not be a symlink: {requested}")
+    final_out=requested.resolve()
+    if final_out.exists() and not final_out.is_dir():
+        raise ValueError(f"ingest destination exists and is not a directory: {final_out}")
+    if final_out.exists() and any(final_out.iterdir()):
+        raise ValueError(f"ingest destination must be absent or empty; refusing to overwrite: {final_out}")
+    final_out.parent.mkdir(parents=True,exist_ok=True)
+    stage=Path(tempfile.mkdtemp(prefix=f".{final_out.name}.hudartisan-",dir=final_out.parent))
+    try:
+        result=_ingest_stage(manifest,jobs_path,drop,stage,fit,allow_opaque)
+        if result:
+            return result
+        if final_out.exists():
+            final_out.rmdir()
+        stage.replace(final_out)
+        print(f"HUD_ARTISAN_INGEST PASS imported_to={final_out}")
+        return 0
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage,ignore_errors=True)
 
 def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
