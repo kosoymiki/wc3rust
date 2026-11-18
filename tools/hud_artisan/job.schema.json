@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kosoymiki/wc3rust/blob/tools/hud-artisan-v1/tools/hud_artisan/job.schema.json",
+  "title": "HUD Artisan Asset Job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "asset",
+    "output",
+    "width",
+    "height",
+    "family",
+    "state",
+    "theme",
+    "seed",
+    "insets",
+    "requires_alpha",
+    "prompt",
+    "negative_prompt",
+    "output_contract"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{16}$"
+    },
+    "asset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output": {
+      "type": "string",
+      "pattern": "^[^/].*\\.png$"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "family": {
+      "enum": [
+        "portrait-frame",
+        "minimap-frame",
+        "icon",
+        "cursor",
+        "interactive-control",
+        "hud-strip",
+        "menu-panel",
+        "panel",
+        "misc-ui"
+      ]
+    },
+    "state": {
+      "type": "string"
+    },
+    "theme": {
+      "enum": [
+        "classic-modern",
+        "human-gold",
+        "orc-iron",
+        "undead-obsidian"
+      ]
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "insets": {
+      "type": "object",
+      "required": [
+        "l",
+        "t",
+        "r",
+        "b"
+      ],
+      "properties": {
+        "l": {
+          "type": "number",
+          "minimum": 0
+        },
+        "t": {
+          "type": "number",
+          "minimum": 0
+        },
+        "r": {
+          "type": "number",
+          "minimum": 0
+        },
+        "b": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "requires_alpha": {
+      "type": "boolean"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 20
+    },
+    "negative_prompt": {
+      "type": "string",
+      "minLength": 20
+    },
+    "output_contract": {
+      "type": "object",
+      "required": [
+        "format",
+        "color_space",
+        "alpha",
+        "one_asset_only",
+        "no_text"
+      ],
+      "properties": {
+        "format": {
+          "const": "PNG RGBA8"
+        },
+        "color_space": {
+          "const": "sRGB"
+        },
+        "alpha": {
+          "const": "straight"
+        },
+        "one_asset_only": {
+          "const": true
+        },
+        "no_text": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
