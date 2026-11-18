@@ -85,7 +85,7 @@ jobs:
           workflow = json.loads((p / "comfyui_api_workflow.json").read_text())
           if not isinstance(workflow, dict) or not workflow:
               raise SystemExit("ComfyUI API workflow must be a non-empty object")
-          adapter = {"schema_version": 1, "name": "github-actions-comfyui-gpu", "provider": "ComfyUI", "model": os.environ["MODEL_ID"], "license": os.environ["MODEL_LICENSE"], "working_directory": "../..", "command": ["python", "tools/hud_artisan/comfyui_adapter.py", "--config", "build/hud-artisan/private/comfyui.json", "--job-json", "{job_json}", "--output", "{output_path}"], "environment": ["COMFYUI_URL"], "timeout_seconds": 1900, "retries": 1, "max_parallel": 1, "references": [], "postprocessing": []}
+          adapter = {"schema_version": 1, "name": "github-actions-comfyui-gpu", "provider": "ComfyUI", "model": os.environ["MODEL_ID"], "license": os.environ["MODEL_LICENSE"], "working_directory": ".", "command": ["python", "tools/hud_artisan/comfyui_adapter.py", "--config", "build/hud-artisan/private/comfyui.json", "--job-json", "{job_json}", "--output", "{output_path}"], "environment": ["COMFYUI_URL"], "timeout_seconds": 1900, "retries": 1, "max_parallel": 1, "references": [], "postprocessing": []}
           Path("build/hud-artisan/adapter.json").write_text(json.dumps(adapter, indent=2) + "\n")
           PY
           python - <<'PY'
