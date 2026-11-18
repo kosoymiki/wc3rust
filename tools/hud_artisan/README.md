@@ -40,26 +40,45 @@ object (not merely the filename), target dimensions, visual family, UI state, pa
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
 its stable job ID is derived from that hash. Read STYLE_BIBLE.md for the shared art-direction grammar.
 
-### Run a local or hosted image provider through an adapter
+### Run the built-in ComfyUI adapter
 
-Copy adapter.example.json to build/hud-artisan/adapter.json and configure its provider CLI argv,
-working directory, model, license, timeouts and environment-variable allowlist. The example points
-to a placeholder provider_adapter.py that you supply; no provider credentials, SDK or model weights
-are bundled. The dispatcher does not use a shell string:
+HUD Artisan includes a real ComfyUI HTTP API adapter; only the model workflow itself is supplied by
+the operator. Export a ComfyUI workflow in API format and copy the examples into a private build
+directory:
+
+~~~sh
+mkdir -p build/hud-artisan
+cp tools/hud_artisan/adapter.example.json build/hud-artisan/adapter.json
+cp tools/hud_artisan/comfyui.example.json build/hud-artisan/comfyui.json
+# Save your exported ComfyUI API workflow as:
+# build/hud-artisan/comfyui_api_workflow.json
+~~~
+
+Edit comfyui.json: point "workflow_file" at the exported API JSON and map the five inputs to your
+actual workflow node IDs (positive_prompt, negative_prompt, width, height, seed). Set
+"output_node_id" to the final SaveImage node. The example IDs are placeholders, not a working
+workflow. Keep private workflow/checkpoint files out of Git.
+
+Set COMFYUI_URL when the server is not http://127.0.0.1:8188, then run:
 
 ~~~sh
 python3 tools/hud_artisan/generate.py dispatch \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
   --jobs build/hud-artisan/jobs/jobs.json \
   --adapter build/hud-artisan/adapter.json \
-  --drop build/hud-artisan/drop --parallel 2
+  --drop build/hud-artisan/drop --parallel 1
 ~~~
 
-The adapter writes one image per job. The dispatcher enforces exact dimensions and RGBA8 PNG,
-uses bounded concurrency, retries and per-job timeouts, and writes worker logs. API secrets are
-passed only through explicitly allowlisted environment variable names; secret values are redacted
-from worker logs. Each successful run writes provenance including the hash of the exact jobs.json,
-so edits to prompts, atlas coordinates or job metadata invalidate the run.
+The adapter injects exact prompts and dimensions, derives a stable per-job seed, polls ComfyUI
+history and downloads the final SaveImage output. It rejects non-PNG data, wrong dimensions and
+opaque output for alpha-required assets. The ComfyUI workflow must include a valid transparent-
+background path for icons/cursors; a stock opaque Stable Diffusion workflow is not sufficient.
+See COMFYUI.md and comfyui.schema.json.
+
+A custom CLI/API adapter is also supported: command is an argv array, never a shell string, with
+{job_json}, {output_path} and {job_id} placeholders. Bounded concurrency, retries, timeouts,
+allowlisted environment variables and secret-redacted worker logs are enforced by the dispatcher.
+No provider credentials, model weights or SDK are bundled.
 
 Agents read jobs.json and AGENT_BRIEF.md and write one PNG per job into the drop directory.
 The command-buttons atlas is assembled from individual cell jobs or explicitly mapped asset outputs,
