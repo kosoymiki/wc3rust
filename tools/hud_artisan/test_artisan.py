@@ -85,6 +85,14 @@ class Tests(unittest.TestCase):
             m.write_text(json.dumps(doc));self.assertEqual(len(artisan.load_manifest(m)["assets"]),2)
             out=root/"plan";self.assertEqual(artisan.plan(m,out,"classic-modern",12,False),0)
             self.assertEqual(json.loads((out/"jobs.json").read_text())["job_count"],2)
+            plan_doc,manifest_doc=artisan.verify_plan(m,out/"jobs.json")
+            self.assertEqual(plan_doc["source_manifest_sha256"],hashlib.sha256(m.read_bytes()).hexdigest())
+            tampered=json.loads((out/"jobs.json").read_text())
+            tampered["atlas"]["cells"][0]["x"]=1
+            (out/"jobs.json").write_text(json.dumps(tampered))
+            with self.assertRaisesRegex(ValueError,"atlas geometry"):
+                artisan.verify_plan(m,out/"jobs.json")
+            artisan.plan(m,out,"classic-modern",12,False)
             doc["atlas"]["commandbuttons"]["entries"].append({"id":"overlap","x":0,"y":0,"w":64,"h":64})
             m.write_text(json.dumps(doc))
             with self.assertRaisesRegex(ValueError,"overlap"):
@@ -121,7 +129,7 @@ class Tests(unittest.TestCase):
               "environment":["HUD_ARTISAN_TEST_SECRET"],"timeout_seconds":20,"retries":1,"max_parallel":2}))
             os.environ["HUD_ARTISAN_TEST_SECRET"]="TOP-SECRET-DO-NOT-LOG"
             try:
-                self.assertEqual(artisan.dispatch(jobs,adapter,drop,2),0)
+                self.assertEqual(artisan.dispatch(manifest,jobs,adapter,drop,2),0)
             finally:
                 os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
