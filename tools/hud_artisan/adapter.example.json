@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "custom-image-provider",
+  "provider": "provider-name",
+  "model": "model-name-and-revision",
+  "license": "original-clean-room-generation",
+  "working_directory": ".",
+  "command": [
+    "python3",
+    "provider_adapter.py",
+    "--job-json",
+    "{job_json}",
+    "--output",
+    "{output_path}"
+  ],
+  "environment": [
+    "IMAGE_PROVIDER_API_KEY"
+  ],
+  "timeout_seconds": 1800,
+  "retries": 2,
+  "max_parallel": 2
+}
