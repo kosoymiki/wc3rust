@@ -440,7 +440,10 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
         raise ValueError("jobs.json was compiled from a different manifest revision")
     if not isinstance(plan_doc.get("engine_contract"),bool):
         raise ValueError("jobs.json is missing its engine_contract flag")
-    if any(job.get("prompt_sha256")!=sha(job.get("prompt","").encode("utf-8")) for job in plan_doc.get("jobs",[])):
+    planned_jobs=plan_doc.get("jobs")
+    if not isinstance(planned_jobs,list) or not planned_jobs:
+        raise ValueError("jobs.json has no jobs[]")
+    if any(job.get("prompt_sha256")!=sha(job.get("prompt","").encode("utf-8")) for job in planned_jobs):
         raise ValueError("jobs.json contains a prompt whose prompt_sha256 does not match")
     out=out.resolve()
     if out.exists() and any(out.iterdir()):
@@ -457,6 +460,8 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     else:
         try:
             provenance=read_json(provenance_path)
+            if provenance.get("jobs_sha256") != sha(jobs_path.read_bytes()):
+                raise ValueError("provenance jobs_sha256 does not match the supplied jobs.json")
             rows=provenance.get("jobs")
             if not isinstance(rows,list): raise ValueError("provenance.jobs must be an array")
             by_id={row.get("job_id"):row for row in rows if isinstance(row,dict)}
@@ -547,6 +552,10 @@ def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|No
     payload=read_json(jobs_path);cfg=read_json(adapter_path)
     if payload.get("tool")!="HUD Artisan" or payload.get("schema_version")!=1:
         raise ValueError("unsupported jobs.json tool/schema")
+    if not isinstance(payload.get("engine_contract"),bool):
+        raise ValueError("jobs.json is missing its engine_contract flag")
+    if not re.fullmatch(r"[a-f0-9]{64}",str(payload.get("source_manifest_sha256",""))):
+        raise ValueError("jobs.json has an invalid source manifest SHA-256")
     jobs=payload.get("jobs")
     if not isinstance(jobs,list) or not jobs:raise ValueError("jobs.json has no jobs[]")
     command=cfg.get("command")
@@ -646,7 +655,7 @@ def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|No
                     "generated_at":generated_at,"license":license_name,
                     "prompt_sha256":sha(job["prompt"].encode("utf-8")),"output_sha256":row["sha256"]})
             (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
-                "jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+                "jobs_sha256":sha(jobs_path.read_bytes()),"jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
         return 0 if ok else 1
     finally:
