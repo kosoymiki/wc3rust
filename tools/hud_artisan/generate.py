@@ -14,6 +14,7 @@ from typing import Any
 VERSION = "1.0.0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PIXELS = 64_000_000
+MAX_PNG_BYTES = 256 * 1024 * 1024
 REQUIRED = ("design_height","reference_resolution","safe_area_1080p","command_card","control_groups","atlas","assets","font_files")
 ENGINE_ROLES = [
 "console_left_cap_normal_256x288","console_left_mid_normal_256x288","console_right_mid_normal_256x288","console_right_cap_normal_256x288",
@@ -365,28 +366,45 @@ Theme={theme}; seed={seed}; source manifest SHA-256={sha(manifest.read_bytes())}
     print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} atlas_cells={len(atlas_plan['cells'])} out={out}");return 0
 
 def png_info(path:Path)->tuple[int,int,int,int]:
+    size=path.stat().st_size
+    if size<8 or size>MAX_PNG_BYTES:
+        raise ValueError(f"PNG byte size outside safe bounds: {size}")
     data=path.read_bytes()
     if not data.startswith(PNG_SIGNATURE): raise ValueError("bad PNG signature")
-    pos=8;w=h=depth=ctype=None;idat=0;ended=False;ihdr=False
+    pos=8;w=h=depth=ctype=None;idat_bytes=0;ended=False;ihdr=False;idat_started=False;idat_ended=False
     while pos<len(data):
         if pos+12>len(data): raise ValueError("truncated PNG chunk header")
         n=struct.unpack(">I",data[pos:pos+4])[0];tag=data[pos+4:pos+8];end=pos+12+n
-        if end>len(data): raise ValueError(f"truncated {tag!r} chunk")
+        if end>len(data): raise ValueError(f"truncated PNG {tag!r} chunk")
+        if any((byte<65 or 90<byte<97 or byte>122) for byte in tag):
+            raise ValueError(f"invalid PNG chunk type {tag!r}")
         payload=data[pos+8:pos+8+n];crc=struct.unpack(">I",data[pos+8+n:end])[0]
-        if zlib.crc32(tag+payload)&0xffffffff!=crc: raise ValueError(f"CRC mismatch in {tag!r}")
+        if zlib.crc32(tag+payload)&0xffffffff!=crc: raise ValueError(f"CRC mismatch in {tag!r} chunk")
+        if not ihdr and tag!=b"IHDR":
+            raise ValueError("IHDR must be the first PNG chunk")
         if tag==b"IHDR":
-            if n!=13 or ihdr: raise ValueError("invalid/duplicate IHDR")
+            if pos!=8 or n!=13 or ihdr: raise ValueError("invalid, misplaced or duplicate IHDR")
             ihdr=True;w,h,depth,ctype,comp,filt,interlace=struct.unpack(">IIBBBBB",payload)
             if not w or not h or w*h>MAX_PIXELS: raise ValueError("unsafe PNG dimensions")
-            if comp or filt or interlace not in (0,1): raise ValueError("unsupported PNG encoding")
-        elif tag==b"IDAT": idat+=n
+            if depth!=8 or ctype!=6: raise ValueError("expected RGBA8 PNG")
+            if comp or filt or interlace!=0: raise ValueError("expected standard non-interlaced PNG encoding")
+        elif tag==b"PLTE":
+            if idat_started or n==0 or n%3 or n>768: raise ValueError("invalid/misplaced PLTE chunk")
+        elif tag==b"IDAT":
+            if idat_ended: raise ValueError("PNG IDAT chunks must be consecutive")
+            idat_started=True;idat_bytes+=n
         elif tag==b"IEND":
-            if n: raise ValueError("non-empty IEND")
+            if n or not idat_started: raise ValueError("invalid IEND or missing IDAT")
             ended=True
             if end!=len(data): raise ValueError("trailing bytes after IEND")
             break
+        else:
+            if idat_started: idat_ended=True
+            # Unknown critical chunks are not safe to silently ignore.
+            if tag[0] & 0x20 == 0:
+                raise ValueError(f"unsupported critical PNG chunk {tag!r}")
         pos=end
-    if not ihdr or not ended or not idat: raise ValueError("incomplete PNG")
+    if not ihdr or not ended or not idat_bytes: raise ValueError("incomplete PNG")
     return int(w),int(h),int(depth),int(ctype)
 
 def pil_modules():
