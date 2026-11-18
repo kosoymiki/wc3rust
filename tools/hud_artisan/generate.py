@@ -337,6 +337,27 @@ def state_brief(state_text:str)->str:
     if "empty" in s: rules.append("empty state: unoccupied dark inset, with no invented item or ability")
     return "; ".join(rules) if rules else "normal state: balanced material values and neutral illumination"
 
+ART_DIRECTION_CORE = (
+    "Premium hand-authored real-time-strategy game UI illustration; original wc3rust visual identity. "
+    "Prioritise a designed, instantly recognisable silhouette before ornament; coherent upper-left key light; "
+    "physically plausible material response; three-level bevel/value construction; restrained edge wear only on exposed edges; "
+    "quiet text-safe centre; deliberate negative space; clean joins and crisp anti-aliased contours. "
+    "The result must remain readable at native target size and after 50 percent and 25 percent downsampling. "
+    "Avoid generic mobile-app styling, template glyphs, random scratches, noise carpets, plastic gradients, excessive bloom, "
+    "unmotivated asymmetry, accidental tangencies, melted details and decorative clutter."
+)
+FAMILY_DIRECTION = {
+    "icon": "Single isolated object/action, optical centre, one dominant silhouette, one supporting detail, no frame, no scene, no secondary objects. Distinct from every sibling icon; semantic identity must survive monochrome and 32px viewing.",
+    "cursor": "Single crisp high-contrast functional marker with a strong contour; no ornamental clutter; preserve transparent exterior.",
+    "portrait-frame": "Structural forged surround with coherent outer silhouette and truly empty transparent central aperture; inner bevel protects the portrait; all ornament remains outside the aperture.",
+    "minimap-frame": "Stable viewport surround with fully transparent unobstructed map aperture; frame corners define the viewport; no ornament may intrude into the map window.",
+    "interactive-control": "Tactile button/slot construction with clear perimeter, legible face, controlled bevel and state-specific material response; no baked-in icon or lettering.",
+    "hud-strip": "Long horizontal plate with repeatable stretch-safe centre and deliberate end caps; no focal ornament in stretch regions.",
+    "menu-panel": "Large architectural panel with layered frame, quiet content field and disciplined perimeter ornament; reserve clear space for engine-rendered typography.",
+    "panel": "Reusable structural panel with clear perimeter, quiet centre, robust corners and continuous stretch-safe edges.",
+    "misc-ui": "One functional fantasy RTS interface object with deliberate silhouette, clear hierarchy and no unrelated scenery."
+}
+
 def make_job(a:dict,theme:str,seed:int)->dict:
     name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
     states=", ".join(a.get("states") or []) or "normal/default state"
@@ -352,15 +373,18 @@ def make_job(a:dict,theme:str,seed:int)->dict:
         if alpha else
         "Fill panel surface; content/text field is empty and unobstructed."
     )
-    prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
+    prompt=(f"Create ONE final production asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}; "
+    "deliver the isolated game-ready artwork, not a mockup or concept. "
     f"Family {kind}; state {states}. Semantic subject: {semantic}. Manifest context: {context}. "
+    f"Family composition rules: {FAMILY_DIRECTION[kind]}. "
+    f"Art direction: {ART_DIRECTION_CORE}. "
     f"State rendering instruction: {state_brief(states)}. "
     f"Palette: {t['palette']}. Materials: {material(name,kind)}. "
     f"Surface rendering: {t['materials']}. Ornament: {t['ornament']}. "
     f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
     "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
-    "Strong silhouette and hierarchy at native UI scale; believable bevels, subtle wear, consistent light direction, "
-    "clean anti-aliased edges, no clutter. "+aperture_instruction)
+    "No text, numbers, logos, signature, watermark, extra objects or fake alpha. "
+    "Inspect the intended result at 100%, 50% and 25% size before considering it complete. "+aperture_instruction)
     negative=("text, typography, letters, digits, words, logos, watermark, signature, screenshot, mockup, "
     "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
