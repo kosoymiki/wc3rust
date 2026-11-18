@@ -850,9 +850,16 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     try:
         results=[]
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures=[pool.submit(run_one,job) for job in jobs]
-            for future in concurrent.futures.as_completed(futures):
-                row=future.result();results.append(row)
+            future_jobs={pool.submit(run_one,job):job for job in jobs}
+            for future in concurrent.futures.as_completed(future_jobs):
+                job=future_jobs[future]
+                try:
+                    row=future.result()
+                except Exception as exc:
+                    row={"job_id":job.get("job_id","<unknown>"),"asset":job.get("asset"),
+                         "output":job.get("output"),"status":"failed","generated_at":None,
+                         "error":f"worker setup/runtime exception: {exc}","sha256":None}
+                results.append(row)
                 print(f"HUD_ARTISAN_JOB {row['status']} id={row['job_id']} output={row['output']}")
         results.sort(key=lambda row:row["job_id"])
         ok=all(row["status"]=="succeeded" for row in results)
