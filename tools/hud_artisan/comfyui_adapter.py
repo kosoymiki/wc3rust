@@ -89,7 +89,7 @@ def download_image(base: str, image_meta: dict, timeout: int) -> bytes:
     endpoint = "/view?" + parse.urlencode(query)
     req = request.Request(base.rstrip("/") + endpoint, headers={"Accept": "image/png"})
     try:
-        with request.urlopen(req, timeout=timeout) as response:
+        with open_http(req, base, timeout) as response:
             data = response.read(MAX_RESPONSE_BYTES + 1)
     except error.HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", "replace")
@@ -114,6 +114,23 @@ def main(argv=None) -> int:
 
         job = read_json(args.job_json)
         cfg = read_json(args.config)
+        job_id = job.get("job_id")
+        if not isinstance(job_id, str) or len(job_id) != 16 or any(ch not in "0123456789abcdef" for ch in job_id):
+            raise ComfyError("job_id must be a 16-character lowercase hexadecimal id")
+        for key in ("prompt", "negative_prompt"):
+            if not isinstance(job.get(key), str) or not job[key].strip():
+                raise ComfyError(f"job.{key} must be a non-empty string")
+        for key in ("width", "height", "seed"):
+            value = job.get(key)
+            if type(value) is not int or value < 1 or value > (8192 if key != "seed" else 4294967295):
+                raise ComfyError(f"job.{key} is outside the supported integer range")
+        if Path(args.output).suffix.lower() != ".png":
+            raise ComfyError("output path must end in .png")
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        output_parent = args.output.parent.resolve()
+        output_path = output_parent / args.output.name
+        if output_path.is_symlink() or (output_path.exists() and not output_path.is_file()):
+            raise ComfyError("output path must be a regular file path, not a symlink or directory")
         if cfg.get("schema_version") != 1:
             raise ComfyError("unsupported ComfyUI adapter config schema_version (expected 1)")
         base = os.environ.get("COMFYUI_URL", cfg.get("server", "http://127.0.0.1:8188"))
@@ -142,9 +159,9 @@ def main(argv=None) -> int:
         for key, value in (
             ("positive_prompt", job["prompt"]),
             ("negative_prompt", job["negative_prompt"]),
-            ("width", int(job["width"])),
-            ("height", int(job["height"])),
-            ("seed", int(job["job_id"][:8], 16)),
+            ("width", job["width"]),
+            ("height", job["height"]),
+            ("seed", job["seed"]),
         ):
             mapping = mappings.get(key)
             if not isinstance(mapping, dict):
@@ -158,6 +175,8 @@ def main(argv=None) -> int:
         output_node_id = str(cfg.get("output_node_id", ""))
         if not output_node_id:
             raise ComfyError("config.output_node_id must identify the SaveImage node")
+        if output_node_id not in workflow or not isinstance(workflow[output_node_id], dict):
+            raise ComfyError(f"configured output node {output_node_id!r} is absent from the workflow")
         deadline = time.monotonic() + max_wait
         image_meta = None
         while time.monotonic() < deadline:
@@ -185,14 +204,22 @@ def main(argv=None) -> int:
                 expected = (int(job["width"]), int(job["height"]))
                 if rgba.size != expected:
                     raise ComfyError(f"ComfyUI output size {rgba.size} != requested {expected}; no silent resizing")
-                if job.get("requires_alpha") and rgba.getchannel("A").getextrema() == (255, 255):
-                    raise ComfyError("this job requires a transparent silhouette; workflow output is fully opaque")
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.NamedTemporaryFile(dir=args.output.parent, suffix=".png.tmp", delete=False) as tmp:
+                if job.get("requires_alpha"):
+                    alpha = rgba.getchannel("A")
+                    if alpha.getextrema() == (255, 255):
+                        raise ComfyError("this job requires transparency; workflow output is fully opaque")
+                    if job.get("family") in ("portrait-frame", "minimap-frame"):
+                        w, h = rgba.size
+                        aperture = alpha.crop((int(w*0.30), int(h*0.30), max(int(w*0.30)+1, int(w*0.70)), max(int(h*0.30)+1, int(h*0.70))))
+                        histogram = aperture.histogram()
+                        transparent = sum(histogram[:9]) / max(1, aperture.width * aperture.height)
+                        if transparent < 0.97:
+                            raise ComfyError(f"frame aperture transparency is {transparent:.3f}; expected >=0.970")
+                with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".png.tmp", delete=False) as tmp:
                     temporary = Path(tmp.name)
                 try:
                     rgba.save(temporary, format="PNG", optimize=True, compress_level=9)
-                    temporary.replace(args.output)
+                    temporary.replace(output_path)
                 finally:
                     temporary.unlink(missing_ok=True)
         except ComfyError:
