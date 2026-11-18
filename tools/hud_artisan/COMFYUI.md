@@ -49,71 +49,67 @@ from your own exported API workflow. Keep the workflow file and model checkpoint
 repository if they contain private paths or licensed/private models.
 
 
-## GitHub Actions GPU rendering
+## GitHub Actions CPU rendering: slow draft first
 
-The repository includes `.github/workflows/hud-artisan-comfyui.yml`. It runs the same
-HUD Artisan planner/dispatcher/ingester in CI and sends every asset job to a real ComfyUI
-HTTP API. It deliberately targets a **self-hosted Linux x64 GPU runner** with labels
-`self-hosted`, `linux`, `x64`, `gpu`; ordinary GitHub-hosted runners are not treated
-as GPU workers.
+The workflow `.github/workflows/hud-artisan-comfyui.yml` runs ComfyUI on a standard
+GitHub-hosted CPU runner (`ubuntu-latest`) with CPU-only PyTorch and
+`python main.py --cpu`. It does not require a GPU or a self-hosted machine.
 
-The runner must have:
-- a supported NVIDIA GPU and working CUDA/PyTorch installation;
-- ComfyUI installed and running locally on `http://127.0.0.1:8188` (or a reachable
-  endpoint supplied through the `COMFYUI_URL` Actions secret);
-- the checkpoint, VAE, custom nodes and other workflow dependencies already installed;
-- enough free disk for model weights, temporary images and the generated pack.
+### Draft mode (default)
 
-Configure these repository Actions secrets:
-- `HUD_COMFYUI_WORKFLOW_B64`: base64 of the ComfyUI **API-format** workflow JSON;
-- `HUD_COMFYUI_CONFIG_B64`: base64 of the adapter config JSON from `comfyui.example.json`;
-- `HUD_COMFYUI_MODEL`: exact checkpoint/model identifier and revision used by the workflow;
-- `HUD_COMFYUI_LICENSE`: truthful license/provenance declaration for that model and its outputs;
-- `COMFYUI_URL` (optional): ComfyUI API root; defaults to `http://127.0.0.1:8188`.
+The workflow defaults to `scope=draft`. It uses
+`tools/hud_artisan/draft/manifest.json`, a deliberately reduced but schema-valid
+manifest that compiles to exactly one real generation job:
 
-The workflow JSON and config are injected into the runner at job time and are not committed
-to this public repository. The job creates a generic HUD Artisan adapter around the private
-ComfyUI config, checks `/system_stats`, compiles deterministic jobs, dispatches them serially,
-ingests the PNGs, runs pixel/engine validation and uploads the pack plus contact sheet as a
-14-day Actions artifact. It does **not** fabricate Art Director or Red Team approvals; the
-independent visual review gate remains a separate release requirement.
+- `menu_panel_normal_512x384`, 512×384 RGBA PNG;
+- one atlas mapping retained so the planner exercises the real manifest/atlas path;
+- all five runtime font filenames retained in the manifest contract;
+- no production ingest or 92-asset release claim is made.
 
-Run it from Actions → “HUD Artisan — ComfyUI GPU render” → Run workflow. Select the manifest,
-theme and deterministic seed.
+Draft mode renders one panel, then checks the exact dimensions, decodability,
+non-empty alpha, colour variance and colour diversity. It creates
+`draft-preview.png` over a checkerboard and `draft-qa.json`. These are structural
+checks only; they do not establish that the artwork is beautiful or ready to ship.
+The raw PNG, job plan, worker provenance, preview and QA report are uploaded as a
+14-day Actions artifact.
 
-**Current repository blocker:** the production manifest path shown by the workflow is not
-present in the current remote branch tree. The workflow intentionally stops before rendering
-if that file is absent. The full five-font dependency set must also be available to ingestion.
-This CI integration is committed, but it is not yet an executed render and does not imply that
-any HUD images have been generated. Do not start a costly render until the authoritative
-manifest and matching asset/font contract are committed.
+Run Actions → **HUD Artisan — ComfyUI CPU render** → Run workflow and leave
+`scope=draft`. The default theme and seed are suitable for the first pilot.
 
+### Full mode
 
-## GitHub-hosted CPU-only rendering
+Only select `scope=full` after a draft has actually completed and been visually
+reviewed. Full mode uses the production manifest path supplied in the workflow
+input, enables the strict 92-asset engine contract, renders serially, ingests the
+complete pack, validates it and creates the production contact sheet. The production
+manifest, five font binaries and all runtime assets must exist on the selected branch
+before this mode can pass.
 
-The workflow uses `runs-on: ubuntu-latest` and installs ComfyUI plus CPU-only PyTorch
-inside the ephemeral GitHub runner. It launches ComfyUI with `python main.py --cpu`.
-No GPU, self-hosted runner, external machine or always-on ComfyUI server is required.
+### Required Actions secrets
 
-Required Actions secrets:
 - `HUD_COMFYUI_WORKFLOW_B64`: base64-encoded ComfyUI API-format workflow JSON;
 - `HUD_COMFYUI_CONFIG_B64`: base64-encoded adapter config JSON;
-- `HUD_COMFYUI_MODEL_URL`: direct HTTPS download URL for the checkpoint file;
-- `HUD_COMFYUI_MODEL_SHA256`: exact SHA-256 digest of that checkpoint;
+- `HUD_COMFYUI_MODEL_URL`: direct HTTPS download URL for the checkpoint;
+- `HUD_COMFYUI_MODEL_SHA256`: exact SHA-256 digest of the checkpoint;
 - `HUD_COMFYUI_MODEL`: model identifier/revision for provenance;
 - `HUD_COMFYUI_LICENSE`: truthful model/output license declaration;
 - `HF_TOKEN` (optional): token for a gated Hugging Face download;
-- `COMFYUI_URL` is optional; default is the local ComfyUI API.
+- `COMFYUI_URL` (optional): defaults to the local runner API.
 
-The checkpoint is downloaded into the runner's ComfyUI checkpoint directory and its
-SHA-256 is verified before ComfyUI starts. The API workflow must reference the exact
-checkpoint filename. The generated model weights and private workflow are not committed
-to the repository.
+The downloaded checkpoint filename must match the checkpoint selected by the
+private API workflow. The private workflow must expose the five adapter mappings:
+positive prompt, negative prompt, latent width, latent height and seed, plus the
+final `SaveImage` output node. Example node IDs are not a working workflow.
+The workflow and model weights stay outside the public repository.
 
-**Performance warning:** standard `ubuntu-latest` runners have finite CPU/RAM/disk and
-ComfyUI explicitly documents `--cpu` as slow. A full 92-asset production render may exceed
-the Actions job time limit. The first run should be treated as a measured pilot, not assumed
-to finish the entire pack. The production manifest must exist in the selected branch before
-the dispatch step; the currently documented default manifest path is not present in the
-remote tree at the time this workflow was changed. Do not interpret successful ComfyUI
-startup as successful asset generation.
+### Performance and evidence policy
+
+CPU inference is intentionally slow. One draft job is the first measurement point;
+do not infer the runtime of the complete 92-asset batch from ComfyUI startup alone.
+The workflow timeout is six hours, but a timeout is not a promise that a full batch
+will finish. No generated image or successful render is claimed until a workflow run
+has completed and its artifact has been inspected.
+
+The draft manifest is a generation fixture, not a replacement for the authoritative
+production manifest. Draft mode deliberately skips pack ingestion because a one-asset
+subset cannot satisfy the complete runtime/font/atlas release contract.
