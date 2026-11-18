@@ -115,6 +115,23 @@ stretch is never implicit. Opaque silhouettes (icons/cursors) and filled portrai
 explicit override is requested. Five font files are mandatory runtime dependencies; they must be
 supplied and are never replaced with empty stubs.
 
+## Art direction and release-quality gate
+
+The visual target is premium authored RTS artwork. Read `ART_DIRECTOR_BRIEF.md` before assigning any job; `AGENT_TASK.md` is the worker's mandatory contract. The goal is an original wc3rust identity with high-end material craft and game-scale legibility, not a copy of Blizzard retail assets.
+
+After ingestion and structural validation, generate contact sheets and run two genuinely independent vision reviews: one Art Director and one Red Team Reviewer. They must inspect the exact final PNG bytes and report all ten criteria in `review.schema.json`. The gate requires 10/10 on every criterion from both reviewers, no blockers, no suggested improvements, confidence >=0.95, and matching SHA-256 for every reviewed image.
+
+```sh
+python3 tools/hud_artisan/review_gate.py \\
+  --manifest path/to/manifest.json \\
+  --jobs build/hud-artisan/jobs/jobs.json \\
+  --pack build/hud-artisan/pack \\
+  --reviews build/hud-artisan/reviews.json \\
+  --out build/hud-artisan/review-report.json
+```
+
+A changed PNG invalidates its prior review. Any score below 10 triggers a targeted regeneration/retouch loop and a fresh review by both agents. A machine PASS means only that the evidence meets the declared gate; it does not prove artistic excellence. Final release still requires human art-director sign-off, runtime pack checks, Rust loader tests and real landscape/portrait screenshots. Full protocol: `REVIEW_PROTOCOL.md`.
+
 ## Verified engine contract
 
 engine_profile.json and the code-level strict gate record known constraints: 768 design height;
