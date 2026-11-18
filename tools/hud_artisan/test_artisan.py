@@ -357,6 +357,17 @@ class Tests(unittest.TestCase):
             m.write_text(json.dumps(doc))
             with self.assertRaises(ValueError):artisan.load_manifest(m)
 
+    def test_prompt_embeds_premium_art_direction_and_family_rules(self):
+        icon={"name":"icon_gold","file":"gold.png","w":64,"h":64,
+              "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
+        job=artisan.make_job(icon,"classic-modern",73)
+        self.assertIn("Premium hand-authored real-time-strategy game UI illustration",job["prompt"])
+        self.assertIn("Distinct from every sibling icon",job["prompt"])
+        self.assertIn("readable at native target size",job["prompt"])
+        self.assertIn("one dominant silhouette",job["prompt"])
+        panel={**icon,"name":"minimap_frame_normal_216"}
+        frame=artisan.make_job(panel,"classic-modern",73)
+        self.assertIn("fully transparent unobstructed map aperture",frame["prompt"])
     def test_semantic_family_order_and_transparency_contract(self):
         self.assertEqual(artisan.family("icon_minimap_scout"),"icon")
         self.assertEqual(artisan.family("minimap_header_normal_216x20"),"hud-strip")
