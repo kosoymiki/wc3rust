@@ -243,8 +243,7 @@ def make_job(a:dict,theme:str,seed:int)->dict:
       "requires_alpha":alpha,"prompt":prompt,"negative_prompt":negative,
       "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
 
-def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
-    doc=load_manifest(manifest,engine_contract);out.mkdir(parents=True,exist_ok=True)
+def compile_jobs(doc:dict[str,Any],theme:str,seed:int)->tuple[list[dict],dict]:
     atlas=doc["atlas"]["commandbuttons"]
     atlas_file=atlas.get("file")
     by_name={a["name"]:a for a in doc["assets"]}
@@ -253,15 +252,16 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
         raise ValueError("atlas.commandbuttons.file must resolve to an assets[].file entry")
     atlas_asset=by_file[atlas_file]
     jobs=[];cells=[]
-    # The atlas image itself is assembled from its independently generated cells.
-    # Never ask an image model to produce a single 2048x2048 sprite sheet.
-    for a in doc["assets"]:
-        if a["file"] != atlas_file:
-            jobs.append(make_job(a,theme,seed))
+    # The atlas image itself is assembled from independently generated cells.
+    # Never ask an image model to produce a monolithic sprite sheet.
+    for asset in doc["assets"]:
+        if asset["file"] != atlas_file:
+            jobs.append(make_job(asset,theme,seed))
     occupied=[];cell_ids=set()
     for entry in atlas["entries"]:
         ident=str(entry.get("id","")).strip()
-        if not ident or ident in cell_ids: raise ValueError(f"atlas cell id is empty or duplicated: {ident!r}")
+        if not ident or ident in cell_ids:
+            raise ValueError(f"atlas cell id is empty or duplicated: {ident!r}")
         cell_ids.add(ident)
         x,y,w,h=(int(round(float(entry[k]))) for k in ("x","y","w","h"))
         if x<0 or y<0 or w<1 or h<1 or x+w>atlas_asset["w"] or y+h>atlas_asset["h"]:
@@ -272,8 +272,10 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
         occupied.append((x,y,w,h,ident))
         source_asset=entry.get("source_asset") or entry.get("asset")
         source_file=entry.get("source_file")
-        if source_asset in by_name: source_file=by_name[source_asset]["file"]
-        elif source_asset in by_file: source_file=source_asset
+        if source_asset in by_name:
+            source_file=by_name[source_asset]["file"]
+        elif source_asset in by_file:
+            source_file=source_asset
         elif source_asset:
             raise ValueError(f"atlas cell {ident}: unknown source_asset {source_asset!r}")
         elif ident in by_name and by_name[ident]["file"] != atlas_file:
@@ -286,18 +288,49 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
             jobs.append(make_job(pseudo,theme,seed))
             source_file=file
         cells.append({"id":ident,"x":x,"y":y,"w":w,"h":h,"source_asset":source_asset,"source_file":source_file})
+    return jobs,{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}
+
+def verify_plan(manifest:Path,jobs_path:Path)->tuple[dict[str,Any],dict[str,Any]]:
+    plan_doc=read_json(jobs_path)
+    if plan_doc.get("tool")!="HUD Artisan" or plan_doc.get("schema_version")!=1:
+        raise ValueError("unsupported jobs.json tool/schema")
+    if plan_doc.get("version")!=VERSION:
+        raise ValueError(f"jobs.json version {plan_doc.get('version')!r} != {VERSION}")
+    engine_contract=plan_doc.get("engine_contract")
+    if not isinstance(engine_contract,bool):
+        raise ValueError("jobs.json is missing its engine_contract flag")
+    doc=load_manifest(manifest,engine_contract)
+    if plan_doc.get("source_manifest_sha256")!=sha(manifest.read_bytes()):
+        raise ValueError("jobs.json was compiled from a different manifest revision")
+    theme=plan_doc.get("theme");seed=plan_doc.get("seed")
+    if theme not in THEMES or type(seed) is not int:
+        raise ValueError("jobs.json has invalid theme or seed")
+    expected_jobs,expected_atlas=compile_jobs(doc,theme,seed)
+    if plan_doc.get("job_count")!=len(expected_jobs):
+        raise ValueError("jobs.json job_count does not match its manifest")
+    if plan_doc.get("jobs")!=expected_jobs:
+        raise ValueError("jobs.json jobs differ from deterministic manifest compilation")
+    if plan_doc.get("atlas")!=expected_atlas:
+        raise ValueError("jobs.json atlas geometry/source mapping differs from the manifest")
+    return plan_doc,doc
+
+def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
+    doc=load_manifest(manifest,engine_contract)
+    jobs,atlas_plan=compile_jobs(doc,theme,seed)
+    out.mkdir(parents=True,exist_ok=True)
     payload={"tool":"HUD Artisan","schema_version":1,"version":VERSION,"theme":theme,"seed":seed,
-      "engine_contract":engine_contract,"source_manifest_sha256":sha(manifest.read_bytes()),"job_count":len(jobs),"jobs":jobs,
-      "atlas":{"file":atlas_file,"width":atlas_asset["w"],"height":atlas_asset["h"],"cells":cells}}
+      "engine_contract":engine_contract,"source_manifest_sha256":sha(manifest.read_bytes()),
+      "job_count":len(jobs),"jobs":jobs,"atlas":atlas_plan}
     (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     pd=out/"prompts"
     if pd.exists(): shutil.rmtree(pd)
     pd.mkdir(parents=True,exist_ok=True)
     prompt_names=set()
-    for j in jobs:
-        body=(f"# {j['asset']}\n\nJob: {j['job_id']}\nOutput: {j['output']}\nTarget: {j['width']}x{j['height']} RGBA8 PNG\n"
-        f"Family: {j['family']}\nInsets: {j['insets']}\n\n## Prompt\n{j['prompt']}\n\n## Negative prompt\n{j['negative_prompt']}\n")
-        prompt_name=slug(j["asset"])+"-"+j["job_id"][:8]+".md"
+    for job in jobs:
+        body=(f"# {job['asset']}\n\nJob: {job['job_id']}\nOutput: {job['output']}\nTarget: {job['width']}x{job['height']} RGBA8 PNG\n"
+        f"Family: {job['family']}\nInsets: {job['insets']}\nPrompt SHA-256: {job['prompt_sha256']}\n\n"
+        f"## Prompt\n{job['prompt']}\n\n## Negative prompt\n{job['negative_prompt']}\n")
+        prompt_name=slug(job["asset"])+"-"+job["job_id"][:8]+".md"
         if prompt_name in prompt_names: raise ValueError(f"prompt filename collision: {prompt_name}")
         prompt_names.add(prompt_name)
         (pd/prompt_name).write_text(body,encoding="utf-8")
@@ -315,21 +348,21 @@ the tool from atlas cell jobs and must never be generated as a single model-crea
 - Keep text out of images; the engine renders text.
 - Clean-room fantasy art only. No extracted game assets, screenshots, logos or copied retail artwork.
 - Deliver PNGs under the declared paths and provenance.json with provider/model/revision, seed,
-  prompt hash, references, license and post-processing.
+  prompt hash, jobs_sha256, references, license and post-processing.
 - Structural PASS is not art approval; inspect at native size and perform in-engine screenshot QA.
 
 The plan also contains atlas cell coordinates and source paths. The ingest step composites these
 cells into the declared atlas asset file at exact coordinates.
 
 Run:
+  python tools/hud_artisan/generate.py dispatch --manifest MANIFEST --jobs JOBS_JSON --adapter ADAPTER --drop DROP
   python tools/hud_artisan/generate.py ingest --manifest MANIFEST --jobs JOBS_JSON --drop DROP --out PACK
-  python tools/hud_artisan/generate.py validate --manifest MANIFEST --pack PACK --pixels
-  python tools/hud_artisan/generate.py contact-sheet --manifest MANIFEST --pack PACK --out contact-sheet.png
+  python tools/hud_artisan/generate.py validate --manifest MANIFEST --pack PACK --pixels --engine-contract
 
 Theme={theme}; seed={seed}; source manifest SHA-256={sha(manifest.read_bytes())}
 """
     (out/"AGENT_BRIEF.md").write_text(brief,encoding="utf-8")
-    print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} atlas_cells={len(cells)} out={out}");return 0
+    print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} atlas_cells={len(atlas_plan['cells'])} out={out}");return 0
 
 def png_info(path:Path)->tuple[int,int,int,int]:
     data=path.read_bytes()
