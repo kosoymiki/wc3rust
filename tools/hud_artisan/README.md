@@ -1,4 +1,4 @@
-# HUD Artisan 1.0
+# HUD Artisan 1.0.1
 
 HUD Artisan is the provider-neutral art-production and quality-assurance pipeline for wc3rust.
 It compiles the authoritative HUD manifest into independent generation jobs. Any image model,
@@ -38,7 +38,7 @@ python3 tools/hud_artisan/generate.py plan \
 The plan is deterministic for a fixed manifest, theme and seed. Every prompt describes the semantic
 object (not merely the filename), target dimensions, visual family, UI state, palette, materials,
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
-its stable job ID is derived from that hash. Read STYLE_BIBLE.md for the shared art-direction grammar.
+its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar.
 
 ### Run the built-in ComfyUI adapter
 
@@ -69,7 +69,7 @@ python3 tools/hud_artisan/generate.py dispatch \
   --drop build/hud-artisan/drop --parallel 1
 ~~~
 
-The adapter injects exact prompts and dimensions, derives a stable per-job seed, polls ComfyUI
+The adapter injects the exact prompts, dimensions and compiled per-asset seed, preflights the configured SaveImage node before submitting inference, polls ComfyUI
 history and downloads the final SaveImage output. It rejects non-PNG data, wrong dimensions and
 opaque output for alpha-required assets. The ComfyUI workflow must include a valid transparent-
 background path for icons/cursors; a stock opaque Stable Diffusion workflow is not sufficient.
@@ -80,7 +80,7 @@ A custom CLI/API adapter is also supported: command is an argv array, never a sh
 allowlisted environment variables and secret-redacted worker logs are enforced by the dispatcher.
 No provider credentials, model weights or SDK are bundled.
 
-Agents read jobs.json and AGENT_BRIEF.md and write one PNG per job into the drop directory.
+Agents read jobs.json and AGENT_TASK.md and write one PNG per job into the drop directory.
 The command-buttons atlas is assembled from individual cell jobs or explicitly mapped asset outputs,
 using exact manifest coordinates. The pipeline never trusts a model-created sprite-sheet grid.
 
@@ -105,12 +105,15 @@ python3 tools/hud_artisan/generate.py contact-sheet \
 
 The plan file is mandatory. It binds each job ID to its exact prompt hash and the complete source
 manifest hash. Ingestion checks the exact plan SHA-256, complete job set, provider, model, generation
-timestamp, license declaration, prompt SHA-256 and generated PNG SHA-256 before importing.
+timestamp, license declaration, per-asset seed, positive/negative prompt SHA-256 and generated PNG
+SHA-256 before importing. The destination is built in a sibling temporary directory and atomically
+renamed only when every asset, atlas cell and font dependency succeeds; failed imports are rolled back.
 The staging output directory must be empty; the importer will not overwrite an existing pack.
 
 Strict dimensions are the default. Use contain/crop only when explicitly acceptable. Non-uniform
-stretch is never implicit. Opaque icons are rejected unless overridden. Five font files are runtime
-dependencies; they are copied only when supplied and are never replaced with empty stubs.
+stretch is never implicit. Opaque silhouettes (icons/cursors) and filled portrait/minimap apertures are rejected unless an
+explicit override is requested. Five font files are mandatory runtime dependencies; they must be
+supplied and are never replaced with empty stubs.
 
 ## Verified engine contract
 
@@ -129,7 +132,7 @@ a plausible-looking but engine-incompatible pack.
 - Manifest: required schema, unique names/paths, safe relative PNG paths, bounded dimensions,
   finite non-negative insets, five safe font filenames and non-empty atlas cells.
 - PNG: signature, chunk bounds, CRCs, IHDR, exact dimensions, RGBA8, IDAT, IEND and no trailing data.
-- Pixel QA: full decode, non-empty alpha bounds, sampled colour diversity and image variance.
+- Pixel QA: full decode, non-empty alpha bounds, sampled colour diversity and image variance; alpha-required silhouette checks and >=97% transparent centre aperture for portrait/minimap frames.
   These heuristics catch blank/flat placeholders; they do not declare art beautiful.
 - Atlas: declared texture exists; cells are in bounds and non-overlapping before generation and ingest.
 - Provenance: exact plan hash, complete job set, prompt hash and output hash must match.
