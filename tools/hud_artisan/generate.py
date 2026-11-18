@@ -38,16 +38,21 @@ def sha(data:bytes)->str: return hashlib.sha256(data).hexdigest()
 def slug(s:str)->str: return re.sub(r"[^a-z0-9_-]+","-",s.lower()).strip("-") or "asset"
 def safe_rel(value:str)->Path:
     p=Path(value)
-    if not value or p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
+    if not isinstance(value,str) or not value or "\\" in value or p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
         raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     return p
-def safe_join(root:Path,relative:str|Path)->Path:
+
+def safe_join_any(root:Path,relative:str|Path)->Path:
     base=root.resolve()
-    rel=safe_rel(str(relative))
+    rel=Path(relative)
+    if not str(relative) or rel.is_absolute() or "\\" in str(relative) or ".." in rel.parts:
+        raise ValueError(f"unsafe relative path: {relative!r}")
     target=(base/rel).resolve()
     if not target.is_relative_to(base):
         raise ValueError(f"path escapes its root through a symlink: {relative}")
     return target
+def safe_join(root:Path,relative:str|Path)->Path:
+    return safe_join_any(root,safe_rel(str(relative)))
 
 def read_json(path:Path)->dict[str,Any]:
     try: obj=json.loads(path.read_text(encoding="utf-8"))
