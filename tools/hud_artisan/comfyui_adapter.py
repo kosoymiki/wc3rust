@@ -170,16 +170,17 @@ def main(argv=None) -> int:
             if not isinstance(mapping, dict):
                 raise ComfyError(f"missing workflow node mapping: {key}")
             apply_node_input(workflow, mapping, key, value)
+        output_node_id = cfg.get("output_node_id")
+        if not isinstance(output_node_id, str) or not output_node_id.strip():
+            raise ComfyError("config.output_node_id must identify the SaveImage node")
+        output_node = workflow.get(output_node_id)
+        if not isinstance(output_node, dict) or output_node.get("class_type") != "SaveImage":
+            raise ComfyError(f"configured output node {output_node_id!r} must exist and have class_type='SaveImage'")
         client_id = str(uuid.uuid4())
         submitted = http_json(base, "/prompt", {"prompt": workflow, "client_id": client_id}, timeout)
         prompt_id = submitted.get("prompt_id") if isinstance(submitted, dict) else None
         if not isinstance(prompt_id, str) or not prompt_id:
             raise ComfyError(f"ComfyUI did not return prompt_id: {submitted!r}")
-        output_node_id = str(cfg.get("output_node_id", ""))
-        if not output_node_id:
-            raise ComfyError("config.output_node_id must identify the SaveImage node")
-        if output_node_id not in workflow or not isinstance(workflow[output_node_id], dict):
-            raise ComfyError(f"configured output node {output_node_id!r} is absent from the workflow")
         deadline = time.monotonic() + max_wait
         image_meta = None
         while time.monotonic() < deadline:
