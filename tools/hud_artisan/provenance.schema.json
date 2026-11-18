@@ -5,7 +5,8 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "jobs"
+    "jobs",
+    "jobs_sha256"
   ],
   "properties": {
     "schema_version": {
@@ -59,6 +60,10 @@
           }
         }
       }
+    },
+    "jobs_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
     }
   }
 }
