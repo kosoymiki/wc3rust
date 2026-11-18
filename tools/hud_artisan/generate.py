@@ -571,8 +571,9 @@ def dispatch(jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|No
         prompt=job.get("prompt","")
         if not isinstance(prompt,str) or job.get("prompt_sha256")!=sha(prompt.encode("utf-8")):
             raise ValueError(f"{jid}: prompt hash mismatch in jobs.json")
-        if len(job.get("width",0).__str__())==0 or job.get("width",0)<1 or job.get("height",0)<1:
-            raise ValueError(f"{jid}: invalid target dimensions")
+        width,height=job.get("width"),job.get("height")
+        if type(width) is not int or type(height) is not int or width<1 or height<1 or width*height>MAX_PIXELS:
+            raise ValueError(f"{jid}: invalid target dimensions {width}x{height}")
         if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
         ids.add(jid);paths.add(str(rel))
     work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
