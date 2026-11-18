@@ -64,6 +64,16 @@ class Tests(unittest.TestCase):
         self.assertEqual(first["prompt_sha256"],repeated["prompt_sha256"])
         self.assertNotEqual(first["job_id"],changed["job_id"])
         self.assertNotEqual(first["prompt_sha256"],changed["prompt_sha256"])
+    def test_manifest_semantics_override_filename_heuristics(self):
+        asset={"name":"ability_q_custom_32","file":"icons/custom.png","w":32,"h":32,
+               "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"],
+               "semantic":"a three-pronged frost spear wrapping around a crimson heart",
+               "faction":"northern frost cult","visual_tags":["ice","piercing","healing"]}
+        prompt=artisan.make_job(asset,"classic-modern",9)["prompt"]
+        self.assertIn("three-pronged frost spear",prompt)
+        self.assertIn("northern frost cult",prompt)
+        self.assertIn("piercing",prompt)
+        self.assertNotIn("generic placeholder rune",prompt)
     def test_semantic_subjects_and_state_language(self):
         icon={"name":"icon_frost_spell_32","file":"icons/frost.png","w":32,"h":32,
               "insets":{"l":0,"t":0,"r":0,"b":0},"states":["hover","disabled"]}
