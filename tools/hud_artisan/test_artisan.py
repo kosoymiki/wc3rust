@@ -97,6 +97,23 @@ class Tests(unittest.TestCase):
         self.assertEqual(first["prompt_sha256"],repeated["prompt_sha256"])
         self.assertNotEqual(first["job_id"],changed["job_id"])
         self.assertNotEqual(first["prompt_sha256"],changed["prompt_sha256"])
+    def test_manifest_reference_requires_existing_file_and_license(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m=root/"manifest.json"
+            a={"name":"panel","file":"panel.png","w":8,"h":8,"insets":{"l":0,"t":0,"r":0,"b":0},
+               "references":[{"source":"reference.png","license":"CC0-1.0","purpose":"material guidance","file":"reference.png"}]}
+            at={"name":"atlas","file":"atlas.png","w":8,"h":8,"insets":{"l":0,"t":0,"r":0,"b":0}}
+            doc={"design_height":768,"reference_resolution":{},"safe_area_1080p":{},"command_card":{},"control_groups":{},
+              "atlas":{"commandbuttons":{"file":"atlas.png","entries":[{"id":"a","x":0,"y":0,"w":4,"h":4}]}},
+              "assets":[a,at],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            m.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError,"reference 0 file does not exist"):
+                artisan.load_manifest(m)
+            (root/"reference.png").write_bytes(b"not decoded as an art image here")
+            loaded=artisan.load_manifest(m)
+            job=artisan.make_job(loaded["assets"][0],"classic-modern",1)
+            self.assertEqual(job["references"],a["references"])
+            self.assertIn("CC0-1.0",job["prompt"])
     def test_manifest_semantics_override_filename_heuristics(self):
         asset={"name":"ability_q_custom_32","file":"icons/custom.png","w":32,"h":32,
                "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"],
