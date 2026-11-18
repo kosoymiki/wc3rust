@@ -52,11 +52,11 @@ jobs:
       - name: Checkout selected branch
         uses: actions/checkout@v4
 
-      - name: Check production manifest before downloading models
+      - name: Check selected manifest before downloading models
         shell: bash
         run: |
           set -euo pipefail
-          test -f "$MANIFEST" || { echo "::error::Manifest not found: $MANIFEST. Restore the authoritative production manifest before launching CPU inference."; exit 1; }
+          test -f "$MANIFEST" || { echo "::error::Manifest not found: $MANIFEST."; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -190,6 +190,15 @@ jobs:
           workflow = json.loads((p / "comfyui_api_workflow.json").read_text())
           if not isinstance(workflow, dict) or not workflow:
               raise SystemExit("ComfyUI API workflow must be a non-empty object")
+          checkpoint = os.environ.get("COMFYUI_CHECKPOINT", "")
+          referenced = []
+          for node in workflow.values():
+              if isinstance(node, dict) and isinstance(node.get("inputs"), dict):
+                  for key in ("ckpt_name", "checkpoint_name"):
+                      if key in node["inputs"]:
+                          referenced.append(str(node["inputs"][key]))
+          if not checkpoint or checkpoint not in referenced:
+              raise SystemExit(f"API workflow must reference the exact downloaded checkpoint filename {checkpoint!r}; found {referenced!r}")
           adapter = {"schema_version": 1, "name": "github-actions-comfyui-cpu", "provider": "ComfyUI", "model": os.environ["MODEL_ID"], "license": os.environ["MODEL_LICENSE"], "working_directory": "../..", "command": ["python", "tools/hud_artisan/comfyui_adapter.py", "--config", "build/hud-artisan/private/comfyui.json", "--job-json", "{job_json}", "--output", "{output_path}"], "environment": ["COMFYUI_URL"], "timeout_seconds": 1900, "retries": 1, "max_parallel": 1, "references": [], "postprocessing": []}
           Path("build/hud-artisan/adapter.json").write_text(json.dumps(adapter, indent=2) + "\n")
           PY
