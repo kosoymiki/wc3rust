@@ -65,6 +65,45 @@ jobs:
           cache: pip
           cache-dependency-path: tools/hud_artisan/requirements.txt
 
+      - name: Compile and validate the deterministic draft plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$MANIFEST" || { echo "::error::Manifest not found: $MANIFEST"; exit 1; }
+          python tools/hud_artisan/generate.py profile --out build/hud-artisan/engine-profile.json
+          args=(--manifest "$MANIFEST" --out build/hud-artisan/jobs --theme "$THEME" --seed "$SEED")
+          if [ "$SCOPE" = "full" ]; then args+=(--engine-contract); fi
+          python tools/hud_artisan/generate.py plan "${args[@]}"
+          if [ "$SCOPE" = "draft" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("build/hud-artisan/jobs/jobs.json")
+          jobs=json.loads(p.read_text())
+          if jobs.get("job_count") != 1 or len(jobs.get("jobs", [])) != 1:
+              raise SystemExit(f"Draft manifest must compile to exactly one real asset job; got {jobs.get('job_count')}")
+          job=jobs["jobs"][0]
+          print(f"DRAFT_PLAN_OK asset={job['asset']} size={job['width']}x{job['height']} family={job['family']}")
+          PY
+          fi
+
+      - name: Preflight private workflow and model secrets
+        shell: bash
+        env:
+          MODEL_URL: ${{ secrets.HUD_COMFYUI_MODEL_URL }}
+          MODEL_SHA256: ${{ secrets.HUD_COMFYUI_MODEL_SHA256 }}
+          MODEL_ID: ${{ secrets.HUD_COMFYUI_MODEL }}
+          MODEL_LICENSE: ${{ secrets.HUD_COMFYUI_LICENSE }}
+          WORKFLOW_B64: ${{ secrets.HUD_COMFYUI_WORKFLOW_B64 }}
+          CONFIG_B64: ${{ secrets.HUD_COMFYUI_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          for name in MODEL_URL MODEL_SHA256 MODEL_ID MODEL_LICENSE WORKFLOW_B64 CONFIG_B64; do
+            test -n "${!name}" || { echo "::error::Missing required Actions secret for $name"; exit 1; }
+          done
+          [[ "$MODEL_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]] || { echo "::error::HUD_COMFYUI_MODEL_SHA256 must be 64 hexadecimal characters"; exit 1; }
+          echo "Private workflow/model secret presence and checkpoint digest format verified."
+
       - name: Install HUD Artisan dependencies
         run: |
           python -m pip install --upgrade pip
@@ -163,28 +202,6 @@ jobs:
               raise SystemExit("ComfyUI /system_stats returned an unexpected response")
           print("ComfyUI API is reachable; system stats received.")
           PY
-
-      - name: Compile deterministic asset jobs
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "$MANIFEST" || { echo "::error::Manifest not found: $MANIFEST"; exit 1; }
-          python tools/hud_artisan/generate.py profile --out build/hud-artisan/engine-profile.json
-          args=(--manifest "$MANIFEST" --out build/hud-artisan/jobs --theme "$THEME" --seed "$SEED")
-          if [ "$SCOPE" = "full" ]; then args+=(--engine-contract); fi
-          python tools/hud_artisan/generate.py plan "${args[@]}"
-          if [ "$SCOPE" = "draft" ]; then
-            python - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path("build/hud-artisan/jobs/jobs.json")
-          jobs=json.loads(p.read_text())
-          if jobs.get("job_count") != 1 or len(jobs.get("jobs", [])) != 1:
-              raise SystemExit(f"Draft manifest must compile to exactly one real asset job; got {jobs.get('job_count')}")
-          job=jobs["jobs"][0]
-          print(f"DRAFT_PLAN_OK asset={job['asset']} size={job['width']}x{job['height']} family={job['family']}")
-          PY
-          fi
 
       - name: Render selected jobs through ComfyUI
         run: |
