@@ -38,6 +38,29 @@ class Tests(unittest.TestCase):
         p=artisan.make_job(a,"classic-modern",1)["prompt"]
         for token in ("L24","T32","R24","B32","central field calm"):
             self.assertIn(token,p)
+    def test_inactive_state_does_not_receive_active_treatment(self):
+        a={"name":"control_group_button_inactive_44","file":"groups/inactive.png","w":44,"h":44,
+           "insets":{"l":2,"t":2,"r":2,"b":2},"states":["inactive"]}
+        prompt=artisan.make_job(a,"classic-modern",3)["prompt"]
+        self.assertIn("inactive state",prompt)
+        self.assertNotIn("active state: stronger",prompt)
+    def test_engine_contract_exact_manifest(self):
+        assets=[]
+        for i,name in enumerate(artisan.ENGINE_ROLES):
+            assets.append({"name":name,"file":f"assets/{i}.png","w":64,"h":64})
+        assets.append({"name":"commandbuttons_atlas","file":"atlas/commandbuttons.png","w":2048,"h":2048})
+        for i in range(67):
+            assets.append({"name":f"extra_{i}","file":f"extra/{i}.png","w":64,"h":64})
+        doc={"reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
+          "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
+          "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
+          "control_groups":{"count":10,"cell":[44,44]},
+          "assets":assets,"atlas":{"commandbuttons":{"file":"atlas/commandbuttons.png","entries":[{} for _ in range(20)]}}}
+        self.assertEqual(len(assets),92)
+        artisan.validate_engine_contract(doc)
+        doc["atlas"]["commandbuttons"]["entries"].pop()
+        with self.assertRaisesRegex(ValueError,"20 entries"):
+            artisan.validate_engine_contract(doc)
     def test_engine_roles(self):self.assertEqual(len(artisan.ENGINE_ROLES),24)
     def test_manifest_and_plan(self):
         with tempfile.TemporaryDirectory() as d:
