@@ -433,7 +433,12 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
     if plan_doc.get("source_manifest_sha256") != sha(manifest.read_bytes()):
         raise ValueError("jobs.json was compiled from a different manifest revision")
-    Image,_,_=mods;out.mkdir(parents=True,exist_ok=True);shutil.copy2(manifest,out/"manifest.json")
+    out=out.resolve()
+    if out.exists() and any(out.iterdir()):
+        raise ValueError(f"staging output must be empty; refusing to overwrite existing files: {out}")
+    out.mkdir(parents=True,exist_ok=True)
+    Image,_,_=mods
+    shutil.copy2(manifest,out/"manifest.json")
     (out/"fonts").mkdir(exist_ok=True);done=[];errors=[];inputs=[]
     # Verify chain-of-custody before importing any generated output.
     provenance_path=drop/"provenance.json"
@@ -514,7 +519,9 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
         src=(drop/"fonts"/font).resolve()
         if not src.is_relative_to(drop.resolve()):errors.append(f"font path escapes drop: {font}");continue
-        if src.is_file():shutil.copy2(src,out/"fonts"/font)
+        dst=(out/"fonts"/font).resolve()
+        if not dst.is_relative_to(out.resolve()):errors.append(f"font destination escapes staging pack: {font}")
+        elif src.is_file():shutil.copy2(src,dst)
         else:errors.append(f"missing font dependency fonts/{font}")
     if provenance is not None:
         shutil.copy2(provenance_path,out/"provenance.json")
