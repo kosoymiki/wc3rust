@@ -610,6 +610,14 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         raise ValueError("adapter.environment must be an array of valid environment variable names")
     if len(set(allow))!=len(allow):
         raise ValueError("adapter.environment contains duplicate variable names")
+    references=cfg.get("references",[])
+    postprocessing=cfg.get("postprocessing",[])
+    if not isinstance(references,list) or any(not isinstance(ref,dict) or
+       not all(isinstance(ref.get(k),str) and ref[k].strip() for k in ("source","license","purpose"))
+       for ref in references):
+        raise ValueError("adapter.references must contain source/license/purpose objects")
+    if not isinstance(postprocessing,list) or any(not isinstance(x,str) or not x.strip() for x in postprocessing):
+        raise ValueError("adapter.postprocessing must be an array of non-empty strings")
     ids=set();paths=set()
     for job in jobs:
         jid=job.get("job_id");rel=safe_rel(job.get("output",""))
@@ -646,7 +654,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         for part in command:
             for token,value in replacements.items():part=part.replace(token,value)
             argv.append(part)
-        history=[];status="failed";error=None
+        history=[];status="failed";error=None;generated_at=None
         for attempt in range(retries+1):
             try:
                 if out.exists():out.unlink()
@@ -671,12 +679,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                         raise RuntimeError(f"decoded output must be PNG RGBA, got {decoded.format}/{decoded.mode}")
                     if decoded.size!=(job["width"],job["height"]):
                         raise RuntimeError(f"decoded image dimensions {decoded.size} != requested {(job['width'],job['height'])}")
-                status="succeeded";error=None;break
+                status="succeeded";error=None;generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat();break
             except Exception as exc:
                 error=str(exc);history.append(f"attempt={attempt+1} error={error}")
         (logs/(jid+".log")).write_text("\n\n".join(history),encoding="utf-8")
         return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
-                "error":error,"sha256":sha(out.read_bytes()) if status=="succeeded" else None}
+                "generated_at":generated_at,"error":error,"sha256":sha(out.read_bytes()) if status=="succeeded" else None}
     try:
         results=[]
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
@@ -693,14 +701,14 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         (drop/"reports").mkdir(exist_ok=True)
         (drop/"reports"/"worker-results.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         if ok:
-            generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
             job_map={job["job_id"]:job for job in jobs}
             records=[]
             for row in results:
                 job=job_map[row["job_id"]]
                 records.append({"job_id":row["job_id"],"provider":provider,"model":model,
-                    "generated_at":generated_at,"license":license_name,
-                    "prompt_sha256":sha(job["prompt"].encode("utf-8")),"output_sha256":row["sha256"]})
+                    "generated_at":row["generated_at"],"license":license_name,
+                    "references":cfg.get("references",[]),"postprocessing":cfg.get("postprocessing",[]),
+                    "prompt_sha256":job["prompt_sha256"],"output_sha256":row["sha256"]})
             (drop/"provenance.json").write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":sha(jobs_path.read_bytes()),"jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
