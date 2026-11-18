@@ -40,6 +40,14 @@ def safe_rel(value:str)->Path:
     if not value or p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
         raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     return p
+def safe_join(root:Path,relative:str|Path)->Path:
+    base=root.resolve()
+    rel=safe_rel(str(relative))
+    target=(base/rel).resolve()
+    if not target.is_relative_to(base):
+        raise ValueError(f"path escapes its root through a symlink: {relative}")
+    return target
+
 def read_json(path:Path)->dict[str,Any]:
     try: obj=json.loads(path.read_text(encoding="utf-8"))
     except (OSError,json.JSONDecodeError) as e: raise ValueError(f"cannot read {path}: {e}") from e
@@ -147,8 +155,9 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
             raise ValueError(f"atlas cell {ident}: unknown source_asset {source_asset!r}")
         elif ident in by_name and by_name[ident]["file"] != atlas_file:
             source_asset=ident;source_file=by_name[ident]["file"]
-        if not source_file:
-            file=f"atlas_sources/{slug(ident)}.png"
+        if not source_file or source_file not in by_file:
+            file=source_file or f"atlas_sources/{slug(ident)}.png"
+            file=str(safe_rel(file))
             pseudo={"name":f"command_icon_{slug(ident)}","file":file,"w":w,"h":h,
                     "insets":{"l":0,"t":0,"r":0,"b":0},"states":[]}
             jobs.append(make_job(pseudo,theme,seed))
@@ -243,7 +252,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool)->int:
     elif read_json(pack/"manifest.json")!=doc: fail.append("pack manifest differs from source manifest")
     by_file={a["file"]:a for a in doc["assets"]}
     for a in doc["assets"]:
-        name=a["name"];rel=safe_rel(a["file"]);f=pack/rel
+        name=a["name"];rel=safe_rel(a["file"]);f=safe_join(pack,rel)
         if not f.is_file(): fail.append(f"{name}: missing {rel}");continue
         try:
             w,h,depth,ctype=png_info(f)
@@ -299,18 +308,43 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
         raise ValueError("jobs.json was compiled from a different manifest revision")
     Image,_,_=mods;out.mkdir(parents=True,exist_ok=True);shutil.copy2(manifest,out/"manifest.json")
     (out/"fonts").mkdir(exist_ok=True);done=[];errors=[];inputs=[]
+    # Verify chain-of-custody before importing any generated output.
+    provenance_path=drop/"provenance.json"
+    provenance=None
+    if not provenance_path.is_file():
+        errors.append("missing drop/provenance.json")
+    else:
+        try:
+            provenance=read_json(provenance_path)
+            rows=provenance.get("jobs")
+            if not isinstance(rows,list): raise ValueError("provenance.jobs must be an array")
+            by_id={row.get("job_id"):row for row in rows if isinstance(row,dict)}
+            expected={job["job_id"]:job for job in plan_doc.get("jobs",[])}
+            if set(by_id)!=set(expected):
+                raise ValueError(f"provenance job set mismatch: expected {len(expected)}, received {len(by_id)}")
+            for jid,job in expected.items():
+                row=by_id[jid]
+                for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256"):
+                    if not isinstance(row.get(key),str) or not row[key].strip():
+                        raise ValueError(f"{jid}: provenance field {key} is required")
+                if row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
+                    raise ValueError(f"{jid}: prompt hash mismatch")
+                artifact=safe_join(drop,job["output"])
+                if not artifact.is_file(): raise ValueError(f"{jid}: missing generated output {job['output']}")
+                if row["output_sha256"] != sha(artifact.read_bytes()):
+                    raise ValueError(f"{jid}: output hash mismatch for {job['output']}")
+        except Exception as exc:
+            errors.append(f"provenance: {exc}")
     atlas_file=doc["atlas"]["commandbuttons"]["file"]
     for a in doc["assets"]:
         if a["file"]==atlas_file: continue
-        rel=safe_rel(a["file"]);src=drop/rel
-        alt=drop/(slug(a["name"])+".png")
-        if not src.is_file() and alt.is_file():src=alt
+        rel=safe_rel(a["file"]);src=safe_join(drop,rel)
         if not src.is_file():errors.append(f"{a['name']}: missing input {rel}");continue
         try:
             with Image.open(src) as im:
                 im.load();original=im.size;im=im.convert("RGBA");target=(a["w"],a["h"])
                 if im.size!=target:
-                    if fit=="strict": raise ValueError(f"input {im.size} != target {target}; choose fit policy explicitly")
+                    if fit=="strict":raise ValueError(f"input {im.size} != target {target}; choose fit policy explicitly")
                     if fit=="contain":
                         im.thumbnail(target,Image.Resampling.LANCZOS);canvas=Image.new("RGBA",target,(0,0,0,0))
                         canvas.alpha_composite(im,((target[0]-im.width)//2,(target[1]-im.height)//2));im=canvas
@@ -321,21 +355,22 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                     elif fit=="stretch":im=im.resize(target,Image.Resampling.LANCZOS)
                 if family(a["name"]) in ("icon","cursor") and not allow_opaque and im.getchannel("A").getextrema()==(255,255):
                     raise ValueError("icon/cursor is opaque; preserve transparent background or pass --allow-opaque")
-                dst=out/rel;dst.parent.mkdir(parents=True,exist_ok=True);im.save(dst,"PNG",optimize=True,compress_level=9)
+                dst=safe_join(out,rel);dst.parent.mkdir(parents=True,exist_ok=True);im.save(dst,"PNG",optimize=True,compress_level=9)
                 inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha(src.read_bytes()),
-                   "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
-        except Exception as e:errors.append(f"{a['name']}: {e}")
-    # Import any standalone atlas-cell jobs, then composite the atlas deterministically.
+                  "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
+        except Exception as exc:errors.append(f"{a['name']}: {exc}")
+    # Atlas is a deterministic composition of cell outputs, never a model-created contact sheet.
     atlas=plan_doc.get("atlas") or {}
-    declared_atlas=doc["atlas"]["commandbuttons"]
-    if atlas.get("file")!=atlas_file: errors.append("jobs.json atlas target differs from manifest")
+    if atlas.get("file")!=atlas_file:errors.append("jobs.json atlas target differs from manifest")
     else:
         canvas=Image.new("RGBA",(int(atlas.get("width",0)),int(atlas.get("height",0))),(0,0,0,0))
-        if canvas.width<=0 or canvas.height<=0: errors.append("jobs.json atlas dimensions invalid")
+        if canvas.width<=0 or canvas.height<=0:errors.append("jobs.json atlas dimensions invalid")
         else:
             for cell in atlas.get("cells",[]):
-                rel=safe_rel(cell.get("source_file",""));src=(out/rel) if (out/rel).is_file() else (drop/rel)
                 try:
+                    rel=safe_rel(cell["source_file"])
+                    out_source=safe_join(out,rel);drop_source=safe_join(drop,rel)
+                    src=out_source if out_source.is_file() else drop_source
                     if not src.is_file():raise ValueError(f"missing source {rel}")
                     with Image.open(src) as im:
                         im.load();tile=im.convert("RGBA")
@@ -345,20 +380,23 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                     if x<0 or y<0 or x+tile.width>canvas.width or y+tile.height>canvas.height:
                         raise ValueError("cell outside atlas")
                     canvas.alpha_composite(tile,(x,y))
-                except Exception as e:errors.append(f"atlas cell {cell.get('id')}: {e}")
-            atlas_dest=out/safe_rel(atlas_file);atlas_dest.parent.mkdir(parents=True,exist_ok=True)
-            canvas.save(atlas_dest,"PNG",optimize=True,compress_level=9)
-            done.append("atlas:"+atlas_file)
+                except Exception as exc:errors.append(f"atlas cell {cell.get('id')}: {exc}")
+            dst=safe_join(out,atlas_file);dst.parent.mkdir(parents=True,exist_ok=True)
+            canvas.save(dst,"PNG",optimize=True,compress_level=9);done.append("atlas:"+atlas_file)
     for font in doc["font_files"]:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
-        src=drop/"fonts"/font
+        src=(drop/"fonts"/font).resolve()
+        if not src.is_relative_to(drop.resolve()):errors.append(f"font path escapes drop: {font}");continue
         if src.is_file():shutil.copy2(src,out/"fonts"/font)
         else:errors.append(f"missing font dependency fonts/{font}")
+    if provenance is not None:
+        shutil.copy2(provenance_path,out/"provenance.json")
     (out/"reports").mkdir(exist_ok=True)
     (out/"reports"/"ingestion.json").write_text(json.dumps({"tool":"HUD Artisan","version":VERSION,
       "manifest_sha256":sha(manifest.read_bytes()),"jobs_sha256":sha(jobs_path.read_bytes()),
+      "provenance_sha256":sha(provenance_path.read_bytes()) if provenance_path.is_file() else None,
       "ingested":done,"inputs":inputs,"errors":errors,"fit_policy":fit},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    for e in errors:print("HUD_ARTISAN_FAIL "+e)
+    for error in errors:print("HUD_ARTISAN_FAIL "+error)
     print(f"HUD_ARTISAN_INGEST {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
 
