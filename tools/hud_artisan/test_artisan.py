@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """HUD Artisan tests: python -m unittest discover -s tools/hud_artisan -p 'test_*.py'"""
-import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys,os
+import importlib.util,json,tempfile,unittest,struct,zlib,hashlib,sys,os,io,threading
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from urllib.parse import urlsplit,parse_qs
 from jsonschema import Draft202012Validator, RefResolver
 from pathlib import Path
 SPEC=importlib.util.spec_from_file_location("artisan",Path(__file__).with_name("generate.py"))
@@ -256,6 +258,66 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
+    def test_comfyui_adapter_end_to_end_against_fake_api(self):
+        from PIL import Image
+        from contextlib import redirect_stdout
+        import importlib.util
+        spec=importlib.util.spec_from_file_location("comfy_adapter",Path(__file__).with_name("comfyui_adapter.py"))
+        comfy=importlib.util.module_from_spec(spec);spec.loader.exec_module(comfy)
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);captured={}
+            image=Image.new("RGBA",(8,8),(0,0,0,0))
+            for y in range(2,6):
+                for x in range(2,6):image.putpixel((x,y),(190,130,40,255))
+            stream=io.BytesIO();image.save(stream,format="PNG");image_bytes=stream.getvalue()
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self,*args):pass
+                def send_json(self,obj):
+                    data=json.dumps(obj).encode()
+                    self.send_response(200);self.send_header("Content-Type","application/json")
+                    self.send_header("Content-Length",str(len(data)));self.end_headers();self.wfile.write(data)
+                def do_POST(self):
+                    n=int(self.headers.get("Content-Length","0"))
+                    captured["request"]=json.loads(self.rfile.read(n))
+                    self.send_json({"prompt_id":"fake-prompt-1"})
+                def do_GET(self):
+                    path=urlsplit(self.path)
+                    if path.path=="/history/fake-prompt-1":
+                        return self.send_json({"fake-prompt-1":{"outputs":{"9":{"images":[
+                            {"filename":"frame.png","subfolder":"","type":"output"}]}}}})
+                    if path.path=="/view" and parse_qs(path.query).get("filename")==["frame.png"]:
+                        self.send_response(200);self.send_header("Content-Type","image/png")
+                        self.send_header("Content-Length",str(len(image_bytes)));self.end_headers();self.wfile.write(image_bytes)
+                        return
+                    self.send_error(404)
+            server=ThreadingHTTPServer(("127.0.0.1",0),Handler)
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+            try:
+                workflow={"6":{"inputs":{"text":"old-positive"}},"7":{"inputs":{"text":"old-negative"}},
+                  "5":{"inputs":{"width":512,"height":512}},"3":{"inputs":{"seed":1}},"9":{"inputs":{}}}
+                (root/"workflow.json").write_text(json.dumps(workflow))
+                config={"server":f"http://127.0.0.1:{server.server_port}","workflow_file":"workflow.json",
+                  "node_inputs":{"positive_prompt":{"node_id":"6","input":"text"},
+                    "negative_prompt":{"node_id":"7","input":"text"},"width":{"node_id":"5","input":"width"},
+                    "height":{"node_id":"5","input":"height"},"seed":{"node_id":"3","input":"seed"}},
+                  "output_node_id":"9","request_timeout_seconds":5,"max_wait_seconds":5,"poll_interval_seconds":0.2}
+                config_path=root/"comfy.json";config_path.write_text(json.dumps(config))
+                job={"job_id":"a1b2c3d4e5f60718","prompt":"a sculpted gold emblem","negative_prompt":"text, watermark",
+                  "width":8,"height":8,"requires_alpha":True}
+                job_path=root/"job.json";job_path.write_text(json.dumps(job))
+                output=root/"out.png"
+                with redirect_stdout(io.StringIO()):
+                    rc=comfy.main(["--config",str(config_path),"--job-json",str(job_path),"--output",str(output)])
+                self.assertEqual(rc,0)
+                sent=captured["request"]["prompt"]
+                self.assertEqual(sent["6"]["inputs"]["text"],job["prompt"])
+                self.assertEqual(sent["7"]["inputs"]["text"],job["negative_prompt"])
+                self.assertEqual(sent["5"]["inputs"]["width"],8)
+                self.assertEqual(sent["5"]["inputs"]["height"],8)
+                self.assertEqual(sent["3"]["inputs"]["seed"],int(job["job_id"][:8],16))
+                self.assertEqual(artisan.png_info(output),(8,8,8,6))
+            finally:
+                server.shutdown();server.server_close();thread.join(timeout=5)
     def test_duplicate_name_path_guard(self):
         with tempfile.TemporaryDirectory() as d:
             m=Path(d)/"m.json";a={"name":"a","file":"same.png","w":1,"h":1,"insets":{"l":0,"t":0,"r":0,"b":0}}
