@@ -31,10 +31,8 @@ concurrency:
 
 jobs:
   render:
-    # Register a GPU machine as a self-hosted runner with these exact labels.
-    # ComfyUI must already be installed, have the required checkpoint/custom nodes,
-    # and be listening on 127.0.0.1:8188 on that runner.
-    runs-on: [self-hosted, linux, x64, gpu]
+    # Standard GitHub-hosted CPU runner only. ComfyUI is installed and launched with --cpu.
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       COMFYUI_URL: ${{ secrets.COMFYUI_URL || 'http://127.0.0.1:8188' }}
@@ -56,6 +54,59 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r tools/hud_artisan/requirements.txt
+
+      - name: Install ComfyUI with CPU-only PyTorch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          git clone --depth 1 https://github.com/Comfy-Org/ComfyUI.git /tmp/ComfyUI
+          python -m pip install -r /tmp/ComfyUI/requirements.txt
+          mkdir -p /tmp/ComfyUI/models/checkpoints
+
+      - name: Download pinned checkpoint
+        shell: bash
+        env:
+          MODEL_URL: ${{ secrets.HUD_COMFYUI_MODEL_URL }}
+          MODEL_SHA256: ${{ secrets.HUD_COMFYUI_MODEL_SHA256 }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MODEL_URL" || { echo "::error::Missing HUD_COMFYUI_MODEL_URL secret"; exit 1; }
+          test -n "$MODEL_SHA256" || { echo "::error::Missing HUD_COMFYUI_MODEL_SHA256 secret"; exit 1; }
+          name="$(basename "${MODEL_URL%%\?*}")"
+          test -n "$name" && test "$name" != "/" || { echo "::error::Cannot infer checkpoint filename from URL"; exit 1; }
+          if [ -n "${HF_TOKEN:-}" ]; then
+            curl --fail --location --retry 3 -H "Authorization: Bearer $HF_TOKEN" "$MODEL_URL" -o "/tmp/ComfyUI/models/checkpoints/$name"
+          else
+            curl --fail --location --retry 3 "$MODEL_URL" -o "/tmp/ComfyUI/models/checkpoints/$name"
+          fi
+          echo "$MODEL_SHA256  /tmp/ComfyUI/models/checkpoints/$name" | sha256sum --check --status
+          echo "COMFYUI_CHECKPOINT=$name" >> "$GITHUB_ENV"
+
+      - name: Start ComfyUI in CPU mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/ComfyUI
+          python main.py --cpu --listen 127.0.0.1 --port 8188 > "$GITHUB_WORKSPACE/comfyui.log" 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/comfyui.pid"
+          for attempt in $(seq 1 120); do
+            if curl --silent --fail http://127.0.0.1:8188/system_stats >/dev/null; then
+              echo "ComfyUI CPU API is ready."
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$GITHUB_WORKSPACE/comfyui.pid")" 2>/dev/null; then
+              cat "$GITHUB_WORKSPACE/comfyui.log"
+              echo "::error::ComfyUI exited during startup"
+              exit 1
+            fi
+            sleep 5
+          done
+          cat "$GITHUB_WORKSPACE/comfyui.log"
+          echo "::error::ComfyUI CPU startup timed out"
+          exit 1
 
       - name: Verify ComfyUI API and private workflow secrets
         shell: bash
@@ -147,5 +198,6 @@ jobs:
             build/hud-artisan/drop/
             build/hud-artisan/pack/
             build/hud-artisan/contact-sheet.png
+            comfyui.log
           if-no-files-found: warn
           retention-days: 14
