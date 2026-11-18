@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "project": "Herofolends-RS HUD Redraw — CPU draft",
+  "design_height": 768,
+  "reference_resolution": {
+    "landscape": [1920, 1080],
+    "portrait": [1080, 1920]
+  },
+  "safe_area_1080p": {
+    "landscape": [48, 80, 48, 48],
+    "portrait": [24, 96, 24, 64]
+  },
+  "command_card": {
+    "columns": 4,
+    "rows": 3,
+    "cell": [64, 64],
+    "gap": 4,
+    "order": "row-major"
+  },
+  "control_groups": {
+    "count": 10,
+    "cell": [44, 44]
+  },
+  "atlas": {
+    "commandbuttons": {
+      "file": "atlas/commandbuttons_atlas_2048x2048.png",
+      "size": [2048, 2048],
+      "entries": [
+        {
+          "id": "menu_panel_normal_512x384",
+          "x": 0,
+          "y": 0,
+          "w": 512,
+          "h": 384,
+          "source_asset": "menu_panel_normal_512x384"
+        }
+      ]
+    }
+  },
+  "assets": [
+    {
+      "name": "commandbuttons_atlas_2048x2048",
+      "file": "atlas/commandbuttons_atlas_2048x2048.png",
+      "w": 2048,
+      "h": 2048,
+      "insets": {"l": 0, "t": 0, "r": 0, "b": 0},
+      "states": ["atlas"]
+    },
+    {
+      "name": "menu_panel_normal_512x384",
+      "file": "menus/menu_panel_normal_512x384.png",
+      "w": 512,
+      "h": 384,
+      "insets": {"l": 24, "t": 24, "r": 24, "b": 24},
+      "states": ["normal"],
+      "semantic": "A premium fantasy real-time-strategy menu panel: broad dark slate/leather inset, substantial forged iron outer structure, restrained aged bronze bevels, asymmetrical but balanced corner ornament, calm text-safe centre, clean continuous stretch zones, upper-left warm key light. No text, no logos, no symbols that resemble letters."
+    }
+  ],
+  "font_files": [
+    "primary_serif_cyrillic.ttf",
+    "primary_serif_bold_cyrillic.ttf",
+    "actionbar_sans_cyrillic.ttf",
+    "actionbar_sans_bold_cyrillic.ttf",
+    "numeric_tabular.ttf"
+  ]
+}
