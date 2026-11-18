@@ -363,13 +363,13 @@ class Tests(unittest.TestCase):
         comfy=importlib.util.module_from_spec(spec);spec.loader.exec_module(comfy)
         request=comfy.request.Request("http://127.0.0.1:8188/view")
         opener=mock.Mock()
-        with mock.patch.object(comfy.request,"build_opener",return_value=opener) as build, \\
-             mock.patch.object(comfy.request,"urlopen") as urlopen:
-            comfy.open_http(request,"http://127.0.0.1:8188",5)
+        with mock.patch.object(comfy.request,"build_opener",return_value=opener) as build:
+            with mock.patch.object(comfy.request,"urlopen") as urlopen:
+                comfy.open_http(request,"http://127.0.0.1:8188",5)
+                urlopen.assert_not_called()
         build.assert_called_once()
         handler=build.call_args.args[0]
         self.assertIsInstance(handler,comfy.request.ProxyHandler)
         self.assertEqual(handler.proxies,{})
         opener.open.assert_called_once_with(request,timeout=5)
-        urlopen.assert_not_called()
 if __name__=="__main__":unittest.main()
