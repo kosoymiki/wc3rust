@@ -24,6 +24,20 @@ class Tests(unittest.TestCase):
     def test_semantic_prompt(self):
         a={"name":"icon_gold_normal_32","file":"icons/gold.png","w":32,"h":32,"insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
         j=artisan.make_job(a,"classic-modern",9);self.assertTrue(j["requires_alpha"]);self.assertIn("9-slice",j["prompt"])
+    def test_semantic_subjects_and_state_language(self):
+        icon={"name":"icon_frost_spell_32","file":"icons/frost.png","w":32,"h":32,
+              "insets":{"l":0,"t":0,"r":0,"b":0},"states":["hover","disabled"]}
+        job=artisan.make_job(icon,"classic-modern",17)
+        self.assertIn("frost crystal",job["prompt"])
+        self.assertIn("hover state",job["prompt"])
+        self.assertIn("disabled state",job["prompt"])
+        self.assertNotIn("generic placeholder rune",job["prompt"])
+    def test_9slice_regions_are_in_prompt(self):
+        a={"name":"menu_panel_normal","file":"panel.png","w":512,"h":384,
+           "insets":{"l":24,"t":32,"r":24,"b":32},"states":["normal"]}
+        p=artisan.make_job(a,"classic-modern",1)["prompt"]
+        for token in ("L24","T32","R24","B32","central field calm"):
+            self.assertIn(token,p)
     def test_engine_roles(self):self.assertEqual(len(artisan.ENGINE_ROLES),24)
     def test_manifest_and_plan(self):
         with tempfile.TemporaryDirectory() as d:
