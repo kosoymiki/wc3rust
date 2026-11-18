@@ -25,15 +25,17 @@ from worker logs, and log output is capped per stream.
 
 The dispatcher supports bounded concurrency, per-job timeouts, retries and separate stdout/stderr
 logs. A successful run writes reports/worker-results.json and provenance.json. Provenance binds each
-job to its prompt SHA-256 and actual PNG SHA-256, and binds the whole batch to the exact jobs.json
-SHA-256. Ingest verifies that batch hash before accepting any generated art.
+job to its exact positive/negative prompt SHA-256, per-asset seed, provider/model/license and actual
+PNG SHA-256, and binds the whole batch to the exact jobs.json SHA-256. Ingest verifies the complete
+job set and every binding before accepting generated art. Import is transactional: incomplete packs
+are never promoted to the requested output path.
 
 ## Provider implementation requirements
 
 An adapter must:
 - read the complete job JSON; never infer dimensions or paths from array ordering;
 - use prompt and negative_prompt as supplied, or record any intentional transformation;
-- use job_id as the provider idempotency key when available;
+- use the explicit per-asset seed from jobs.json (do not derive/rewrite it from job_id); use job_id as the provider idempotency key when available;
 - preserve references and their license/provenance metadata when used;
 - save exactly one RGBA8 PNG at output_path;
 - avoid text, logos, watermarks and copied protected art;
