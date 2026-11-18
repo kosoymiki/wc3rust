@@ -75,9 +75,17 @@ def download_image(base: str, image_meta: dict, timeout: int) -> bytes:
     for key in ("filename", "type"):
         if not isinstance(image_meta.get(key), str) or not image_meta[key]:
             raise ComfyError(f"ComfyUI output image is missing {key}")
-    query = {"filename": image_meta["filename"], "type": image_meta["type"]}
-    if image_meta.get("subfolder"):
-        query["subfolder"] = image_meta["subfolder"]
+    filename=image_meta["filename"]
+    if Path(filename).name!=filename or filename in (".","..") or "\\" in filename:
+        raise ComfyError("ComfyUI returned an unsafe output filename")
+    if image_meta["type"]!="output":
+        raise ComfyError(f"expected a ComfyUI output image, got type={image_meta['type']!r}")
+    subfolder=image_meta.get("subfolder","")
+    if not isinstance(subfolder,str) or "\\" in subfolder or Path(subfolder).is_absolute() or ".." in Path(subfolder).parts:
+        raise ComfyError("ComfyUI returned an unsafe output subfolder")
+    query = {"filename": filename, "type": "output"}
+    if subfolder:
+        query["subfolder"] = subfolder
     endpoint = "/view?" + parse.urlencode(query)
     req = request.Request(base.rstrip("/") + endpoint, headers={"Accept": "image/png"})
     try:
