@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PIXELS = 64_000_000
 MAX_PNG_BYTES = 256 * 1024 * 1024
@@ -204,16 +204,25 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     return doc
 
 def family(name:str)->str:
+    """Classify by semantic specificity; generic minimap parts are not apertured frames."""
     n=name.lower()
-    if any(x in n for x in ("portrait","hero_frame","unit_frame")): return "portrait-frame"
-    if "minimap" in n: return "minimap-frame"
+    # Specific interactive/art types must win over broad words such as minimap or command.
     if n.startswith(("icon_","ability_","item_","spell_","command_")): return "icon"
     if any(x in n for x in ("cursor","reticle","rally_point","order_marker")): return "cursor"
+    if any(x in n for x in ("portrait_frame","portrait_border","hero_frame","unit_frame","building_frame")):
+        return "portrait-frame"
+    if any(x in n for x in ("minimap_frame","minimap_border")): return "minimap-frame"
+    if any(x in n for x in ("minimap_header","minimap_title","minimap_strip")): return "hud-strip"
     if any(x in n for x in ("button","slot","tile","tab","control_group")): return "interactive-control"
     if any(x in n for x in ("topbar","console","resource","upkeep","progress","hp_bar","mana_bar")): return "hud-strip"
     if any(x in n for x in ("menu","dialog","modal","loading","score","campaign","save")): return "menu-panel"
+    if "minimap" in n: return "panel"
     if any(x in n for x in ("tooltip","selection","inventory","panel","frame")): return "panel"
     return "misc-ui"
+
+def requires_alpha(kind:str)->bool:
+    """Families with a silhouette or aperture must preserve real transparency."""
+    return kind in ("icon","cursor","portrait-frame","minimap-frame")
 
 def material(name:str,kind:str)->str:
     n=name.lower()
@@ -331,9 +340,18 @@ def state_brief(state_text:str)->str:
 def make_job(a:dict,theme:str,seed:int)->dict:
     name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
     states=", ".join(a.get("states") or []) or "normal/default state"
-    alpha=kind in ("icon","cursor")
+    alpha=requires_alpha(kind)
+    asset_seed=int(sha(f"{seed}:{name}".encode("utf-8"))[:8],16)
     semantic=semantic_brief(a,kind)
     context=metadata_context(a) or "no additional semantic metadata supplied"
+    aperture_instruction = (
+        "The complete central aperture must be genuinely transparent (alpha zero), not painted black, "
+        "blurred, checkerboarded or filled with fake scenery. Keep every border ornament outside the aperture."
+        if kind in ("portrait-frame","minimap-frame") else
+        "Transparent background beyond the isolated silhouette, clean straight alpha."
+        if alpha else
+        "Fill panel surface; content/text field is empty and unobstructed."
+    )
     prompt=(f"Create ONE production game UI asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}. "
     f"Family {kind}; state {states}. Semantic subject: {semantic}. Manifest context: {context}. "
     f"State rendering instruction: {state_brief(states)}. "
@@ -342,9 +360,7 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
     "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
     "Strong silhouette and hierarchy at native UI scale; believable bevels, subtle wear, consistent light direction, "
-    "clean anti-aliased edges, no clutter. "+
-    ("Transparent background beyond the isolated silhouette, clean straight alpha." if alpha else
-     "Fill panel surface; content/text field is empty and unobstructed."))
+    "clean anti-aliased edges, no clutter. "+aperture_instruction))
     negative=("text, typography, letters, digits, words, logos, watermark, signature, screenshot, mockup, "
     "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
@@ -356,7 +372,7 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{spec_hash}".encode())[:16]
     return {"job_id":job_id,"prompt_sha256":prompt_sha256,
       "negative_prompt_sha256":negative_prompt_sha256,"asset":name,"output":a["file"],
-      "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":seed,"insets":ins,
+      "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":asset_seed,"insets":ins,
       "requires_alpha":alpha,"references":a.get("references",[]),
       "prompt":prompt,"negative_prompt":negative,
       "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
@@ -539,6 +555,14 @@ def pil_modules():
         return Image,ImageDraw,ImageStat
     except ImportError: return None
 
+def center_transparent_fraction(image)->float:
+    """Fraction of near-zero alpha in the central 40% aperture region."""
+    alpha=image.getchannel("A")
+    w,h=alpha.size
+    crop=alpha.crop((int(w*0.30),int(h*0.30),max(int(w*0.30)+1,int(w*0.70)),max(int(h*0.30)+1,int(h*0.70))))
+    hist=crop.histogram()
+    return sum(hist[:9])/max(1,crop.width*crop.height)
+
 def image_metrics(path:Path)->dict:
     mods=pil_modules()
     if not mods: raise RuntimeError("pixel QA requires Pillow; install tools/hud_artisan/requirements.txt")
@@ -550,6 +574,7 @@ def image_metrics(path:Path)->dict:
         colors=len(set(thumb.getdata()));variance=sum(ImageStat.Stat(thumb).var)/3
         box=alpha.getbbox()
         return {"source_mode":src.mode,"transparent_fraction":round(trans,5),"opaque_fraction":round(opaque,5),
+          "center_transparent_fraction":round(center_transparent_fraction(rgba),5),
           "alpha_bbox":list(box) if box else None,"thumbnail_unique_colors":colors,
           "thumbnail_rgb_variance":round(variance,3)}
 
@@ -573,8 +598,13 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
                 if not m["alpha_bbox"]: fail.append(f"{name}: fully transparent")
                 if m["thumbnail_unique_colors"]<12: fail.append(f"{name}: flat image; only {m['thumbnail_unique_colors']} sampled colours")
                 if m["thumbnail_rgb_variance"]<2: fail.append(f"{name}: near-uniform pixel variance")
-                if family(name) in ("icon","cursor") and m["transparent_fraction"]<.005: warn.append(f"{name}: almost no transparent pixels")
-                if family(name) in ("panel","menu-panel","portrait-frame","hud-strip") and m["thumbnail_unique_colors"]<40: warn.append(f"{name}: low material colour diversity")
+                kind=family(name)
+                if kind in ("icon","cursor") and m["transparent_fraction"]<.005:
+                    fail.append(f"{name}: alpha-required silhouette is effectively opaque")
+                if kind in ("portrait-frame","minimap-frame") and m["center_transparent_fraction"]<.97:
+                    fail.append(f"{name}: central aperture is not transparent enough ({m['center_transparent_fraction']:.3f})")
+                if kind in ("panel","menu-panel","portrait-frame","minimap-frame","hud-strip") and m["thumbnail_unique_colors"]<40:
+                    warn.append(f"{name}: low material colour diversity")
             records.append(rec)
             ins=a["insets"];l,t,r,b=(float(ins[k]) for k in ("l","t","r","b"))
             if l+r>=w or t+b>=h:
@@ -639,11 +669,13 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                 raise ValueError(f"provenance job set mismatch: expected {len(expected)}, received {len(by_id)}")
             for jid,job in expected.items():
                 row=by_id[jid]
-                for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256"):
+                for key in ("provider","model","generated_at","license","prompt_sha256","output_sha256","seed"):
                     if not isinstance(row.get(key),str) or not row[key].strip():
                         raise ValueError(f"{jid}: provenance field {key} is required")
                 if row["prompt_sha256"] != job["prompt_sha256"] or row["prompt_sha256"] != sha(job["prompt"].encode("utf-8")):
                     raise ValueError(f"{jid}: positive prompt hash mismatch")
+                if type(row["seed"]) is not int or row["seed"] != job["seed"]:
+                    raise ValueError(f"{jid}: provenance seed does not match the compiled job seed")
                 if row.get("negative_prompt_sha256") != job["negative_prompt_sha256"] or row.get("negative_prompt_sha256") != sha(job["negative_prompt"].encode("utf-8")):
                     raise ValueError(f"{jid}: negative prompt hash mismatch")
                 row_refs=row.get("references")
@@ -684,8 +716,14 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
                         im=im.resize(size,Image.Resampling.LANCZOS);x=(size[0]-target[0])//2;y=(size[1]-target[1])//2
                         im=im.crop((x,y,x+target[0],y+target[1]))
                     elif fit=="stretch":im=im.resize(target,Image.Resampling.LANCZOS)
-                if family(a["name"]) in ("icon","cursor") and not allow_opaque and im.getchannel("A").getextrema()==(255,255):
-                    raise ValueError("icon/cursor is opaque; preserve transparent background or pass --allow-opaque")
+                kind=family(a["name"])
+                if requires_alpha(kind) and not allow_opaque:
+                    if kind in ("portrait-frame","minimap-frame"):
+                        aperture=center_transparent_fraction(im)
+                        if aperture<.97:
+                            raise ValueError(f"{kind} central aperture alpha is not transparent enough ({aperture:.3f}; expected >=0.970)")
+                    elif im.getchannel("A").getextrema()==(255,255):
+                        raise ValueError(f"{kind} is fully opaque; preserve transparent background or pass --allow-opaque")
                 dst=safe_join(out,rel);dst.parent.mkdir(parents=True,exist_ok=True);im.save(dst,"PNG",optimize=True,compress_level=9)
                 inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha(src.read_bytes()),
                   "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
@@ -877,7 +915,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 job=job_map[row["job_id"]]
                 refs=list(cfg.get("references",[]))+list(job.get("references",[]))
                 records.append({"job_id":row["job_id"],"provider":provider,"model":model,
-                    "generated_at":row["generated_at"],"license":license_name,
+                    "generated_at":row["generated_at"],"license":license_name,"seed":job["seed"],
                     "references":refs,"postprocessing":cfg.get("postprocessing",[]),
                     "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
                     "output_sha256":row["sha256"]})
