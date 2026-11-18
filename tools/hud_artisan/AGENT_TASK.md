@@ -21,14 +21,14 @@ not a proposal, mockup, contact sheet or generic icon set.
 - Sibling states share one silhouette/material system but differ visibly according to state grammar.
 - Icons require recognisable, semantically distinct silhouettes at native 32–64 px display size.
 - Panels require believable layered materials, directional bevel light, occlusion and restrained wear.
-- Portrait-frame apertures remain empty/transparent.
+- Portrait-frame and minimap-frame apertures remain empty/transparent (>=97% transparent centre window).
 - Create clean-room fantasy art. No extracted game assets, screenshots, proprietary logos or copied
   retail artwork.
 
 ## Provider and provenance contract
 
 For each successful job, preserve:
-- job_id and prompt_sha256 from jobs.json;
+- job_id, the exact per-asset seed and prompt_sha256 from jobs.json;
 - provider and exact model/revision;
 - generated_at timestamp;
 - license/source declaration for the output and every supplied reference;
