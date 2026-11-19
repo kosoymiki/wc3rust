@@ -224,7 +224,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(doc["atlas"]["commandbuttons"]["entries"]),20)
         jobs,atlas_plan=artisan.compile_jobs(doc,"classic-modern",20261119)
         self.assertEqual(len(jobs),91,"the declared atlas must reuse existing command icon assets, not synthesize duplicate jobs")
-        self.assertEqual(len(atlas_plan["entries"]),20)
+        self.assertEqual(len(atlas_plan["cells"]),20)
         self.assertTrue(all(entry.get("source_asset") for entry in doc["atlas"]["commandbuttons"]["entries"]))
 
     def test_engine_contract_exact_manifest(self):
