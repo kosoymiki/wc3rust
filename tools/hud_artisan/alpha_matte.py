@@ -26,7 +26,7 @@ STD = (0.229, 0.224, 0.225)
 SIZE = 320
 DEFAULT_MODEL = Path.home() / "src" / "comfyui-termux" / "models" / "u2net.onnx"
 
-_sessions: dict[str, object] = {}
+_sessions: dict[tuple[str, int, int], object] = {}
 
 
 def prepare_input(image: Image.Image, size: int = SIZE) -> np.ndarray:
@@ -63,7 +63,10 @@ def get_session(model_path: Path | str | None = None):
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError(f"u2net model must be a regular non-symlink file: {path}")
     path = path.resolve(strict=True)
-    key = str(path)
+    stat = path.stat()
+    if stat.st_size <= 0:
+        raise ValueError(f"u2net model file is empty: {path}")
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
     if key not in _sessions:
         try:
             import onnxruntime as ort  # lazy: only alpha-required jobs need it
