@@ -991,7 +991,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             if cached is not None:
                 log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
                 with log_path.open("a",encoding="utf-8") as stream:
-                    stream.write("RESUME verified existing PNG hash and job fingerprint; renderer skipped.\\n")
+                    stream.write("RESUME verified existing PNG hash and job fingerprint; renderer skipped.\n")
                 print(f"HUD_ARTISAN_RESUME_HIT id={jid} output={job['output']}")
                 return cached
         for attempt in range(retries+1):
