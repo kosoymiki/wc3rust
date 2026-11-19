@@ -47,6 +47,14 @@ class AlphaQATests(unittest.TestCase):
             self.save("empty.png", Image.new("RGBA", (8, 8), (0, 0, 0, 0))), self.root)
         self.assertIn("fully_transparent", alpha_qa.classify(item, False, 0.01))
 
+    def test_semi_transparent_magenta_and_hidden_rgb_are_reported(self):
+        image = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        image.putpixel((2, 2), (255, 0, 255, 96))
+        image.putpixel((3, 3), (20, 30, 40, 0))
+        item = alpha_qa.inspect_png(self.save("halo.png", image), self.root)
+        self.assertEqual(item["chroma_key"]["near_key_semi_transparent_pixels"], 1)
+        self.assertEqual(item["chroma_key"]["transparent_pixels_with_hidden_rgb"], 1)
+
     def test_build_report_counts_errors_and_flags(self):
         self.save("good.png", Image.new("RGBA", (8, 8), (10, 20, 30, 255)))
         self.save("bad.png", Image.new("RGBA", (8, 8), (0, 0, 0, 0)))
