@@ -87,6 +87,18 @@ class ComfyDoctorTests(unittest.TestCase):
                 with self.assertRaisesRegex(doctor.adapter.ComfyError,"non-symlink"):
                     doctor.inspect_runtime(config_path)
 
+    def test_doctor_preflights_u2net_model_before_network_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path, _=self.fixture(Path(directory))
+            config=json.loads(config_path.read_text())
+            config["alpha_strategy"]="u2net"
+            config["matte_model"]="missing-u2net.onnx"
+            config_path.write_text(json.dumps(config))
+            with mock.patch.object(doctor.adapter,"http_json") as http_json:
+                with self.assertRaisesRegex(doctor.adapter.ComfyError,"u2net model"):
+                    doctor.inspect_runtime(config_path)
+                http_json.assert_not_called()
+
     def test_doctor_reports_bad_mapping_without_submitting_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path, object_info = self.fixture(Path(directory))
