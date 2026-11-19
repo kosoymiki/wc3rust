@@ -501,7 +501,7 @@ impl HudPack {
         if let Some(asset) = assets
             .iter()
             .find(|asset| asset.name == "console_left_mid_normal_256x288")
-            && let Some(texture) = textures.get(asset.texture)
+            && let Some(texture) = loaded_textures.get(asset.texture - texture_base)
             && texture.width > 8
             && texture.height > 8
         {
@@ -525,7 +525,7 @@ impl HudPack {
         if let Some(asset) = assets
             .iter()
             .find(|asset| asset.name == "topbar_plate_normal_720x32")
-            && let Some(texture) = textures.get(asset.texture)
+            && let Some(texture) = loaded_textures.get(asset.texture - texture_base)
             && texture.width > 0
             && texture.height > 0
         {
@@ -1255,7 +1255,7 @@ mod tests {
         assert_eq!(pack.assets.len(), 92, "manifest asset count");
         assert_eq!(pack.font_files.len(), 5, "font_files");
         for asset in &pack.assets {
-            assert!(textures.get(asset.texture).is_some(), "texture for {}", asset.name);
+            assert!(loaded_textures.get(asset.texture - texture_base).is_some(), "texture for {}", asset.name);
             let texture = &textures[asset.texture];
             assert_eq!(
                 (texture.width, texture.height),
