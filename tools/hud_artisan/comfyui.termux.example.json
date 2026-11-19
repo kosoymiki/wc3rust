@@ -2,6 +2,7 @@
   "schema_version": 1,
   "server": "http://127.0.0.1:8188",
   "workflow_file": "~/src/comfyui-termux/default_workflow.json",
+  "workflow_sha256": "1b648133eb9ec1e5f44aadb8b7226cdccb3c350b83fd37409f9eee869c94a8cb",
   "workflow_format": "ui",
   "node_inputs": {
     "positive_prompt": {
