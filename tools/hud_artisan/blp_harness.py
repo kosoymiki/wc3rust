@@ -44,16 +44,26 @@ def inspect_blp(path: Path) -> dict[str, Any]:
                 "alpha_encoding": alpha_encoding, "has_mips": bool(has_mips)}
         header_size = HEADER_BLP2
     elif magic == b"BLP1":
-        if len(header) < HEADER_BLP1:
+        if len(header) < 156:
             raise BLPError("truncated BLP1 header")
         compression, flags, width, height, picture_type, picture_subtype = struct.unpack_from("<6I", header, 4)
         offsets = struct.unpack_from("<16I", header, 28)
         sizes = struct.unpack_from("<16I", header, 92)
         if compression not in (0, 1):
-            raise BLPError(f"unsupported BLP1 compression {compression}")
-        info = {"format": "BLP1", "compression": compression, "flags": flags,
+            raise BLPError(f"unsupported BLP1 content type {compression}")
+        if flags not in (0, 1, 4, 8):
+            raise BLPError(f"unsupported BLP1 alpha depth {flags}")
+        if compression == 1:
+            header_size = HEADER_BLP1
+            if len(header) < header_size:
+                raise BLPError("truncated BLP1 palette header")
+        else:
+            if len(header) < 160:
+                raise BLPError("truncated BLP1 JPEG header")
+            jpeg_header_size = struct.unpack_from("<I", header, 156)[0]
+            header_size = 160 + jpeg_header_size
+        info = {"format": "BLP1", "content_type": compression, "alpha_depth": flags,
                 "picture_type": picture_type, "picture_subtype": picture_subtype}
-        header_size = HEADER_BLP1
     else:
         raise BLPError(f"unknown BLP magic {magic!r}")
     if not (1 <= width <= MAX_DIMENSION and 1 <= height <= MAX_DIMENSION and width * height <= MAX_PIXELS):
