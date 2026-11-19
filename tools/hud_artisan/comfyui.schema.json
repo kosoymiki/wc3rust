@@ -86,7 +86,8 @@
       "enum": [
         "auto",
         "preserve",
-        "chroma_key"
+        "chroma_key",
+        "u2net"
       ],
       "default": "auto"
     },
@@ -110,6 +111,11 @@
       "minimum": 1,
       "maximum": 255,
       "default": 48
+    },
+    "matte_model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional local u2net.onnx path used only when alpha_strategy is u2net; falls back to U2NET_MODEL or the documented local default."
     }
   },
   "$defs": {
