@@ -94,11 +94,12 @@ def composite(im: Image.Image, mode: str) -> Image.Image:
 
 def state_key(name: str) -> tuple[str, str | None]:
     tokens = name.lower().split("_")
-    token = next((value for value in reversed(tokens) if value in STATE_TOKENS), None)
-    if token is None:
+    state_index = next((index for index in range(len(tokens)-1, -1, -1)
+                        if tokens[index] in STATE_TOKENS), None)
+    if state_index is None:
         return name.lower(), None
     # Remove the right-most state token: asset naming convention is base_state.
-    tokens.remove(token)
+    token = tokens.pop(state_index)
     return "_".join(tokens), token
 
 
