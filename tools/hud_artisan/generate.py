@@ -715,6 +715,8 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
     else:
         try:
             provenance=read_json(provenance_path)
+            if not re.fullmatch(r"[a-f0-9]{64}",str(provenance.get("adapter_config_sha256",""))):
+                raise ValueError("provenance adapter_config_sha256 is missing or malformed")
             if provenance.get("jobs_sha256") != sha(jobs_path.read_bytes()):
                 raise ValueError("provenance jobs_sha256 does not match the supplied jobs.json")
             rows=provenance.get("jobs")
@@ -988,7 +990,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             cached=cached_success(job)
             if cached is not None:
                 log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
-                log_path.write_text("RESUME verified existing PNG hash and job fingerprint; renderer skipped.\\n",encoding="utf-8")
+                log_path.write_text("RESUME verified existing PNG hash and job fingerprint; renderer skipped.\n",encoding="utf-8")
                 print(f"HUD_ARTISAN_RESUME_HIT id={jid} output={job['output']}")
                 return cached
         for attempt in range(retries+1):
@@ -1089,9 +1091,9 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
                     "output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
-            provenance_path.write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
+            atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
-                "jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+                "jobs":records},ensure_ascii=False,indent=2)+"\n")
         print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
         return 0 if ok else 1
     finally:
