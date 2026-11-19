@@ -105,6 +105,15 @@ class ProductionQATests(unittest.TestCase):
         self.assertIn("top_stretch", metrics["stretch_zones"])
         self.assertIsNotNone(metrics["stretch_zones"]["top_stretch"]["mean_neighbor_gradient"])
 
+    def test_visual_qa_rejects_symlink_output_directories(self):
+        target=self.root/"target";target.mkdir()
+        link=self.root/"linked";link.symlink_to(target,target_is_directory=True)
+        asset=self.make_state("icon_test_normal",4,(120,80,30,255))
+        with self.assertRaisesRegex(ValueError,"regular directory"):
+            qa.render_contact_sheets([asset],self.pack,link)
+        with self.assertRaisesRegex(ValueError,"regular directory"):
+            qa.render_asset_thumbnails([asset],self.pack,link)
+
     def test_symlink_asset_rejected_as_read_error(self):
         target = self.pack/"target.png"
         Image.new("RGBA", (8,8), (1,2,3,255)).save(target)
