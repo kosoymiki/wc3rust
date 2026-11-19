@@ -321,6 +321,11 @@ class Tests(unittest.TestCase):
                                  "resume must not call the renderer for hash-verified outputs")
                 resume_logs="".join(path.read_text() for path in (drop/"reports"/"worker").glob("*.log"))
                 self.assertIn("RESUME verified",resume_logs)
+                # A renderer-script revision must invalidate the resume fingerprint,
+                # even when adapter.json itself is unchanged.
+                adapter_script.write_text(adapter_script.read_text()+"\\n# renderer revision changed\\n")
+                self.assertEqual(artisan.dispatch(manifest,jobs,adapter,drop,2,resume=True),0)
+                self.assertEqual(len(counter.read_text()),first_call_count+payload["job_count"])
             finally:
                 os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
