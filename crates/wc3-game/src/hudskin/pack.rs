@@ -1652,8 +1652,8 @@ mod tests {
     #[test]
     fn atlas_grid_rejects_misaligned_oversized_and_out_of_grid_cells() {
         let valid=vec![
-            serde_json::json!({"id":"one","x":0,"y":0,"w":8,"h":8}),
-            serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"one","page":0,"x":0,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"two","page":0,"x":8,"y":0,"w":8,"h":8}),
         ];
         assert!(validate_atlas_grid(&valid,16,8,2,1,[8,8]).is_ok());
         let misaligned=vec![serde_json::json!({"id":"bad","page":0,"x":4,"y":0,"w":8,"h":8})];
