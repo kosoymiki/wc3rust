@@ -115,6 +115,10 @@
     "adapter_config_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Workflow/model/node identity captured at dispatch time; contains no environment secrets."
     }
   }
 }
