@@ -948,6 +948,32 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     env={"PATH":os.environ.get("PATH",""),"HOME":os.environ.get("HOME","")}
     for key in allow:
         if key in os.environ:env[key]=os.environ[key]
+    def cached_success(job):
+        row=resume_rows.get(job["job_id"])
+        if not isinstance(row,dict) or row.get("status")!="succeeded":
+            return None
+        if row.get("output")!=job["output"] or not isinstance(row.get("generated_at"),str):
+            return None
+        digest=row.get("sha256")
+        if not isinstance(digest,str) or not re.fullmatch(r"[a-f0-9]{64}",digest):
+            return None
+        try:
+            cached_path=safe_join(drop,job["output"])
+            if cached_path.is_symlink() or not cached_path.is_file():
+                return None
+            if sha(cached_path.read_bytes())!=digest:
+                return None
+            width,height,depth,color=png_info(cached_path)
+            if (width,height,depth,color)!=(job["width"],job["height"],8,6):
+                return None
+            with Image.open(cached_path) as decoded:
+                decoded.load()
+                if decoded.format!="PNG" or decoded.mode!="RGBA" or decoded.size!=(width,height):
+                    return None
+        except Exception:
+            return None
+        return {"job_id":job["job_id"],"asset":job.get("asset"),"output":job["output"],
+                "status":"succeeded","generated_at":row["generated_at"],"error":None,"sha256":digest}
     def run_one(job):
         jid=job["job_id"];out=safe_join(drop,job["output"]);out.parent.mkdir(parents=True,exist_ok=True)
         job_file=work_jobs/(jid+".json")
@@ -958,6 +984,13 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             for token,value in replacements.items():part=part.replace(token,value)
             argv.append(part)
         history=[];status="failed";error=None;generated_at=None
+        if resume:
+            cached=cached_success(job)
+            if cached is not None:
+                log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
+                log_path.write_text("RESUME verified existing PNG hash and job fingerprint; renderer skipped.\\n",encoding="utf-8")
+                print(f"HUD_ARTISAN_RESUME_HIT id={jid} output={job['output']}")
+                return cached
         for attempt in range(retries+1):
             try:
                 if out.is_symlink():
