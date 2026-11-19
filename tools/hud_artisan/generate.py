@@ -1114,13 +1114,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         wanted=set(only)
         if len(wanted)!=len(only):
             raise ValueError("--only contains duplicate selectors")
-        selected_jobs=[job for job in all_jobs if job["job_id"] in wanted or job.get("asset") in wanted]
-        resolved={value for job in selected_jobs for value in (job["job_id"],job.get("asset"))}
-        unknown=wanted-resolved
-        if unknown:
-            raise ValueError("--only selectors did not match jobs: "+", ".join(sorted(unknown)))
-        if not selected_jobs or len({job["job_id"] for job in selected_jobs})!=len(selected_jobs):
-            raise ValueError("--only selected no jobs or resolved ambiguously")
+        for selector in wanted:
+            matches=[job for job in all_jobs if selector in (job["job_id"],job.get("asset"))]
+            if len(matches)!=1:
+                raise ValueError(f"--only selector {selector!r} matched {len(matches)} jobs; expected exactly one")
+        selected_jobs=[next(job for job in all_jobs if selector in (job["job_id"],job.get("asset")))
+                       for selector in only]
     cwd_value=cfg.get("working_directory",".")
     if not isinstance(cwd_value,str) or not cwd_value.strip():
         raise ValueError("adapter.working_directory must be a non-empty string")
