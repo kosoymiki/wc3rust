@@ -240,10 +240,16 @@ fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackEr
         path: root.display().to_string(),
         error: error.to_string(),
     })?;
-    let candidate = root.join(rel);
-    if candidate.is_symlink() {
-        return Err(PackError::Manifest(format!("symlink {label} is not allowed: {relative}")));
+    let mut cursor = root.to_path_buf();
+    for component in rel.components() {
+        if let std::path::Component::Normal(part) = component {
+            cursor.push(part);
+            if cursor.is_symlink() {
+                return Err(PackError::Manifest(format!("symlink {label} is not allowed: {relative}")));
+            }
+        }
     }
+    let candidate = root.join(rel);
     let resolved = candidate.canonicalize().map_err(|error| PackError::Io {
         path: candidate.display().to_string(),
         error: error.to_string(),
@@ -314,6 +320,9 @@ impl HudPack {
             .map_err(|error| PackError::Manifest(error.to_string()))?;
 
         let design_height = number(&value, &["design_height"])?;
+        if design_height <= 0.0 {
+            return Err(PackError::Manifest("design_height must be positive".to_string()));
+        }
         let reference = &value["reference_resolution"];
         let reference_landscape = pair_u32(reference, &["landscape"])?;
         let reference_portrait = pair_u32(reference, &["portrait"])?;
@@ -322,18 +331,19 @@ impl HudPack {
         let safe_portrait = quad(safe, &["portrait"])?;
 
         let card = &value["command_card"];
-        let card_columns = integer(card, &["columns"])? as usize;
-        let card_rows = integer(card, &["rows"])? as usize;
+        let card_columns = positive_usize(card, &["columns"])?;
+        let card_rows = positive_usize(card, &["rows"])?;
         let card_cell = pair_u32(card, &["cell"])?[0] as f32;
         let card_gap = number(card, &["gap"])?;
+        if card_gap < 0.0 { return Err(PackError::Manifest("command_card.gap must be non-negative".to_string())); }
 
         let groups = &value["control_groups"];
-        let group_count = integer(groups, &["count"])? as usize;
+        let group_count = positive_usize(groups, &["count"])?;
         let group_cell = pair_u32(groups, &["cell"])?[0] as f32;
 
         let atlas = &value["atlas"]["commandbuttons"];
-        let atlas_columns = integer(atlas, &["columns"])? as u32;
-        let atlas_rows = integer(atlas, &["rows"])? as u32;
+        let atlas_columns = u32::try_from(positive_usize(atlas, &["columns"])?).map_err(|_| PackError::Manifest("atlas columns exceed u32".to_string()))?;
+        let atlas_rows = u32::try_from(positive_usize(atlas, &["rows"])?).map_err(|_| PackError::Manifest("atlas rows exceed u32".to_string()))?;
         let atlas_cell_px = pair_u32(atlas, &["cell"])?[0] as f32;
 
         let font_values = value["font_files"].as_array()
@@ -1104,6 +1114,14 @@ fn integer(value: &serde_json::Value, path: &[&str]) -> Result<i64, PackError> {
         .ok_or_else(|| PackError::Manifest(format!("missing integer {}", path.join("."))))
 }
 
+fn positive_usize(value: &serde_json::Value, path: &[&str]) -> Result<usize, PackError> {
+    let raw = integer(value, path)?;
+    if raw <= 0 {
+        return Err(PackError::Manifest(format!("{} must be positive", path.join("."))));
+    }
+    usize::try_from(raw).map_err(|_| PackError::Manifest(format!("{} exceeds usize", path.join("."))))
+}
+
 fn string(value: &serde_json::Value, path: &[&str]) -> Result<String, PackError> {
     walk(value, path)
         .and_then(|item| item.as_str())
@@ -1133,19 +1151,18 @@ fn quad(value: &serde_json::Value, path: &[&str]) -> Result<[f32; 4], PackError>
     let list = walk(value, path)
         .and_then(|item| item.as_array())
         .ok_or_else(|| PackError::Manifest(format!("missing quad {}", path.join("."))))?;
-    if list.len() < 4 {
-        return Err(PackError::Manifest(format!(
-            "quad {} has {} items",
-            path.join("."),
-            list.len()
-        )));
+    if list.len() != 4 {
+        return Err(PackError::Manifest(format!("quad {} must have exactly 4 items", path.join("."))));
     }
-    Ok([
-        list[0].as_f64().unwrap_or(0.0) as f32,
-        list[1].as_f64().unwrap_or(0.0) as f32,
-        list[2].as_f64().unwrap_or(0.0) as f32,
-        list[3].as_f64().unwrap_or(0.0) as f32,
-    ])
+    let mut result = [0.0f32; 4];
+    for (index, slot) in result.iter_mut().enumerate() {
+        let raw = list[index].as_f64().ok_or_else(|| PackError::Manifest(format!("quad {} values must be numbers", path.join("."))))?;
+        *slot = raw as f32;
+        if !slot.is_finite() || *slot < 0.0 {
+            return Err(PackError::Manifest(format!("quad {} values must be finite and non-negative", path.join("."))));
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
