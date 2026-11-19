@@ -228,8 +228,8 @@ pub fn find_installed() -> Option<PathBuf> {
 fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackError> {
     let rel = Path::new(relative);
     if relative.is_empty()
-        || relative.contains('\\\\')
-        || relative.contains('\\0')
+        || relative.contains('\\')
+        || relative.contains('\0')
         || rel.is_absolute()
         || rel.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
     {
@@ -357,8 +357,8 @@ impl HudPack {
         let mut seen_fonts = std::collections::HashSet::new();
         for item in font_values {
             let font = item.as_str().ok_or_else(|| PackError::Manifest("font filename must be a string".to_string()))?;
-            if font.contains('\\\\')
-                || font.contains('\\0')
+            if font.contains('\\')
+                || font.contains('\0')
                 || Path::new(font).components().count() != 1
                 || !matches!(Path::new(font).components().next(), Some(std::path::Component::Normal(_)))
                 || !font.to_ascii_lowercase().ends_with(".ttf")
@@ -1420,7 +1420,7 @@ mod tests {
         std::fs::create_dir_all(root.join("fonts")).expect("create root");
         std::fs::write(root.join("fonts/font.ttf"),b"font").expect("font");
         assert!(pack_file(&root,"../outside.ttf","font").is_err());
-        assert!(pack_file(&root,"fonts\\\\font.ttf","font").is_err());
+        assert!(pack_file(&root,"fonts\\font.ttf","font").is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join("fonts"),root.join("alias")).expect("symlink");
