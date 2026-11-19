@@ -65,6 +65,28 @@ class ComfyDoctorTests(unittest.TestCase):
             self.assertEqual(report["queue"], {"running": 0, "pending": 0})
             self.assertTrue(report["read_only"])
 
+    def test_doctor_rejects_symlinked_workflow_before_hashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            config_path, object_info=self.fixture(root)
+            workflow_path=root/"workflow.json"
+            alias=root/"workflow-link.json"
+            alias.symlink_to(workflow_path)
+            config=json.loads(config_path.read_text())
+            config["workflow_file"]=str(alias)
+            config_path.write_text(json.dumps(config))
+            def fake_http(base, endpoint, payload=None, timeout=60):
+                if endpoint=="/system_stats":
+                    return {"system":{},"devices":[]}
+                if endpoint=="/queue":
+                    return {"queue_running":[],"queue_pending":[]}
+                if endpoint=="/object_info":
+                    return object_info
+                raise AssertionError(endpoint)
+            with mock.patch.object(doctor.adapter,"http_json",side_effect=fake_http):
+                with self.assertRaisesRegex(doctor.adapter.ComfyError,"non-symlink"):
+                    doctor.inspect_runtime(config_path)
+
     def test_doctor_reports_bad_mapping_without_submitting_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path, object_info = self.fixture(Path(directory))
