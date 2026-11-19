@@ -109,6 +109,18 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Optional non-secret renderer/runtime lock metadata."
+    },
+    "model_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
     }
   }
 }
