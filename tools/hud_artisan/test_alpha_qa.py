@@ -42,6 +42,15 @@ class AlphaQATests(unittest.TestCase):
         item = alpha_qa.inspect_png(self.save("fringe.png", image), self.root)
         self.assertIn("possible_chroma_key_fringe", alpha_qa.classify(item, False, 0.001))
 
+    def test_key_tolerance_above_85_does_not_overflow_sum_distance(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            path=root/"black.png"
+            Image.new("RGBA",(4,4),(0,0,0,255)).save(path)
+            report=alpha_qa.inspect_png(path,root,key_tolerance=100)
+            self.assertEqual(report["chroma_key"]["near_key_visible_pixels"],0)
+
     def test_fully_transparent_image_is_flagged(self):
         item = alpha_qa.inspect_png(
             self.save("empty.png", Image.new("RGBA", (8, 8), (0, 0, 0, 0))), self.root)
