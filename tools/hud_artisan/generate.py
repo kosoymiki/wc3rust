@@ -1070,13 +1070,13 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 print(f"HUD_ARTISAN_JOB {row['status']} id={row['job_id']} output={row['output']}")
         results.sort(key=lambda row:row["job_id"])
         ok=all(row["status"]=="succeeded" for row in results)
-        report={"tool":"HUD Artisan","version":VERSION,"jobs_sha256":sha(jobs_path.read_bytes()),
+        report={"tool":"HUD Artisan","version":VERSION,"jobs_sha256":jobs_digest,
+                "adapter_config_sha256":adapter_digest,
                 "adapter":{"provider":provider,"model":model},"parallel":parallel,"results":results,
                 "succeeded":sum(row["status"]=="succeeded" for row in results),
                 "failed":sum(row["status"]!="succeeded" for row in results)}
-        worker_report=safe_join_any(drop,"reports/worker-results.json")
         worker_report.parent.mkdir(parents=True,exist_ok=True)
-        worker_report.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        atomic_write_text(worker_report,json.dumps(report,ensure_ascii=False,indent=2)+"\n")
         if ok:
             job_map={job["job_id"]:job for job in jobs}
             records=[]
@@ -1090,7 +1090,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
             provenance_path.write_text(json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
-                "jobs_sha256":sha(jobs_path.read_bytes()),"jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+                "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
+                "jobs":records},ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
         return 0 if ok else 1
     finally:
