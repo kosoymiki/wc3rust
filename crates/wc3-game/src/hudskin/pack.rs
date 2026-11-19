@@ -325,7 +325,7 @@ impl HudPack {
             .map_err(|error| PackError::Manifest(error.to_string()))?;
 
         let design_height = number(&value, &["design_height"])?;
-        if design_height <= 0.0 {
+        if design_height <= 0.0 || design_height > 8192.0 {
             return Err(PackError::Manifest("design_height must be positive".to_string()));
         }
         let reference = &value["reference_resolution"];
@@ -348,6 +348,9 @@ impl HudPack {
         let card = &value["command_card"];
         let card_columns = positive_usize(card, &["columns"])?;
         let card_rows = positive_usize(card, &["rows"])?;
+        if card_columns > 16 || card_rows > 16 {
+            return Err(PackError::Manifest("command_card columns and rows must not exceed 16".to_string()));
+        }
         let card_cell_size = pair_u32(card, &["cell"])?;
         if card_cell_size[0] != card_cell_size[1] {
             return Err(PackError::Manifest("command_card.cell must be square".to_string()));
@@ -358,6 +361,9 @@ impl HudPack {
 
         let groups = &value["control_groups"];
         let group_count = positive_usize(groups, &["count"])?;
+        if group_count > 64 {
+            return Err(PackError::Manifest("control_groups.count must not exceed 64".to_string()));
+        }
         let group_cell_size = pair_u32(groups, &["cell"])?;
         if group_cell_size[0] != group_cell_size[1] {
             return Err(PackError::Manifest("control_groups.cell must be square".to_string()));
@@ -372,6 +378,9 @@ impl HudPack {
             return Err(PackError::Manifest("atlas.commandbuttons.cell must be square".to_string()));
         }
         let atlas_cell_px = atlas_cell_size[0] as f32;
+        if atlas_columns > 256 || atlas_rows > 256 || atlas_cell_size[0] > 4096 || atlas_cell_size[1] > 4096 {
+            return Err(PackError::Manifest("atlas grid dimensions exceed runtime limits".to_string()));
+        }
 
         let font_values = value["font_files"].as_array()
             .ok_or_else(|| PackError::Manifest("font_files is not an array".to_string()))?;
@@ -593,10 +602,30 @@ impl HudPack {
                 declared_atlas_size[0], declared_atlas_size[1], atlas_asset.w, atlas_asset.h
             )));
         }
+        if u64::from(atlas_columns) * u64::from(atlas_cell_size[0]) > u64::from(atlas_asset.w)
+            || u64::from(atlas_rows) * u64::from(atlas_cell_size[1]) > u64::from(atlas_asset.h)
+        {
+            return Err(PackError::Manifest("atlas columns/rows/cell exceed declared atlas dimensions".to_string()));
+        }
         let atlas_texture = Some(atlas_asset.texture);
         let entries = atlas["entries"].as_array()
             .ok_or_else(|| PackError::Manifest("atlas.commandbuttons.entries is not an array".to_string()))?;
         validate_atlas_entries(entries, atlas_asset.w, atlas_asset.h)?;
+        for entry in entries {
+            let id = string(entry, &["id"])?;
+            let x = integer(entry, &["x"])?;
+            let y = integer(entry, &["y"])?;
+            let w = integer(entry, &["w"])?;
+            let h = integer(entry, &["h"])?;
+            if [w, h] != [i64::from(atlas_cell_size[0]), i64::from(atlas_cell_size[1])]
+                || x % i64::from(atlas_cell_size[0]) != 0
+                || y % i64::from(atlas_cell_size[1]) != 0
+            {
+                return Err(PackError::Manifest(format!(
+                    "atlas cell {id} must match the declared cell size and grid alignment"
+                )));
+            }
+        }
         let mut cells = HashMap::with_capacity(entries.len());
         for entry in entries {
             let id = string(entry, &["id"])?;
