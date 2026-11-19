@@ -118,6 +118,7 @@ class ProductionQATests(unittest.TestCase):
 
     def test_state_key_uses_rightmost_state_token(self):
         self.assertEqual(qa.state_key("button_active_disabled"),("button_active","disabled"))
+        self.assertEqual(qa.state_key("button_active_active"),("button_active","active"))
         self.assertEqual(qa.state_key("ability_icon_pressed"),("ability_icon","pressed"))
 
     def test_real_manifest_state_variants_are_grouped(self):
