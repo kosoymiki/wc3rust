@@ -147,6 +147,8 @@ def state_pair_metrics(a_path: Path, b_path: Path) -> dict[str, Any]:
 
 def render_contact_sheets(assets: list[dict], pack: Path, out: Path,
                           scales=(1.0, 0.5, 0.25), columns: int = 4) -> list[str]:
+    if out.is_symlink() or (out.exists() and not out.is_dir()):
+        raise ValueError("contact-sheet output directory must be a regular directory")
     out.mkdir(parents=True, exist_ok=True)
     paths = []
     card_w, image_h, label_h, gap = 560, 190, 48, 12
@@ -199,6 +201,8 @@ def save_atomic(image: Image.Image, path: Path) -> None:
 
 
 def render_asset_thumbnails(assets: list[dict], pack: Path, out: Path) -> dict[str,str]:
+    if out.is_symlink() or (out.exists() and not out.is_dir()):
+        raise ValueError("thumbnail output directory must be a regular directory")
     out.mkdir(parents=True,exist_ok=True)
     result={}
     for asset in assets:
@@ -303,9 +307,13 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     entries=atlas_spec.get("entries",[])
     if not isinstance(atlas_file,str) or not isinstance(entries,list):
         return {"status":"unavailable","reason":"manifest atlas.commandbuttons is malformed","cells":[],"findings":[]}
+    if len(entries)>4096:
+        return {"status":"error","reason":"atlas entry count exceeds safety limit","file":atlas_file,"cells":[],"findings":[]}
     try:
         atlas_path=safe_file(pack,atlas_file)
         with Image.open(atlas_path) as source:
+            if source.width<1 or source.height<1 or source.width*source.height>MAX_PIXELS:
+                raise ValueError("atlas dimensions exceed pixel budget")
             source.load()
             if source.format!="PNG":
                 raise ValueError("atlas is not PNG")
