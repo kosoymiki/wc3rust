@@ -41,15 +41,25 @@ The state metrics are triage heuristics, not an artistic verdict. A pressed stat
 `blp_harness.py inspect --input file.blp` validates BLP1/BLP2 headers, dimensions and mipmap bounds. The round-trip command invokes a locally installed encoder and decoder through explicit argv arrays (no shell), validates the BLP header, and measures RGBA RMSE, PSNR and alpha-silhouette IoU:
 
 ~~~sh
+# Run from the repository root. This uses the existing palette BLP1 encoder
+# and the in-repository wc3-formats BLP1/BLP2 decoder.
 python3 tools/hud_artisan/blp_harness.py roundtrip \
-  --input build/hud-artisan/pack/icons/example.png \
+  --input analysis/hudskin/final/wc3rust-hud-final/icons/example.png \
   --work build/hud-artisan/blp-roundtrip \
-  --encode-arg /path/to/local-blp-encoder \
-  --encode-arg=--input --encode-arg={input} \
-  --encode-arg=--output --encode-arg={output} \
-  --decode-arg /path/to/local-blp-decoder \
-  --decode-arg=--input --decode-arg={input} \
-  --decode-arg=--output --decode-arg={output} \
+  --encode-arg=python3 \
+  --encode-arg=tools/png_to_blp1.py \
+  --encode-arg={input} \
+  --encode-arg={output} \
+  --decode-arg=cargo \
+  --decode-arg=run \
+  --decode-arg=-p \
+  --decode-arg=wc3-formats \
+  --decode-arg=--example \
+  --decode-arg=blp_dump_rgba \
+  --decode-arg=-- \
+  --decode-arg={input} \
+  --decode-arg={output} \
+  --decode-raw-rgba \
   --report build/hud-artisan/blp-roundtrip/report.json
 ~~~
 
