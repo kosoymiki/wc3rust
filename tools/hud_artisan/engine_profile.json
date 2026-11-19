@@ -5,12 +5,12 @@
   "design_height": 768,
   "reference_resolution": {
     "landscape": [
-      2414,
+      1920,
       1080
     ],
     "portrait": [
       1080,
-      2414
+      1920
     ]
   },
   "safe_area_1080p": {
@@ -78,7 +78,7 @@
     "minimap_frame_normal_216"
   ],
   "notes": [
-    "Read from PACK_ROLE_ASSETS, HudPack tests and current pack loader code.",
+    "Reference resolutions and safe-area contract match generate.py, HudPack::scale_for and the final-pack manifest; 2414x1080 is a QA viewport, not a reference resolution.",
     "This file is a validation profile only, not a runtime manifest.",
     "Do not invent missing manifest paths, nine-slice insets, all 92 assets or font binaries."
   ],
