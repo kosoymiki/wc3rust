@@ -59,6 +59,13 @@ class AlphaQATests(unittest.TestCase):
         with self.assertRaises(ValueError):
             alpha_qa.build_report([], self.root, max_key_ratio=1.1)
 
+    def test_symlink_input_is_rejected(self):
+        target = self.save("target.png", Image.new("RGBA", (4, 4), (1, 2, 3, 255)))
+        link = self.root / "linked.png"
+        link.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, "non-symlink"):
+            alpha_qa.inspect_png(link, self.root)
+
 
 if __name__ == "__main__":
     unittest.main()
