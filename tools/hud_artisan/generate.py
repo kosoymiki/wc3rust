@@ -125,7 +125,7 @@ def read_json(path:Path)->dict[str,Any]:
 
 def validate_engine_contract(doc:dict[str,Any])->None:
     """Fail closed when a claimed production manifest drifts from the Rust HUD contract."""
-    expected_resolution={"landscape":[2414,1080],"portrait":[1080,2414]}
+    expected_resolution={"landscape":[1920,1080],"portrait":[1080,1920]}
     expected_safe={"landscape":[48,80,48,48],"portrait":[24,96,24,64]}
     if doc.get("design_height")!=768:
         raise ValueError(f"engine contract design_height must be 768, found {doc.get('design_height')}")
@@ -1215,7 +1215,8 @@ def main(argv=None):
     try:
         if a.cmd=="profile":
             profile={"profile":"wc3rust-hud-engine-contract","contract_only":True,"design_height":768,
-             "reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
+             "reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
+             "qa_viewports":{"landscape":[2414,1080]},
              "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
              "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
              "control_groups":{"count":10,"cell":[44,44]},
