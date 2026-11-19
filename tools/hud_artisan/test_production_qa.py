@@ -51,6 +51,9 @@ class ProductionQATests(unittest.TestCase):
         mp.write_text(json.dumps(manifest))
         report = qa.run(mp, self.pack, self.root/"out", None, 0.45, 0.015, 0.45)
         self.assertEqual(report["summary"]["state_families"], 1)
+        self.assertTrue(Path(report["review_gallery"]).is_file())
+        gallery_text=Path(report["review_gallery"]).read_text()
+        self.assertIn("button_normal",gallery_text)
         self.assertIn("button_normal", [x["asset"] for x in report["regeneration_candidates"]])
         self.assertIn("empty_icon", [x["asset"] for x in report["regeneration_candidates"]])
         empty_record=next(x for x in report["assets"] if x["name"]=="empty_icon")
@@ -75,6 +78,21 @@ class ProductionQATests(unittest.TestCase):
         self.assertEqual(report["findings"][0]["reason"],"fully_transparent_atlas_cell")
         self.assertEqual(report["findings"][0]["asset"],"command_icon_empty")
         self.assertTrue(Path(report["contact_sheet"]).is_file())
+
+    def test_offline_gallery_escapes_names_and_uses_relative_assets(self):
+        out=self.root/"gallery"
+        thumbs=out/"thumbnails";thumbs.mkdir(parents=True)
+        Image.new("RGB",(16,16),(80,90,100)).save(thumbs/"safe.png")
+        gallery=qa.write_review_gallery(
+            [{"name":"<script>alert(1)</script>","width":16,"height":16,
+              "alpha_qa":{"alpha":{"transparent_ratio":0.0,"semi_transparent_ratio":0.0},"findings":[]}}],
+            {"<script>alert(1)</script>":"thumbnails/safe.png"},[],
+            {"status":"not_configured","scanned":0},
+            {"scanned":1,"errors":[],"summary":{"state_families":0,"flagged_assets":0}},out)
+        html=Path(gallery).read_text()
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;",html)
+        self.assertNotIn("<script>alert(1)</script>",html)
+        self.assertIn('src="thumbnails/safe.png"',html)
 
     def test_nine_slice_stretch_zone_metrics(self):
         image = Image.new("RGBA", (64, 64), (20, 30, 40, 255))
