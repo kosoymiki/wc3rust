@@ -118,6 +118,32 @@ class ProductionQATests(unittest.TestCase):
         self.assertEqual(report["summary"]["atlas_findings"],1)
         self.assertFalse(report["summary"]["pass"])
 
+    def test_manifest_dimension_mismatch_is_a_read_error(self):
+        image=Image.new("RGBA",(64,64),(120,80,30,255));image.save(self.pack/"wrong.png")
+        manifest={"assets":[{"name":"plain_icon","file":"wrong.png","w":32,"h":32}]}
+        mp=self.root/"manifest.json";mp.write_text(json.dumps(manifest))
+        report=qa.run(mp,self.pack,self.root/"dimension-qa",None,0.45,0.015,0.45)
+        self.assertEqual(report["summary"]["read_errors"],1)
+        self.assertFalse(report["summary"]["pass"])
+        self.assertIn("differ from manifest",report["errors"][0]["error"])
+
+    def test_alpha_requirements_are_inferred_from_asset_semantics(self):
+        opaque=Image.new("RGBA",(64,64),(120,80,30,255));opaque.save(self.pack/"icon.png")
+        frame=Image.new("RGBA",(64,64),(0,0,0,0))
+        ImageDraw.Draw(frame).rectangle((20,20,44,44),fill=(140,110,70,255))
+        frame.save(self.pack/"portrait.png")
+        manifest={"assets":[
+            {"name":"icon_test_normal","file":"icon.png","w":64,"h":64},
+            {"name":"portrait_frame_normal_64","file":"portrait.png","w":64,"h":64}
+        ]}
+        mp=self.root/"manifest.json";mp.write_text(json.dumps(manifest))
+        report=qa.run(mp,self.pack,self.root/"alpha-semantic-qa",None,0.45,0.015,0.45)
+        icon=next(row for row in report["assets"] if row["name"]=="icon_test_normal")
+        portrait=next(row for row in report["assets"] if row["name"]=="portrait_frame_normal_64")
+        self.assertIn("alpha_required_but_opaque",icon["alpha_qa"]["findings"])
+        self.assertIn("center_aperture_not_transparent",portrait["alpha_qa"]["findings"])
+        self.assertFalse(report["summary"]["pass"])
+
     def test_qa_rejects_invalid_state_thresholds(self):
         asset=self.make_state("plain_icon",4,(140,100,40,255))
         mp=self.root/"manifest.json";mp.write_text(json.dumps({"assets":[asset]}))
