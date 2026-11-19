@@ -83,6 +83,7 @@ jobs:
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::numeric_manifest_helpers_reject_invalid_values
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::asset_metadata_rejects_wrong_types_empty_and_duplicate_states
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::atlas_grid_rejects_misaligned_oversized_and_out_of_grid_cells
+          cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::runtime_font_manifest_requires_all_bound_faces
 
   blp-decoder:
     runs-on: ubuntu-latest
