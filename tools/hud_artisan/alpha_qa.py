@@ -172,9 +172,19 @@ def main(argv=None) -> int:
         report = build_report(paths, root, args.require_alpha, args.max_key_ratio,
                               key_parts, args.key_tolerance)
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        temporary = args.out.with_name(args.out.name + ".tmp")
-        temporary.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(temporary, args.out)
+        if args.out.is_symlink() or (args.out.exists() and not args.out.is_file()):
+            raise ValueError("report output must be a regular file path, not a symlink or directory")
+        import tempfile
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{args.out.name}.", suffix=".tmp", dir=args.out.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as stream:
+                stream.write(json.dumps(report, indent=2, ensure_ascii=False) + "\\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, args.out)
+        finally:
+            temporary.unlink(missing_ok=True)
         print(json.dumps(report["summary"], ensure_ascii=False))
         return 1 if args.strict and not report["summary"]["pass"] else 0
     except (OSError, ValueError) as exc:
