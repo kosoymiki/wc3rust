@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PIXELS = 64_000_000
 MAX_PNG_BYTES = 256 * 1024 * 1024
