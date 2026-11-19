@@ -101,7 +101,7 @@ def atomic_write_text(path:Path,text:str)->None:
     fd,temp_name=tempfile.mkstemp(prefix=f".{path.name}.",suffix=".tmp",dir=path.parent)
     temporary=Path(temp_name)
     try:
-        with os.fdopen(fd,"w",encoding="utf-8",newline="\\n") as stream:
+        with os.fdopen(fd,"w",encoding="utf-8",newline="\n") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
@@ -521,7 +521,7 @@ def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
     payload={"tool":"HUD Artisan","schema_version":1,"version":VERSION,"theme":theme,"seed":seed,
       "engine_contract":engine_contract,"source_manifest_sha256":sha(manifest.read_bytes()),
       "job_count":len(jobs),"jobs":jobs,"atlas":atlas_plan}
-    atomic_write_text(jobs_file,json.dumps(payload,ensure_ascii=False,indent=2)+"\\n")
+    atomic_write_text(jobs_file,json.dumps(payload,ensure_ascii=False,indent=2)+"\n")
     if pd.exists(): shutil.rmtree(pd)
     pd.mkdir(parents=True,exist_ok=True)
     prompt_names=set()
@@ -979,7 +979,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                         stderr=stderr.replace(secret,"[REDACTED]")
                 if len(stdout)>MAX_LOG_CHARS: stdout=stdout[:MAX_LOG_CHARS]+"\n[stdout truncated]"
                 if len(stderr)>MAX_LOG_CHARS: stderr=stderr[:MAX_LOG_CHARS]+"\n[stderr truncated]"
-                history.append(f"attempt={attempt+1} exit={returncode}\\nSTDOUT:\\n{stdout}\\nSTDERR:\\n{stderr}")
+                history.append(f"attempt={attempt+1} exit={returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
                 if timed_out:raise RuntimeError(f"adapter timed out after {timeout}s; process group terminated")
                 if returncode!=0:raise RuntimeError(f"adapter exit code {returncode}")
                 # Re-resolve after the untrusted provider process exits: it may have
