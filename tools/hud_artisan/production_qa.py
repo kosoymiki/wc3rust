@@ -360,6 +360,11 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     planned_cells={}
     if jobs_plan and isinstance(jobs_plan.get("atlas"),dict):
         planned_cells={cell.get("id"):cell for cell in jobs_plan["atlas"].get("cells",[]) if isinstance(cell,dict)}
+    manifest_assets={asset.get("name"):asset for asset in manifest.get("assets",[]) if isinstance(asset,dict)}
+    expected_cell=atlas_spec.get("cell")
+    if expected_cell is not None and (not isinstance(expected_cell,list) or len(expected_cell)!=2
+        or any(type(value) is not int or value<=0 for value in expected_cell)):
+        return {"status":"error","reason":"atlas cell must be two positive integers","file":atlas_file,"cells":[],"findings":[]}
     cells=[];findings=[];columns=4;card_w=184;card_h=208
     rows=math.ceil(len(entries)/columns)
     board=Image.new("RGB",(columns*card_w,max(1,rows)*card_h),(34,34,38))
@@ -376,6 +381,8 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
             x,y,w,h=raw
             if not ident or min(x,y)<0 or min(w,h)<=0 or x+w>atlas.width or y+h>atlas.height:
                 raise ValueError("cell outside atlas bounds or invalid ID")
+            if expected_cell is not None and [w,h] != expected_cell:
+                raise ValueError(f"cell dimensions {w}x{h} differ from declared cell {expected_cell}")
             for previous in cells:
                 px,py,pw,ph=(previous[k] for k in ("x","y","width","height"))
                 if x<px+pw and px<x+w and y<py+ph and py<y+h:
@@ -396,10 +403,18 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
                   "sha256":hashlib.sha256(crop.tobytes()).hexdigest()}
             planned=planned_cells.get(ident,{})
             source_file=planned.get("source_file")
+            source_asset=entry.get("source_asset") or entry.get("asset")
+            if not source_file and isinstance(source_asset,str):
+                source_record=manifest_assets.get(source_asset)
+                if source_record:
+                    source_file=source_record.get("file")
+                    cell["source_asset"]=source_asset
             job=jobs_by_output.get(source_file)
             if job:
                 cell["job_asset"]=job.get("asset")
                 cell["job_id"]=job.get("job_id")
+            elif isinstance(source_asset,str) and source_asset in manifest_assets:
+                cell["job_asset"]=source_asset
             if bbox is None:
                 cell["findings"]=["fully_transparent_atlas_cell"]
                 findings.append({"id":ident,"reason":"fully_transparent_atlas_cell",
