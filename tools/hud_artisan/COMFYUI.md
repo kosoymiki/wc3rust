@@ -40,9 +40,24 @@ The adapter:
 - rejects unsafe output filenames/subfolders and non-PNG responses;
 - verifies that the server returned the exact planned render canvas, then downsamples only when render_width/render_height differ from native width/height; it uses premultiplied-alpha Lanczos to prevent transparent-edge colour fringes;
 - in alpha_strategy=auto (default) or chroma_key mode, removes only border-connected matte pixels for alpha-required assets and removes near-key pixels—not arbitrary artwork—inside the declared frame aperture; preserve mode leaves source alpha untouched;
+- in alpha_strategy=u2net mode, builds the alpha from the u2net salient-object model through onnxruntime (model from matte_model or U2NET_MODEL); it needs no key-coloured background, so it works with any RGB workflow, including SD1.5 on CPU;
 - checks final native-size alpha/aperture requirements, then atomically writes RGBA8 PNG; unexpected render dimensions and any implicit stretching are rejected.
 
 The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
+
+## u2net matte mode (Termux/Android)
+
+`alpha_strategy=u2net` is the Android-friendly fallback for alpha-required jobs when the workflow
+cannot produce a solid key background (e.g. SD1.5 on CPU). It runs the u2net salient-object model
+through onnxruntime (`cfg.matte_model` or `U2NET_MODEL`, default
+`~/src/comfyui-termux/models/u2net.onnx`) and uses the predicted mask as alpha. The matte runs on
+the render canvas; the existing premultiplied-alpha Lanczos step then restores the native size.
+
+Measured on Termux (2026-11-19): model load 0.31 s, 320x320 inference ~1.1 s. A painterly SD1.5
+render matted well (alpha 0..230, 68.9% transparent). A flat vector-like apple icon matted poorly
+(alpha 0..27, 99.9% near-transparent) because saliency models do not see flat shapes as salient
+objects. Treat u2net as a fallback and inspect the silhouette; the chroma-key path with an
+instruction-following model (Z-Image profile) remains the production route.
 
 ## Important limitations
 

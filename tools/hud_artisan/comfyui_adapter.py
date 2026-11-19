@@ -182,7 +182,7 @@ def wait_for_output(base: str, prompt_id: str, output_node_id: str,
                     timeout: int, max_wait: int, interval: float) -> dict:
     deadline = time.monotonic() + max_wait
     while time.monotonic() < deadline:
-        history = http_json(base, "/history/" + parse.quote(prompt_id, safe=""), timeout)
+        history = http_json(base, "/history/" + parse.quote(prompt_id, safe=""), None, timeout)
         record = history.get(prompt_id)
         if record is not None and not isinstance(record, dict):
             raise ComfyError("ComfyUI history record has an invalid shape")
@@ -348,6 +348,20 @@ def ui_workflow_to_api(workflow: dict, object_info: dict) -> dict:
     return prompt
 
 
+ALPHA_STRATEGIES = ("auto", "preserve", "chroma_key", "u2net")
+
+
+def alpha_matte_strategy(image, cfg: dict):
+    """u2net salient-object matte through onnxruntime (Termux/Android friendly).
+
+    Unlike the chroma-key path it does not require the diffusion model to render a
+    solid key colour, so it works with any RGB workflow (including SD1.5 on CPU).
+    The model path comes from cfg.matte_model or U2NET_MODEL.
+    """
+    from alpha_matte import matte_rgba  # lazy: only u2net jobs need onnxruntime
+    return matte_rgba(image, cfg.get("matte_model") or os.environ.get("U2NET_MODEL"))
+
+
 def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
     """Remove only chroma-key regions connected to the image border."""
     from PIL import ImageDraw
@@ -434,8 +448,8 @@ def main(argv=None) -> int:
                 or not 0.2 <= interval <= 30):
             raise ComfyError("invalid request timeout / max wait / poll interval")
         alpha_strategy = cfg.get("alpha_strategy", "auto")
-        if alpha_strategy not in ("auto", "preserve", "chroma_key"):
-            raise ComfyError("alpha_strategy must be auto, preserve or chroma_key")
+        if alpha_strategy not in ALPHA_STRATEGIES:
+            raise ComfyError("alpha_strategy must be auto, preserve, chroma_key or u2net")
         raw_key = cfg.get("chroma_key_color", [255, 0, 255])
         if (not isinstance(raw_key, list) or len(raw_key) != 3
                 or any(type(value) is not int or not 0 <= value <= 255 for value in raw_key)):
@@ -525,7 +539,10 @@ def main(argv=None) -> int:
                         f"ComfyUI output size {rgba.size} != render canvas {render_expected}"
                     )
                 if job.get("requires_alpha") and alpha_strategy != "preserve":
-                    rgba = chroma_key_background(rgba, chroma_key, key_tolerance)
+                    if alpha_strategy == "u2net":
+                        rgba = alpha_matte_strategy(rgba, cfg)
+                    else:
+                        rgba = chroma_key_background(rgba, chroma_key, key_tolerance)
                     if job.get("family") in ("portrait-frame", "minimap-frame"):
                         rgba = enforce_frame_aperture(rgba, chroma_key, key_tolerance)
                 expected = (job["width"], job["height"])

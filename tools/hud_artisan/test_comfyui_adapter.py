@@ -1,5 +1,9 @@
+import sys
+import types
 import unittest
 from unittest import mock
+
+from PIL import Image
 
 import comfyui_adapter as adapter
 
@@ -252,3 +256,42 @@ class ComfyAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryPollTests(unittest.TestCase):
+    @mock.patch.object(adapter, "http_json")
+    def test_history_poll_is_a_get_without_a_payload(self, http_json):
+        http_json.return_value = {
+            "prompt-1": {
+                "status": {"status_str": "success", "completed": True},
+                "outputs": {"9": {"images": [{"filename": "result.png", "type": "output"}]}},
+            }
+        }
+        adapter.wait_for_output("http://127.0.0.1:8188", "prompt-1", "9", 5, 5, 0.2)
+        # Correctness: the timeout must be the timeout argument, not a POST body,
+        # otherwise GET /history/<id> becomes a POST and ComfyUI answers 405.
+        args = http_json.call_args.args
+        self.assertEqual(args[0], "http://127.0.0.1:8188")
+        self.assertEqual(args[1], "/history/prompt-1")
+        self.assertIsNone(args[2], "history poll must not send a POST body")
+        self.assertEqual(args[3], 5)
+
+
+class U2NetMatteModeTests(unittest.TestCase):
+    def test_u2net_is_an_accepted_alpha_strategy(self):
+        self.assertIn("u2net", adapter.ALPHA_STRATEGIES)
+
+    def test_matte_strategy_delegates_to_alpha_matte_module(self):
+        calls = {}
+
+        def fake_matte(image, model=None):
+            calls["model"] = model
+            return image.copy()
+
+        fake = types.ModuleType("alpha_matte")
+        fake.matte_rgba = fake_matte
+        with mock.patch.dict(sys.modules, {"alpha_matte": fake}):
+            image = Image.new("RGBA", (8, 8), (1, 2, 3, 255))
+            out = adapter.alpha_matte_strategy(image, {"matte_model": "/tmp/u2net.onnx"})
+        self.assertEqual(out.size, (8, 8))
+        self.assertEqual(calls["model"], "/tmp/u2net.onnx")
