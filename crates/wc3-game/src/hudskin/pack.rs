@@ -331,25 +331,47 @@ impl HudPack {
         let reference = &value["reference_resolution"];
         let reference_landscape = pair_u32(reference, &["landscape"])?;
         let reference_portrait = pair_u32(reference, &["portrait"])?;
+        if reference_landscape[0] <= reference_landscape[1] || reference_portrait[0] >= reference_portrait[1] {
+            return Err(PackError::Manifest("reference resolutions must be landscape then portrait".to_string()));
+        }
         let safe = &value["safe_area_1080p"];
         let safe_landscape = quad(safe, &["landscape"])?;
         let safe_portrait = quad(safe, &["portrait"])?;
+        if safe_landscape[0] + safe_landscape[2] >= reference_landscape[0] as f32
+            || safe_landscape[1] + safe_landscape[3] >= reference_landscape[1] as f32
+            || safe_portrait[0] + safe_portrait[2] >= reference_portrait[0] as f32
+            || safe_portrait[1] + safe_portrait[3] >= reference_portrait[1] as f32
+        {
+            return Err(PackError::Manifest("safe-area insets consume the reference viewport".to_string()));
+        }
 
         let card = &value["command_card"];
         let card_columns = positive_usize(card, &["columns"])?;
         let card_rows = positive_usize(card, &["rows"])?;
-        let card_cell = pair_u32(card, &["cell"])?[0] as f32;
+        let card_cell_size = pair_u32(card, &["cell"])?;
+        if card_cell_size[0] != card_cell_size[1] {
+            return Err(PackError::Manifest("command_card.cell must be square".to_string()));
+        }
+        let card_cell = card_cell_size[0] as f32;
         let card_gap = number(card, &["gap"])?;
         if card_gap < 0.0 { return Err(PackError::Manifest("command_card.gap must be non-negative".to_string())); }
 
         let groups = &value["control_groups"];
         let group_count = positive_usize(groups, &["count"])?;
-        let group_cell = pair_u32(groups, &["cell"])?[0] as f32;
+        let group_cell_size = pair_u32(groups, &["cell"])?;
+        if group_cell_size[0] != group_cell_size[1] {
+            return Err(PackError::Manifest("control_groups.cell must be square".to_string()));
+        }
+        let group_cell = group_cell_size[0] as f32;
 
         let atlas = &value["atlas"]["commandbuttons"];
         let atlas_columns = u32::try_from(positive_usize(atlas, &["columns"])?).map_err(|_| PackError::Manifest("atlas columns exceed u32".to_string()))?;
         let atlas_rows = u32::try_from(positive_usize(atlas, &["rows"])?).map_err(|_| PackError::Manifest("atlas rows exceed u32".to_string()))?;
-        let atlas_cell_px = pair_u32(atlas, &["cell"])?[0] as f32;
+        let atlas_cell_size = pair_u32(atlas, &["cell"])?;
+        if atlas_cell_size[0] != atlas_cell_size[1] {
+            return Err(PackError::Manifest("atlas.commandbuttons.cell must be square".to_string()));
+        }
+        let atlas_cell_px = atlas_cell_size[0] as f32;
 
         let font_values = value["font_files"].as_array()
             .ok_or_else(|| PackError::Manifest("font_files is not an array".to_string()))?;
@@ -390,8 +412,18 @@ impl HudPack {
         for declaration in declarations {
             let name = string(declaration, &["name"])?;
             let file = string(declaration, &["file"])?;
-            let w = integer(declaration, &["w"])? as u32;
-            let h = integer(declaration, &["h"])? as u32;
+            if name.trim().is_empty() {
+                return Err(PackError::Manifest("asset name must not be empty".to_string()));
+            }
+            let dimension = |key: &str| -> Result<u32, PackError> {
+                let raw = integer(declaration, &[key])?;
+                if raw <= 0 {
+                    return Err(PackError::Manifest(format!("{name}: {key} must be positive")));
+                }
+                u32::try_from(raw).map_err(|_| PackError::Manifest(format!("{name}: {key} exceeds u32")))
+            };
+            let w = dimension("w")?;
+            let h = dimension("h")?;
             let insets = &declaration["insets"];
             let insets = [
                 number(insets, &["l"])?,
@@ -555,6 +587,13 @@ impl HudPack {
         let atlas_file = string(atlas, &["file"])?;
         let atlas_asset = assets.iter().find(|asset| asset.file == atlas_file)
             .ok_or_else(|| PackError::Manifest(format!("commandbuttons atlas file is not a declared asset: {atlas_file}")))?;
+        let declared_atlas_size = pair_u32(atlas, &["size"])?;
+        if declared_atlas_size != [atlas_asset.w, atlas_asset.h] {
+            return Err(PackError::Manifest(format!(
+                "commandbuttons atlas declared size {}x{} differs from asset {}x{}",
+                declared_atlas_size[0], declared_atlas_size[1], atlas_asset.w, atlas_asset.h
+            )));
+        }
         let atlas_texture = Some(atlas_asset.texture);
         let entries = atlas["entries"].as_array()
             .ok_or_else(|| PackError::Manifest("atlas.commandbuttons.entries is not an array".to_string()))?;
