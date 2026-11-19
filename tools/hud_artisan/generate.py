@@ -545,13 +545,95 @@ def verify_plan(manifest:Path,jobs_path:Path)->tuple[dict[str,Any],dict[str,Any]
     if theme not in THEMES or type(seed) is not int:
         raise ValueError("jobs.json has invalid theme or seed")
     expected_jobs,expected_atlas=compile_jobs(doc,theme,seed)
+    overrides=plan_doc.get("job_overrides",{})
+    revision=plan_doc.get("repair_revision")
+    if not isinstance(overrides,dict) or (overrides and (not isinstance(revision,str) or not revision.strip())):
+        raise ValueError("jobs.json repair overrides require an object and non-empty repair_revision")
+    by_asset={}
+    for job in expected_jobs:
+        if job["asset"] in by_asset:
+            raise ValueError(f"repair override asset is ambiguous: {job['asset']}")
+        by_asset[job["asset"]]=job
+    for asset,override in overrides.items():
+        if asset not in by_asset or not isinstance(override,dict) or type(override.get("seed")) is not int or not 0<=override["seed"]<=0xFFFFFFFF:
+            raise ValueError(f"invalid repair override for {asset!r}")
+        job=by_asset[asset]
+        old_id=job["job_id"]
+        job["seed"]=override["seed"]
+        job["job_id"]=sha(f"{old_id}:repair:{revision}:{job['seed']}".encode("utf-8"))[:16]
     if plan_doc.get("job_count")!=len(expected_jobs):
         raise ValueError("jobs.json job_count does not match its manifest")
     if plan_doc.get("jobs")!=expected_jobs:
-        raise ValueError("jobs.json jobs differ from deterministic manifest compilation")
+        raise ValueError("jobs.json jobs differ from deterministic manifest compilation/repair overrides")
     if plan_doc.get("atlas")!=expected_atlas:
         raise ValueError("jobs.json atlas geometry/source mapping differs from the manifest")
     return plan_doc,doc
+
+def repair_plan(manifest:Path,jobs_path:Path,qa_path:Path,out:Path,revision:str)->int:
+    if not isinstance(revision,str) or not revision.strip() or len(revision)>128:
+        raise ValueError("repair revision must be 1..128 non-whitespace characters")
+    plan_doc,doc=verify_plan(manifest,jobs_path)
+    qa=read_json(qa_path)
+    if qa.get("tool")!="HUD Artisan production QA" or qa.get("schema_version")!=1:
+        raise ValueError("unsupported production QA report")
+    if qa.get("manifest_sha256")!=sha(manifest.read_bytes()):
+        raise ValueError("QA report belongs to a different manifest revision")
+    candidates=qa.get("regeneration_candidates")
+    if not isinstance(candidates,list) or not candidates:
+        raise ValueError("QA report contains no regeneration candidates")
+    jobs={job["asset"]:job for job in plan_doc["jobs"]}
+    overrides=dict(plan_doc.get("job_overrides",{}))
+    selected=[]
+    for row in candidates:
+        if not isinstance(row,dict) or not isinstance(row.get("asset"),str):
+            raise ValueError("malformed QA regeneration candidate")
+        asset=row["asset"]
+        if asset not in jobs:
+            # QA can flag a source asset that is not independently generated (e.g. a composed atlas).
+            continue
+        old=jobs[asset]
+        if asset in overrides:
+            old_seed=overrides[asset]["seed"]
+        else:
+            base_jobs,_=compile_jobs(doc,plan_doc["theme"],plan_doc["seed"])
+            base=next((item for item in base_jobs if item["asset"]==asset),None)
+            if base is None:
+                raise ValueError(f"cannot resolve original job for {asset}")
+            old_seed=base["seed"]
+        digest=sha(f"{revision}:{asset}:{old['job_id']}:{old_seed}".encode("utf-8"))
+        new_seed=int(digest[:8],16)
+        overrides[asset]={"seed":new_seed}
+        selected.append({"asset":asset,"previous_job_id":old["job_id"],"new_seed":new_seed,
+                         "reason":row.get("reason","QA finding")})
+    if not selected:
+        raise ValueError("none of the QA candidates map to independently generated jobs")
+    new_jobs,_=compile_jobs(doc,plan_doc["theme"],plan_doc["seed"])
+    by_asset={job["asset"]:job for job in new_jobs}
+    for asset,override in overrides.items():
+        if asset not in by_asset:
+            raise ValueError(f"repair override references unknown job asset {asset}")
+        job=by_asset[asset];old_id=job["job_id"]
+        job["seed"]=override["seed"]
+        job["job_id"]=sha(f"{old_id}:repair:{revision}:{job['seed']}".encode("utf-8"))[:16]
+    payload=dict(plan_doc)
+    payload["repair_revision"]=revision
+    payload["job_overrides"]=overrides
+    payload["jobs"]=new_jobs
+    payload["job_count"]=len(new_jobs)
+    requested=out.expanduser()
+    if requested.is_symlink() or (requested.exists() and not requested.is_dir()):
+        raise ValueError("repair plan output must be a regular directory")
+    requested.mkdir(parents=True,exist_ok=True);target=requested.resolve()/"jobs.json"
+    atomic_write_text(target,json.dumps(payload,ensure_ascii=False,indent=2)+"\\n")
+    atomic_write_text(requested.resolve()/"repair-queue.json",json.dumps({
+        "schema_version":1,"tool":"HUD Artisan repair queue","revision":revision,
+        "source_manifest_sha256":payload["source_manifest_sha256"],
+        "source_jobs_sha256":sha(jobs_path.read_bytes()),"jobs_sha256":sha(target.read_bytes()),
+        "selected":selected,"dispatch_command":"python tools/hud_artisan/generate.py dispatch --manifest MANIFEST --jobs JOBS_JSON --adapter ADAPTER --drop DROP --only ASSET_OR_JOB_ID --resume"
+    },ensure_ascii=False,indent=2)+"\\n")
+    print(f"HUD_ARTISAN_REPAIR_PLAN_OK selected={len(selected)} full_jobs={len(new_jobs)} revision={revision}")
+    return 0
+
 
 def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
     doc=load_manifest(manifest,engine_contract)
