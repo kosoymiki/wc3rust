@@ -223,6 +223,82 @@ pub fn find_installed() -> Option<PathBuf> {
         .find(|dir| dir.join("manifest.json").is_file())
 }
 
+/// Resolve a manifest-controlled file strictly inside the pack. Reject absolute,
+/// parent/current components and symlinks (including aliases that stay inside).
+fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackError> {
+    let rel = Path::new(relative);
+    if relative.is_empty()
+        || rel.is_absolute()
+        || rel.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(PackError::Manifest(format!("unsafe {label} path: {relative:?}")));
+    }
+    if root.is_symlink() {
+        return Err(PackError::Manifest("pack root must not be a symlink".to_string()));
+    }
+    let base = root.canonicalize().map_err(|error| PackError::Io {
+        path: root.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let candidate = root.join(rel);
+    if candidate.is_symlink() {
+        return Err(PackError::Manifest(format!("symlink {label} is not allowed: {relative}")));
+    }
+    let resolved = candidate.canonicalize().map_err(|error| PackError::Io {
+        path: candidate.display().to_string(),
+        error: error.to_string(),
+    })?;
+    if !resolved.starts_with(&base) || !resolved.is_file() {
+        return Err(PackError::Manifest(format!("{label} escapes pack or is not a file: {relative}")));
+    }
+    Ok(resolved)
+}
+
+fn validate_atlas_entries(
+    entries: &[serde_json::Value],
+    width: u32,
+    height: u32,
+) -> Result<(), PackError> {
+    use std::collections::HashSet;
+    let mut ids = HashSet::with_capacity(entries.len());
+    let mut rects: Vec<(String, u32, u32, u32, u32)> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let id = string(entry, &["id"])?;
+        if id.trim().is_empty() || !ids.insert(id.clone()) {
+            return Err(PackError::Manifest(format!("empty or duplicate atlas cell id: {id:?}")));
+        }
+        let mut values = [0u32; 4];
+        for (index, key) in ["x", "y", "w", "h"].iter().enumerate() {
+            let value = integer(entry, &[*key])?;
+            if value < 0 || value > u32::MAX as i64 {
+                return Err(PackError::Manifest(format!("atlas cell {id}: {key} outside u32 range")));
+            }
+            values[index] = value as u32;
+        }
+        let [x, y, w, h] = values;
+        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|right| right > width)
+            || y.checked_add(h).is_none_or(|bottom| bottom > height)
+        {
+            return Err(PackError::Manifest(format!(
+                "atlas cell {id} outside {width}x{height} atlas: {x},{y},{w},{h}"
+            )));
+        }
+        for (other_id, ox, oy, ow, oh) in &rects {
+            let overlaps = x < ox + ow && ox < x + w && y < oy + oh && oy < y + h;
+            if overlaps {
+                return Err(PackError::Manifest(format!(
+                    "atlas cells {other_id} and {id} overlap"
+                )));
+            }
+        }
+        rects.push((id, x, y, w, h));
+    }
+    if rects.is_empty() {
+        return Err(PackError::Manifest("atlas.commandbuttons.entries is empty".to_string()));
+    }
+    Ok(())
+}
+
 impl HudPack {
     /// Load the manifest and every PNG listed in it into `textures`.
     ///
@@ -260,24 +336,25 @@ impl HudPack {
         let atlas_rows = integer(atlas, &["rows"])? as u32;
         let atlas_cell_px = pair_u32(atlas, &["cell"])?[0] as f32;
 
-        let font_files: Vec<String> = value["font_files"]
-            .as_array()
-            .map(|list| {
-                list.iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if font_files.is_empty() {
-            return Err(PackError::Manifest("font_files is empty".to_string()));
+        let font_values = value["font_files"].as_array()
+            .ok_or_else(|| PackError::Manifest("font_files is not an array".to_string()))?;
+        if font_values.len() != 5 {
+            return Err(PackError::Manifest(format!("font_files must contain five entries, found {}", font_values.len())));
         }
-        for font in &font_files {
-            let path = root.join("fonts").join(font);
-            if !path.is_file() {
-                return Err(PackError::Missing {
-                    file: format!("fonts/{font}"),
-                });
+        let mut font_files = Vec::with_capacity(font_values.len());
+        let mut seen_fonts = std::collections::HashSet::new();
+        for item in font_values {
+            let font = item.as_str().ok_or_else(|| PackError::Manifest("font filename must be a string".to_string()))?;
+            if Path::new(font).components().count() != 1
+                || !matches!(Path::new(font).components().next(), Some(std::path::Component::Normal(_)))
+                || !font.to_ascii_lowercase().ends_with(".ttf")
+                || !seen_fonts.insert(font.to_string())
+            {
+                return Err(PackError::Manifest(format!("unsafe or duplicate font filename: {font:?}")));
             }
+            let relative = format!("fonts/{font}");
+            pack_file(root, &relative, "font")?;
+            font_files.push(font.to_string());
         }
 
         let declarations = value["assets"]
@@ -312,10 +389,16 @@ impl HudPack {
             let atlas = declaration["atlas"].as_str().unwrap_or("standalone").to_string();
             let mips = declaration["mips"].as_bool().unwrap_or(false);
 
-            let path = root.join(&file);
-            if !path.is_file() {
-                return Err(PackError::Missing { file: file.clone() });
+            if w == 0 || h == 0 || (w as u64) * (h as u64) > 64_000_000 {
+                return Err(PackError::Manifest(format!("{name}: invalid or excessive dimensions {w}x{h}")));
             }
+            if by_name.contains_key(&name) || assets.iter().any(|asset: &HudAsset| asset.file == file) {
+                return Err(PackError::Manifest(format!("duplicate asset name or file: {name} ({file})")));
+            }
+            if insets.iter().any(|value| !value.is_finite() || *value < 0.0) {
+                return Err(PackError::Manifest(format!("{name}: insets must be finite and non-negative")));
+            }
+            let path = pack_file(root, &file, "asset")?;
             let bytes = std::fs::read(&path).map_err(|error| PackError::Io {
                 path: path.display().to_string(),
                 error: error.to_string(),
@@ -448,30 +531,23 @@ impl HudPack {
 
         // The commandbuttons sheet is one of the manifest assets; its cells are
         // addressed by id (`atlas_cell`) without another texture upload.
-        let atlas_texture = atlas["file"].as_str().and_then(|file| {
-            assets
-                .iter()
-                .find(|asset| asset.file == file)
-                .map(|asset| asset.texture)
-        });
-        let mut cells = HashMap::new();
-        if let Some(entries) = atlas["entries"].as_array() {
-            let texture = atlas_texture.unwrap_or(0);
-            for entry in entries {
-                let id = string(entry, &["id"])?;
-                let x = number(entry, &["x"])?;
-                let y = number(entry, &["y"])?;
-                let w = number(entry, &["w"])?;
-                let h = number(entry, &["h"])?;
-                cells.insert(
-                    id.clone(),
-                    AtlasCell {
-                        id,
-                        texture,
-                        rect: [x, y, w, h],
-                    },
-                );
-            }
+        let atlas_file = string(atlas, &["file"])?;
+        let atlas_asset = assets.iter().find(|asset| asset.file == atlas_file)
+            .ok_or_else(|| PackError::Manifest(format!("commandbuttons atlas file is not a declared asset: {atlas_file}")))?;
+        let atlas_texture = Some(atlas_asset.texture);
+        let entries = atlas["entries"].as_array()
+            .ok_or_else(|| PackError::Manifest("atlas.commandbuttons.entries is not an array".to_string()))?;
+        validate_atlas_entries(entries, atlas_asset.w, atlas_asset.h)?;
+        let mut cells = HashMap::with_capacity(entries.len());
+        for entry in entries {
+            let id = string(entry, &["id"])?;
+            let x = number(entry, &["x"])?;
+            let y = number(entry, &["y"])?;
+            let w = number(entry, &["w"])?;
+            let h = number(entry, &["h"])?;
+            cells.insert(id.clone(), AtlasCell {
+                id, texture: atlas_asset.texture, rect: [x, y, w, h],
+            });
         }
         if cells.is_empty() {
             return Err(PackError::Manifest(
@@ -1013,10 +1089,13 @@ fn walk<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_jso
 }
 
 fn number(value: &serde_json::Value, path: &[&str]) -> Result<f32, PackError> {
-    walk(value, path)
-        .and_then(|item| item.as_f64())
-        .map(|item| item as f32)
-        .ok_or_else(|| PackError::Manifest(format!("missing number {}", path.join("."))))
+    let parsed = walk(value, path).and_then(|item| item.as_f64())
+        .ok_or_else(|| PackError::Manifest(format!("missing number {}", path.join("."))))?;
+    let parsed = parsed as f32;
+    if !parsed.is_finite() {
+        return Err(PackError::Manifest(format!("non-finite number {}", path.join("."))));
+    }
+    Ok(parsed)
 }
 
 fn integer(value: &serde_json::Value, path: &[&str]) -> Result<i64, PackError> {
@@ -1036,17 +1115,18 @@ fn pair_u32(value: &serde_json::Value, path: &[&str]) -> Result<[u32; 2], PackEr
     let list = walk(value, path)
         .and_then(|item| item.as_array())
         .ok_or_else(|| PackError::Manifest(format!("missing pair {}", path.join("."))))?;
-    if list.len() < 2 {
-        return Err(PackError::Manifest(format!(
-            "pair {} has {} items",
-            path.join("."),
-            list.len()
-        )));
+    if list.len() != 2 {
+        return Err(PackError::Manifest(format!("pair {} must have exactly 2 items", path.join("."))));
     }
-    Ok([
-        list[0].as_u64().unwrap_or(0) as u32,
-        list[1].as_u64().unwrap_or(0) as u32,
-    ])
+    let parse = |index: usize| -> Result<u32, PackError> {
+        let raw = list[index].as_u64().ok_or_else(|| PackError::Manifest(format!("pair {} values must be unsigned integers", path.join("."))))?;
+        u32::try_from(raw).map_err(|_| PackError::Manifest(format!("pair {} value exceeds u32", path.join("."))))
+    };
+    let pair = [parse(0)?, parse(1)?];
+    if pair.contains(&0) {
+        return Err(PackError::Manifest(format!("pair {} values must be positive", path.join("."))));
+    }
+    Ok(pair)
 }
 
 fn quad(value: &serde_json::Value, path: &[&str]) -> Result<[f32; 4], PackError> {
