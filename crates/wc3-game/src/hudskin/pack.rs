@@ -1195,7 +1195,7 @@ fn validate_runtime_font_files(font_files: &[String]) -> Result<(), PackError> {
         "numeric_tabular.ttf",
     ];
     for required in REQUIRED {
-        if !font_files.iter().any(|file| file.eq_ignore_ascii_case(required)) {
+        if !font_files.iter().any(|file| file == required) {
             return Err(PackError::Manifest(format!("font_files is missing required runtime face {required}")));
         }
     }
