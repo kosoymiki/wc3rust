@@ -103,12 +103,30 @@ class ReviewGateTests(unittest.TestCase):
             self.assertEqual(result["result"], "PASS")
             self.assertEqual(result["schema_version"], 2)
 
-    def test_one_nine_out_of_ten_rejects(self):
+    def test_one_nine_out_of_ten_is_not_automatically_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, jobs, pack, reviews, _, doc, jid, *_ = self.fixture(Path(directory))
             doc["reviews"][jid][1]["scores"]["craftsmanship"] = 9
             reviews.write_text(json.dumps(doc))
+            result = review_gate.evaluate(manifest, jobs, pack, reviews)
+            self.assertEqual(result["result"], "PASS")
+            self.assertEqual(result["assets"][0]["score"], "9.9/10")
+
+    def test_single_weak_criterion_rejects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, jobs, pack, reviews, _, doc, jid, *_ = self.fixture(Path(directory))
+            doc["reviews"][jid][1]["scores"]["craftsmanship"] = 6
+            reviews.write_text(json.dumps(doc))
             self.assertEqual(review_gate.evaluate(manifest, jobs, pack, reviews)["result"], "REJECT")
+
+    def test_non_blocking_improvements_are_preserved_without_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, jobs, pack, reviews, _, doc, jid, *_ = self.fixture(Path(directory))
+            doc["reviews"][jid][0]["improvements"] = ["Slightly reduce corner highlight density."]
+            reviews.write_text(json.dumps(doc))
+            result = review_gate.evaluate(manifest, jobs, pack, reviews)
+            self.assertEqual(result["result"], "PASS")
+            self.assertEqual(len(result["assets"][0]["non_blocking_improvements"]), 1)
 
     def test_stale_image_hash_rejects(self):
         with tempfile.TemporaryDirectory() as directory:
