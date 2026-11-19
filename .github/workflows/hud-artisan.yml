@@ -81,6 +81,7 @@ jobs:
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::pack_file_rejects_traversal_and_symlink_components
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::atlas_validator_rejects_bounds_overlap_and_duplicate_ids
           cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::numeric_manifest_helpers_reject_invalid_values
+          cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::asset_metadata_rejects_wrong_types_empty_and_duplicate_states
 
   blp-decoder:
     runs-on: ubuntu-latest
