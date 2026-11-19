@@ -76,4 +76,4 @@ Repository code license does not grant rights to model weights, LoRAs, reference
 
 Implemented in this branch: deterministic manifest planning, per-job prompt/seed hashes, provider-neutral CLI dispatch, strict PNG validation, atlas assembly, transactional ingestion, provenance binding, dual-role review evidence schema v2 with prompt/session/raw-response hashes, path/symlink protections, optional local HTTP adapter hardening, dependency-aware per-job resume checkpoints, failed-run stale-provenance invalidation, original visual reference board and OpenCode 2 role guidance.
 
-Not yet proven: actual local image generation, artistic quality of the 92-asset pack, runtime screenshots in Warcraft III, full-manifest availability in the remote branch, font payload integration, and true independence of model review sessions. These remain release blockers, not assumptions.
+Not yet proven: actual local image generation, artistic quality of the 92-asset pack, runtime screenshots in Warcraft III, syncing the 92 PNGs and five font files into the remote branch, and true independence of model review sessions. These remain release blockers, not assumptions.
