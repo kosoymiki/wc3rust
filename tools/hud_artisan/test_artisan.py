@@ -297,7 +297,7 @@ class Tests(unittest.TestCase):
             counter=root/"provider-calls.log"
             adapter_script.write_text(
                 "import json,sys,os\nfrom PIL import Image,ImageDraw\n"
-                "open(sys.argv[3],'a').write('x')\n"
+                f"open({str(counter)!r},'a').write('x')\n"
                 "print(os.environ.get('HUD_ARTISAN_TEST_SECRET',''))\n"
                 "j=json.load(open(sys.argv[1],encoding='utf-8'))\n"
                 "w,h=j['width'],j['height']\n"
@@ -309,7 +309,7 @@ class Tests(unittest.TestCase):
             adapter=root/"adapter.json"
             adapter.write_text(json.dumps({"schema_version":1,"provider":"test-provider","model":"test-model",
               "license":"clean-room test fixture","working_directory":str(root),
-              "command":[sys.executable,str(adapter_script),"{job_json}","{output_path}",str(counter)],
+              "command":[sys.executable,str(adapter_script),"{job_json}","{output_path}"],
               "environment":["HUD_ARTISAN_TEST_SECRET"],"timeout_seconds":20,"retries":1,"max_parallel":2}))
             os.environ["HUD_ARTISAN_TEST_SECRET"]="TOP-SECRET-DO-NOT-LOG"
             try:
