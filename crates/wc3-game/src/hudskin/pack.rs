@@ -228,6 +228,8 @@ pub fn find_installed() -> Option<PathBuf> {
 fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackError> {
     let rel = Path::new(relative);
     if relative.is_empty()
+        || relative.contains('\\\\')
+        || relative.contains('\\0')
         || rel.is_absolute()
         || rel.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
     {
@@ -374,6 +376,10 @@ impl HudPack {
             return Err(PackError::Manifest("assets is empty".to_string()));
         }
 
+        let texture_base = textures.len();
+        // Decode transactionally: a malformed late asset must not leave the
+        // caller's shared texture registry half-populated.
+        let mut loaded_textures: Vec<TextureImage> = Vec::with_capacity(declarations.len() + 4);
         let mut assets = Vec::with_capacity(declarations.len());
         let mut by_name = HashMap::with_capacity(declarations.len());
         for declaration in declarations {
@@ -424,8 +430,8 @@ impl HudPack {
                     actual: [image.width, image.height],
                 });
             }
-            let texture = textures.len();
-            textures.push(image.to_texture());
+            let texture = texture_base + loaded_textures.len();
+            loaded_textures.push(image.to_texture());
             by_name.insert(name.clone(), assets.len());
             assets.push(HudAsset {
                 name,
@@ -456,7 +462,7 @@ impl HudPack {
         if let Some(asset) = assets
             .iter()
             .find(|asset| asset.name == "topbar_plate_normal_720x32")
-            && let Some(texture) = textures.get(asset.texture)
+            && let Some(texture) = loaded_textures.get(asset.texture - texture_base)
             && texture.width > 8
             && texture.height > 4
         {
@@ -570,17 +576,18 @@ impl HudPack {
         // carry serif (names/tooltips), sans (actions) and mono (numbers).
         let mut font_textures = [0usize; 4];
         if let Some(fonts) = crate::hud::pack_fonts(root) {
-            let base = textures.len();
-            textures.push(fonts.primary.atlas.clone());
-            textures.push(fonts.serif.atlas.clone());
-            textures.push(fonts.sans.atlas.clone());
-            textures.push(fonts.numeric.atlas.clone());
+            let base = texture_base + loaded_textures.len();
+            loaded_textures.push(fonts.primary.atlas.clone());
+            loaded_textures.push(fonts.serif.atlas.clone());
+            loaded_textures.push(fonts.sans.atlas.clone());
+            loaded_textures.push(fonts.numeric.atlas.clone());
             font_textures = [base, base + 1, base + 2, base + 3];
             fonts.bind(font_textures);
         } else {
             crate::dev_log!("HUD_PACK fonts=missing root={}", root.display());
         }
 
+        textures.extend(loaded_textures);
         Ok(Self {
             root: root.to_path_buf(),
             design_height,
