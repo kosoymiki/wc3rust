@@ -19,7 +19,8 @@ BG = {
     "checker": None,
 }
 STATE_TOKENS = ("normal", "pressed", "disabled", "autocast", "active", "inactive",
-                "hover", "selected", "highlighted", "checked", "focused", "pushed")
+                "hover", "selected", "highlighted", "checked", "focused", "pushed",
+                "critical", "warning", "warn", "cooldown", "alert", "empty")
 MAX_PIXELS = 64_000_000
 
 
