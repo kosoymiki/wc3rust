@@ -317,7 +317,7 @@ class Tests(unittest.TestCase):
             assets.append({"name":f"command_icon_{i:02d}","file":f"icons/{i:02d}.png","w":64,"h":64})
         # Keep the 92-asset contract: replace twenty generic extras with source icons.
         assets=assets[:25]+assets[45:92]+assets[92:]
-        atlas_entries=[{"id":f"command_{i:02d}","x":(i-1)*64,"y":0,"w":64,"h":64,
+        atlas_entries=[{"id":f"command_{i:02d}","page":0,"x":(i-1)*64,"y":0,"w":64,"h":64,
                         "source_asset":f"command_icon_{i-1:02d}"} for i in range(1,21)]
         doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
           "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
