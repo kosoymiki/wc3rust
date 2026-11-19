@@ -1,6 +1,9 @@
 name: HUD Artisan — ComfyUI CPU render
 
 on:
+  push:
+    branches:
+      - tools/hud-artisan-v1
   workflow_dispatch:
     inputs:
       scope:
@@ -44,8 +47,8 @@ jobs:
     timeout-minutes: 360
     env:
       COMFYUI_URL: ${{ secrets.COMFYUI_URL || 'http://127.0.0.1:8188' }}
-      SCOPE: ${{ inputs.scope }}
-      MANIFEST: ${{ inputs.scope == 'draft' && 'tools/hud_artisan/draft/manifest.json' || inputs.manifest }}
+      SCOPE: ${{ github.event_name == 'push' && 'draft' || inputs.scope || 'draft' }}
+      MANIFEST: ${{ github.event_name == 'push' && 'tools/hud_artisan/draft/manifest.json' || (inputs.scope == 'draft' && 'tools/hud_artisan/draft/manifest.json' || inputs.manifest) }}
       THEME: ${{ inputs.theme }}
       SEED: ${{ inputs.seed }}
     steps:
@@ -223,7 +226,7 @@ jobs:
             --parallel 1
 
       - name: Ingest, validate and build production contact sheet
-        if: inputs.scope == 'full'
+        if: env.SCOPE == 'full'
         run: |
           set -euo pipefail
           python tools/hud_artisan/generate.py ingest \
@@ -240,7 +243,7 @@ jobs:
             --out build/hud-artisan/contact-sheet.png
 
       - name: QA slow draft output
-        if: inputs.scope == 'draft'
+        if: env.SCOPE == 'draft'
         shell: bash
         run: |
           set -euo pipefail
