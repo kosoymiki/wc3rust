@@ -17,6 +17,34 @@ class ComfyAdapterTests(unittest.TestCase):
                 with self.assertRaises(adapter.ComfyError):
                     adapter.validate_server_url(value)
 
+    def test_workflow_sha256_pin_accepts_exact_file_and_rejects_drift(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "workflow.json"
+            workflow.write_text('{"nodes":[]}', encoding="utf-8")
+            digest = hashlib.sha256(workflow.read_bytes()).hexdigest()
+            self.assertEqual(adapter.verify_workflow_sha256(workflow, digest), digest)
+            workflow.write_text('{"nodes":[{"id":1}]}', encoding="utf-8")
+            with self.assertRaisesRegex(adapter.ComfyError, "SHA-256 mismatch"):
+                adapter.verify_workflow_sha256(workflow, digest)
+
+    def test_workflow_sha256_pin_rejects_malformed_digest_and_symlink(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            workflow = Path(directory) / "workflow.json"
+            workflow.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(adapter.ComfyError, "64 hexadecimal"):
+                adapter.verify_workflow_sha256(workflow, "not-a-hash")
+            link = Path(directory) / "link.json"
+            link.symlink_to(workflow)
+            with self.assertRaisesRegex(adapter.ComfyError, "non-symlink"):
+                adapter.verify_workflow_sha256(link)
+
     def test_job_dimensions_use_total_pixel_budget(self):
         job = {
             "job_id": "0123456789abcdef", "prompt": "a panel", "negative_prompt": "text",
