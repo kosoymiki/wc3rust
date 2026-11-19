@@ -271,6 +271,17 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
+            # A failed subsequent batch must invalidate prior success evidence.
+            failing= root/"failing-adapter.json"
+            failing.write_text(json.dumps({"schema_version":1,"provider":"test-provider","model":"test-model",
+              "license":"clean-room test fixture","working_directory":str(root),
+              "command":[sys.executable,"-c","raise SystemExit(7)","{job_json}","{output_path}"],
+              "environment":[],"timeout_seconds":5,"retries":0,"max_parallel":1}))
+            self.assertEqual(artisan.dispatch(manifest,jobs,failing,drop,1),1)
+            self.assertFalse((drop/"provenance.json").exists(),
+                             "failed dispatch must not leave stale provenance from a prior successful batch")
+            self.assertFalse((drop/"reports"/"worker-results.json").exists() is False,
+                             "worker report should be refreshed for the failed run")
     def test_ingest_failure_never_promotes_partial_pack(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);manifest=root/"manifest.json";drop=root/"drop";drop.mkdir()
