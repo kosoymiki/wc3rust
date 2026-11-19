@@ -78,10 +78,13 @@ def inspect_runtime(config_path: Path) -> dict:
                 continue
             spec = schema.get("input", {}).get("required", {}).get(input_name)
             choices = spec[0] if isinstance(spec, list) and spec and isinstance(spec[0], list) else None
-            if choices and inputs[input_name] not in choices:
+            if choices == [] or choices == ["pixel_space"]:
+                warnings.append(
+                    f"node {node_id}: server exposes no concrete model enumeration for {input_name}; "
+                    "the workflow selection is retained and ComfyUI remains the runtime authority"
+                )
+            elif choices and inputs[input_name] not in choices:
                 errors.append(f"node {node_id}: selected {input_name}={inputs[input_name]!r} is not in server model list")
-            elif choices == []:
-                warnings.append(f"node {node_id}: server did not expose an enumerated model list for {input_name}")
 
     mappings = cfg.get("node_inputs")
     required_mappings = ("positive_prompt", "negative_prompt", "width", "height", "seed")
@@ -114,6 +117,11 @@ def inspect_runtime(config_path: Path) -> dict:
     devices = stats.get("devices", []) if isinstance(stats, dict) else []
     queue_running = queue.get("queue_running", []) if isinstance(queue, dict) else []
     queue_pending = queue.get("queue_pending", []) if isinstance(queue, dict) else []
+    if queue_running or queue_pending:
+        warnings.append(
+            f"ComfyUI queue is active (running={len(queue_running)}, pending={len(queue_pending)}); "
+            "wait for it to drain before starting a production batch"
+        )
     report = {
         "status": "PASS" if not errors else "FAIL",
         "transport": base,
