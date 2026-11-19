@@ -1200,7 +1200,7 @@ pub fn log_insets_ignored(asset: &HudAsset) {
 // ---------------------------------------------------------------------------
 
 fn validate_runtime_font_files(font_files: &[String]) -> Result<(), PackError> {
-    const REQUIRED: [&str; 3] = [
+    const REQUIRED: [&str; 5] = [
         "primary_serif_cyrillic.ttf",
         "primary_serif_bold_cyrillic.ttf",
         "actionbar_sans_cyrillic.ttf",
