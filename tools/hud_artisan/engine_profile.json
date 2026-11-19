@@ -48,7 +48,15 @@
       2048,
       2048
     ],
-    "entries": 20
+    "entries": 20,
+    "columns": 32,
+    "rows": 32,
+    "cell": [
+      64,
+      64
+    ],
+    "padding": 0,
+    "rotation": false
   },
   "font_files_required": 5,
   "required_unique_assets": [
@@ -180,5 +188,12 @@
       216,
       216
     ]
-  }
+  },
+  "required_font_files": [
+    "primary_serif_cyrillic.ttf",
+    "primary_serif_bold_cyrillic.ttf",
+    "actionbar_sans_cyrillic.ttf",
+    "actionbar_sans_bold_cyrillic.ttf",
+    "numeric_tabular.ttf"
+  ]
 }
