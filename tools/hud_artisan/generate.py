@@ -63,6 +63,13 @@ THEMES = {
  "materials":"dark glassy stone, tarnished silver, cold enamel and bone inlay","ornament":"thin gothic spikes, carved abstract geometry and cold luminous accents"}}
 
 def sha(data:bytes)->str: return hashlib.sha256(data).hexdigest()
+
+def sha_file(path:Path)->str:
+    digest=hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 def slug(s:str)->str: return re.sub(r"[^a-z0-9_-]+","-",s.lower()).strip("-") or "asset"
 def safe_rel(value:str)->Path:
     if not isinstance(value,str) or not value or "\\" in value or "\\x00" in value:
@@ -647,7 +654,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
             w,h,depth,ctype=png_info(f)
             if (w,h)!=(a["w"],a["h"]): fail.append(f"{name}: {w}x{h} != {a['w']}x{a['h']}")
             if depth!=8 or ctype!=6: fail.append(f"{name}: expected RGBA8; got depth={depth} color={ctype}")
-            digest=sha(f.read_bytes());hashes[digest].append(name)
+            digest=sha_file(f);hashes[digest].append(name)
             rec={"name":name,"file":str(rel),"sha256":digest,"bytes":f.stat().st_size}
             if pixels and (w,h)==(a["w"],a["h"]) and depth==8 and ctype==6:
                 m=image_metrics(f);rec["pixels"]=m
@@ -754,7 +761,7 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
                     raise ValueError(f"{jid}: malformed provenance postprocessing")
                 artifact=safe_join(drop,job["output"])
                 if not artifact.is_file(): raise ValueError(f"{jid}: missing generated output {job['output']}")
-                if row["output_sha256"] != sha(artifact.read_bytes()):
+                if row["output_sha256"] != sha_file(artifact):
                     raise ValueError(f"{jid}: output hash mismatch for {job['output']}")
         except Exception as exc:
             errors.append(f"provenance: {exc}")
@@ -785,8 +792,8 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
                     elif im.getchannel("A").getextrema()==(255,255):
                         raise ValueError(f"{kind} is fully opaque; preserve transparent background or pass --allow-opaque")
                 dst=safe_join(out,rel);dst.parent.mkdir(parents=True,exist_ok=True);im.save(dst,"PNG",optimize=True,compress_level=9)
-                inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha(src.read_bytes()),
-                  "output_sha256":sha(dst.read_bytes()),"original_size":original,"final_size":im.size});done.append(a["name"])
+                inputs.append({"asset":a["name"],"input":str(src),"input_sha256":sha_file(src),
+                  "output_sha256":sha_file(dst),"original_size":original,"final_size":im.size});done.append(a["name"])
         except Exception as exc:errors.append(f"{a['name']}: {exc}")
     # Atlas is a deterministic composition of cell outputs, never a model-created contact sheet.
     atlas=plan_doc.get("atlas") or {}
@@ -923,7 +930,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         if candidate.is_symlink() or not candidate.is_file():
             raise ValueError(f"adapter dependency must be a regular non-symlink file: {candidate}")
         candidate=candidate.resolve()
-        dependencies[str(candidate)]=sha(candidate.read_bytes())
+        dependencies[str(candidate)]=sha_file(candidate)
     # Automatically fingerprint file arguments such as local adapter scripts and config files.
     # Executable argv[0] is excluded to avoid hashing the Python/runtime binary.
     for part in command[1:]:
@@ -935,7 +942,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             raise ValueError(f"command dependency must not be a symlink: {candidate}")
         if candidate.is_file():
             candidate=candidate.resolve()
-            dependencies[str(candidate)]=sha(candidate.read_bytes())
+            dependencies[str(candidate)]=sha_file(candidate)
     fingerprint_payload={"adapter_config_sha256":sha(adapter_path.read_bytes()),
                          "dependencies":[{"path":path,"sha256":digest} for path,digest in sorted(dependencies.items())]}
     adapter_digest=sha(json.dumps(fingerprint_payload,sort_keys=True,separators=(",",":")).encode("utf-8"))
@@ -989,7 +996,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             cached_path=safe_join(drop,job["output"])
             if cached_path.is_symlink() or not cached_path.is_file():
                 return None
-            if sha(cached_path.read_bytes())!=digest:
+            if sha_file(cached_path)!=digest:
                 return None
             width,height,depth,color=png_info(cached_path)
             if (width,height,depth,color)!=(job["width"],job["height"],8,6):
@@ -1082,7 +1089,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
         log_path.write_text("\n\n".join(history),encoding="utf-8")
         return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
-                "generated_at":generated_at,"error":error,"sha256":sha(out.read_bytes()) if status=="succeeded" else None}
+                "generated_at":generated_at,"error":error,"sha256":sha_file(out) if status=="succeeded" else None}
     try:
         results=[]
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
