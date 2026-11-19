@@ -32,6 +32,35 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/"a.png";p.write_bytes(png(17,11,(1,2,3,255)))
             self.assertEqual(artisan.png_info(p),(17,11,8,6))
+    def test_runtime_provenance_extracts_comfyui_models_sampler_and_hash(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            workflow=root/"workflow.json"
+            workflow.write_text(json.dumps({"nodes":[
+                {"id":66,"type":"UNETLoader","widgets_values":["z_image_turbo_bf16.safetensors","default"]},
+                {"id":70,"type":"KSampler","widgets_values":[123,"fixed",9,1.0,"euler","simple",1.0]}
+            ]}))
+            runtime=artisan.runtime_provenance({
+                "workflow_file":str(workflow),
+                "workflow_sha256":hashlib.sha256(workflow.read_bytes()).hexdigest(),
+                "workflow_format":"ui",
+                "node_inputs":{"positive_prompt":{"node_id":"67","input":"text"}},
+                "output_node_id":"9"
+            },root/"adapter.json")
+            self.assertEqual(runtime["workflow_sha256"],hashlib.sha256(workflow.read_bytes()).hexdigest())
+            self.assertEqual(runtime["model_nodes"][0]["selected"][0],"z_image_turbo_bf16.safetensors")
+            self.assertEqual(runtime["sampler_nodes"][0]["node_id"],"70")
+            self.assertEqual(runtime["output_node_id"],"9")
+
+    def test_runtime_provenance_rejects_workflow_drift_and_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); workflow=root/"workflow.json"; workflow.write_text('{"nodes":[]}')
+            wrong="0"*64
+            with self.assertRaisesRegex(ValueError,"SHA-256 mismatch"):
+                artisan.runtime_provenance({"workflow_file":str(workflow),"workflow_sha256":wrong},root/"adapter.json")
+            link=root/"link.json"; link.symlink_to(workflow)
+            with self.assertRaisesRegex(ValueError,"non-symlink"):
+                artisan.runtime_provenance({"workflow_file":str(link)},root/"adapter.json")
     def test_crc_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/"a.png";b=bytearray(png(8,8,(1,2,3,255)));b[29]^=1;p.write_bytes(b)
