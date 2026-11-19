@@ -284,8 +284,8 @@ fn validate_atlas_entries(
             values[index] = value as u32;
         }
         let [x, y, w, h] = values;
-        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|right| right > width)
-            || y.checked_add(h).is_none_or(|bottom| bottom > height)
+        if w == 0 || h == 0 || x.checked_add(w).map_or(true, |right| right > width)
+            || y.checked_add(h).map_or(true, |bottom| bottom > height)
         {
             return Err(PackError::Manifest(format!(
                 "atlas cell {id} outside {width}x{height} atlas: {x},{y},{w},{h}"
@@ -357,7 +357,9 @@ impl HudPack {
         let mut seen_fonts = std::collections::HashSet::new();
         for item in font_values {
             let font = item.as_str().ok_or_else(|| PackError::Manifest("font filename must be a string".to_string()))?;
-            if Path::new(font).components().count() != 1
+            if font.contains('\\\\')
+                || font.contains('\\0')
+                || Path::new(font).components().count() != 1
                 || !matches!(Path::new(font).components().next(), Some(std::path::Component::Normal(_)))
                 || !font.to_ascii_lowercase().ends_with(".ttf")
                 || !seen_fonts.insert(font.to_string())
@@ -1409,6 +1411,53 @@ mod tests {
             covered >= console.w * console.h * 0.85,
             "console shell coverage {covered:.0} < 85% of the band"
         );
+    }
+
+    #[test]
+    fn pack_file_rejects_traversal_and_symlink_components() {
+        let root=std::env::temp_dir().join(format!("hud-pack-path-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fonts")).expect("create root");
+        std::fs::write(root.join("fonts/font.ttf"),b"font").expect("font");
+        assert!(pack_file(&root,"../outside.ttf","font").is_err());
+        assert!(pack_file(&root,"fonts\\\\font.ttf","font").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("fonts"),root.join("alias")).expect("symlink");
+            assert!(pack_file(&root,"alias/font.ttf","font").is_err());
+        }
+        assert!(pack_file(&root,"fonts/font.ttf","font").is_ok());
+        let _=std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn atlas_validator_rejects_bounds_overlap_and_duplicate_ids() {
+        let valid=vec![
+            serde_json::json!({"id":"one","x":0,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
+        ];
+        assert!(validate_atlas_entries(&valid,16,8).is_ok());
+        let overlap=vec![
+            serde_json::json!({"id":"one","x":0,"y":0,"w":9,"h":8}),
+            serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
+        ];
+        assert!(validate_atlas_entries(&overlap,16,8).unwrap_err().to_string().contains("overlap"));
+        let outside=vec![serde_json::json!({"id":"outside","x":15,"y":0,"w":2,"h":8})];
+        assert!(validate_atlas_entries(&outside,16,8).is_err());
+        let duplicate=vec![
+            serde_json::json!({"id":"same","x":0,"y":0,"w":4,"h":4}),
+            serde_json::json!({"id":"same","x":4,"y":0,"w":4,"h":4}),
+        ];
+        assert!(validate_atlas_entries(&duplicate,16,8).unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn numeric_manifest_helpers_reject_invalid_values() {
+        let doc=serde_json::json!({"pair":[64,64],"bad_pair":[64],"negative":-1,"quad":[0.0,1.0,-1.0,0.0]});
+        assert_eq!(pair_u32(&doc,&["pair"]).unwrap(),[64,64]);
+        assert!(pair_u32(&doc,&["bad_pair"]).is_err());
+        assert!(positive_usize(&doc,&["negative"]).is_err());
+        assert!(quad(&doc,&["quad"]).is_err());
     }
 
     #[test]
