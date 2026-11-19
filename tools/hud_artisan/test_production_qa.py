@@ -67,7 +67,7 @@ class ProductionQATests(unittest.TestCase):
         atlas.save(self.pack/"atlas.png")
         manifest = {"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
             {"id":"visible","x":0,"y":0,"w":8,"h":8,"source_file":"atlas_sources/visible.png"},
-            {"id":"empty","x":8,"y":0,"w":8,"h":8}
+            {"id":"empty","page":0,"x":8,"y":0,"w":8,"h":8}
         ]}}}
         plan = {"jobs":[{"asset":"command_icon_empty","job_id":"0123456789abcdef",
                          "output":"atlas_sources/empty.png"}],
@@ -88,8 +88,8 @@ class ProductionQATests(unittest.TestCase):
             {"name":"command_icon_01","file":"source.png","w":8,"h":8}],
             "atlas":{"commandbuttons":{"file":"atlas.png","size":[16,8],"columns":2,"rows":1,
                 "cell":[8,8],"padding":0,"rotation":False,"entries":[
-                {"id":"command_01","x":0,"y":0,"w":8,"h":8,"source_asset":"command_icon_01"},
-                {"id":"command_02","x":8,"y":0,"w":8,"h":8,"source_file":"atlas_sources/command_02.png"}
+                {"id":"command_01","page":0,"x":0,"y":0,"w":8,"h":8,"source_asset":"command_icon_01"},
+                {"id":"command_02","page":0,"x":8,"y":0,"w":8,"h":8,"source_file":"atlas_sources/command_02.png"}
             ]}}}
         Image.new("RGBA",(8,8),(0,0,0,0)).save(self.pack/"source.png")
         report=qa.atlas_qa(manifest,self.pack,self.root/"atlas-source",None)
