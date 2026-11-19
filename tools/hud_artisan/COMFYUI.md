@@ -1,17 +1,17 @@
-# Optional local HTTP renderer adapter
+# Local ComfyUI production adapter
 
-This document describes an optional adapter for a locally running ComfyUI-compatible server. It is not part of the required HUD Artisan architecture. HUD Artisan does not require Comfy Cloud, hosted rendering, API keys, subscriptions, a paid model endpoint or a specific image UI.
+This is the production local-renderer path for HUD Artisan. It targets the already-running Termux ComfyUI server; it does not require Comfy Cloud, hosted rendering, API keys, subscriptions or a paid model endpoint.
 
 If you use a different local renderer, OpenCode agent workflow or a custom CLI, skip this adapter and use the provider-neutral CLI/agent contract in README.md and PROVIDER_PROTOCOL.md.
 
 ## Local-only setup
 
-1. Export a workflow in ComfyUI API format.
-2. Copy comfyui.example.json into a private build directory.
-3. Set workflow_file to the exported JSON.
-4. Map positive prompt, negative prompt, latent width, latent height and seed to the real workflow node IDs.
-5. Set output_node_id to the final SaveImage node.
-6. Run the local renderer and point COMFYUI_URL at its loopback endpoint if it is not the default.
+1. Copy comfyui.termux.example.json and adapter.termux.example.json into build/hud-artisan.
+2. The Termux profile reads ~/src/comfyui-termux/default_workflow.json directly as a saved canvas workflow (workflow_format=ui).
+3. Its current node map is positive prompt 67, negative prompt 71, latent width/height 68, seed 70 and SaveImage 9.
+4. The adapter converts the canvas graph into the API prompt format using the running server's /object_info response; no manual graph re-export is needed.
+5. If the workflow changes, update the node IDs or set workflow_format=api after exporting an API prompt.
+6. Run the dispatcher with max_parallel=1 and point COMFYUI_URL at the loopback endpoint if it is not the default.
 
 Example config path:
 
@@ -25,20 +25,22 @@ The built-in adapter is invoked through the generic dispatcher. Its command is a
 ## Execution contract
 
 The adapter:
-- sends the exact compiled positive/negative prompts, dimensions and per-asset seed;
+- accepts saved canvas UI workflows or API prompt workflows, converting UI graphs from live /object_info schemas;
+- sends exact compiled positive/negative prompts, model-aligned render dimensions and per-asset seed;
+- upsamples tiny native HUD targets to a 16-aligned latent canvas, then downsamples with Lanczos to exact manifest dimensions;
 - checks that the configured output node exists and is a SaveImage node;
 - rejects server-side validation errors and execution errors;
 - waits for the matching prompt history entry to complete;
 - requires exactly one PNG from the selected output node;
 - rejects unsafe output filenames/subfolders and non-PNG responses;
-- decodes the image, checks dimensions and transparency requirements, then atomically writes RGBA8 PNG;
+- decodes the image, optionally removes border-connected chroma-key background, cuts a transparent frame aperture, checks alpha requirements, then atomically writes native-size RGBA8 PNG;
 - never silently resizes or stretches an output.
 
 The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
 
 ## Important limitations
 
-- A workflow that emits an opaque PNG cannot satisfy an alpha-required icon/cursor job.
+- A workflow that emits an opaque PNG cannot satisfy an alpha-required icon/cursor job without a matte. The Termux Z-Image profile requests solid #FF00FF and applies deterministic border-connected flood-fill; this is not semantic segmentation and must be visually inspected for magenta fringe/holes.
 - Portrait/minimap frames require a genuinely transparent central aperture; fake black/blurred/checkerboard apertures are rejected.
 - Node IDs in comfyui.example.json are examples, not a working workflow.
 - A local server URL is a local transport address, not a hosted API subscription.
