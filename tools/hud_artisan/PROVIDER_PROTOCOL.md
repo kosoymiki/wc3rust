@@ -23,8 +23,8 @@ No API secrets are stored in jobs.json or adapter config. Only environment varia
 configured; the dispatcher passes through only those names plus PATH and HOME. Values are redacted
 from worker logs, and log output is capped per stream.
 
-The dispatcher supports bounded concurrency, per-job timeouts, retries and separate stdout/stderr
-logs. A successful run writes reports/worker-results.json and provenance.json. Provenance binds each
+The dispatcher supports bounded concurrency, per-job timeouts, retries, hash-verified --resume (job plan + adapter config + local dependency files + output PNG), and separate stdout/stderr
+logs. A successful run writes reports/worker-results.json and provenance.json. A failed run retains only resumable worker checkpoints, never a stale provenance success certificate. Provenance binds each
 job to its exact positive/negative prompt SHA-256, per-asset seed, provider/model/license and actual
 PNG SHA-256, and binds the whole batch to the exact jobs.json SHA-256. Ingest verifies the complete
 job set and every binding before accepting generated art. Import is transactional: incomplete packs
