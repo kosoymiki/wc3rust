@@ -10,6 +10,7 @@ import argparse
 import io
 import json
 import http.client
+import hashlib
 import os
 import sys
 import tempfile
@@ -44,6 +45,30 @@ def read_json(path: Path):
     if not isinstance(value, dict):
         raise ComfyError(f"JSON root must be an object: {path}")
     return value
+
+
+def verify_workflow_sha256(path: Path, expected: object = None) -> str:
+    """Return the workflow digest and enforce an optional immutable config pin."""
+    if path.is_symlink() or not path.is_file():
+        raise ComfyError("workflow_file must be a regular non-symlink file")
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise ComfyError(f"cannot hash workflow_file {path}: {exc}") from exc
+    actual = digest.hexdigest()
+    if expected is not None:
+        if not isinstance(expected, str) or len(expected) != 64 or any(
+            character not in "0123456789abcdefABCDEF" for character in expected
+        ):
+            raise ComfyError("workflow_sha256 must be 64 hexadecimal characters")
+        if actual != expected.lower():
+            raise ComfyError(
+                f"workflow SHA-256 mismatch: expected {expected.lower()}, found {actual}"
+            )
+    return actual
 
 
 def http_json(base: str, endpoint: str, payload=None, timeout: int = 60):
@@ -380,6 +405,7 @@ def main(argv=None) -> int:
         workflow_file = Path(workflow_value).expanduser()
         if not workflow_file.is_absolute():
             workflow_file = (args.config.resolve().parent / workflow_file).resolve()
+        verify_workflow_sha256(workflow_file, cfg.get("workflow_sha256"))
         workflow = read_json(workflow_file)
         workflow_format = cfg.get("workflow_format", "api")
         if workflow_format not in ("api", "ui", "auto"):
