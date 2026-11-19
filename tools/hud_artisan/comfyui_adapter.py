@@ -34,6 +34,12 @@ class RejectRedirects(request.HTTPRedirectHandler):
         return None
 
 
+try:
+    from PIL import Image, ImageDraw
+except ImportError as exc:  # Pillow is a hard requirement of the adapter PNG contract
+    raise ImportError("Pillow is required; install tools/hud_artisan/requirements.txt") from exc
+
+
 def open_http(req, base: str, timeout: int):
     """Bypass proxies for loopback and reject redirects for every endpoint."""
     hostname = parse.urlsplit(base).hostname
@@ -205,6 +211,20 @@ def wait_for_output(base: str, prompt_id: str, output_node_id: str,
     raise ComfyError(f"ComfyUI job timed out after {max_wait}s (prompt_id={prompt_id}); cancellation was requested")
 
 
+def normalize_output_size(image, job: dict):
+    """Native-size contract: accept the native size or Lanczos-downsample the aligned
+    render canvas to it; anything else is rejected (no silent resizing)."""
+    native = (job["width"], job["height"])
+    render = (job.get("render_width", job["width"]), job.get("render_height", job["height"]))
+    if image.size == native:
+        return image
+    if image.size == render and render != native:
+        return image.resize(native, Image.Resampling.LANCZOS)
+    raise ComfyError(
+        f"ComfyUI output size {image.size} is neither the render canvas {render} nor the native size {native}"
+    )
+
+
 def apply_alpha_strategy(image, job: dict, cfg: dict):
     """Apply the configured matte to an alpha-required job before the alpha checks.
 
@@ -373,7 +393,6 @@ def ui_workflow_to_api(workflow: dict, object_info: dict) -> dict:
 
 def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
     """Remove only chroma-key regions connected to the image border."""
-    from PIL import ImageDraw
     if image.mode != "RGBA":
         image = image.convert("RGBA")
     width, height = image.size
@@ -393,7 +412,6 @@ def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
 
 def enforce_frame_aperture(image):
     """Make the declared central portrait/minimap viewport truly transparent."""
-    from PIL import ImageDraw
     width, height = image.size
     ImageDraw.Draw(image).rectangle(
         (int(width * 0.30), int(height * 0.30),
@@ -411,11 +429,6 @@ def main(argv=None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        try:
-            from PIL import Image
-        except ImportError as exc:
-            raise ComfyError("Pillow is required; install tools/hud_artisan/requirements.txt") from exc
-
         job = read_json(args.job_json)
         validate_job(job)
         cfg = read_json(args.config)
@@ -511,10 +524,7 @@ def main(argv=None) -> int:
                 image.load()
                 if image.format != "PNG":
                     raise ComfyError(f"ComfyUI returned {image.format}, expected PNG")
-                rgba = image.convert("RGBA")
-                expected = (job["width"], job["height"])
-                if rgba.size != expected:
-                    raise ComfyError(f"ComfyUI output size {rgba.size} != requested {expected}; no silent resizing")
+                rgba = normalize_output_size(image.convert("RGBA"), job)
                 rgba = apply_alpha_strategy(rgba, job, cfg)
                 alpha = rgba.getchannel("A")
                 if alpha.getbbox() is None:

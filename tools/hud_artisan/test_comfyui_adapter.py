@@ -286,3 +286,20 @@ class AlphaStrategyTests(unittest.TestCase):
     def test_unknown_strategy_is_rejected(self):
         with self.assertRaisesRegex(adapter.ComfyError, "unknown alpha_strategy"):
             adapter.apply_alpha_strategy(Image.new("RGBA", (4, 4), (0, 0, 0, 255)), {"requires_alpha": True}, {"alpha_strategy": "nope"})
+
+
+class OutputSizeTests(unittest.TestCase):
+    def test_native_size_is_kept(self):
+        image = Image.new("RGBA", (64, 8), (1, 2, 3, 255))
+        out = adapter.normalize_output_size(image, {"width": 64, "height": 8})
+        self.assertEqual(out.size, (64, 8))
+
+    def test_render_canvas_is_downsampled_to_native(self):
+        image = Image.new("RGBA", (1024, 128), (1, 2, 3, 255))
+        out = adapter.normalize_output_size(image, {"width": 64, "height": 8, "render_width": 1024, "render_height": 128})
+        self.assertEqual(out.size, (64, 8))
+
+    def test_unexpected_size_is_rejected(self):
+        with self.assertRaisesRegex(adapter.ComfyError, "neither the render canvas"):
+            adapter.normalize_output_size(Image.new("RGBA", (100, 100), (0, 0, 0, 255)),
+                                          {"width": 64, "height": 8, "render_width": 1024, "render_height": 128})
