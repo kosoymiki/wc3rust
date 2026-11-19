@@ -359,7 +359,17 @@ def alpha_matte_strategy(image, cfg: dict):
     The model path comes from cfg.matte_model or U2NET_MODEL.
     """
     from alpha_matte import matte_rgba  # lazy: only u2net jobs need onnxruntime
-    return matte_rgba(image, cfg.get("matte_model") or os.environ.get("U2NET_MODEL"))
+    result = matte_rgba(image, cfg.get("matte_model") or os.environ.get("U2NET_MODEL"))
+    alpha = result.getchannel("A")
+    low, high = alpha.getextrema()
+    histogram = alpha.histogram()
+    visible_ratio = sum(histogram[64:]) / max(1, result.width * result.height)
+    if high < 64 or visible_ratio < 0.005:
+        raise ComfyError(
+            f"u2net matte has insufficient foreground (alpha_max={high}, "
+            f"visible_pixels={visible_ratio:.3%}); use chroma_key or inspect the model result"
+        )
+    return result
 
 
 def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
@@ -458,6 +468,25 @@ def main(argv=None) -> int:
         if type(key_tolerance) is not int or not 1 <= key_tolerance <= 255:
             raise ComfyError("chroma_key_tolerance must be an integer in 1..255")
         chroma_key = tuple(raw_key)
+        if alpha_strategy == "u2net":
+            configured_model = cfg.get("matte_model")
+            if configured_model is not None and (not isinstance(configured_model, str) or not configured_model.strip()):
+                raise ComfyError("matte_model must be a non-empty path string")
+            model_value = configured_model or os.environ.get("U2NET_MODEL") or str(
+                Path.home() / "src" / "comfyui-termux" / "models" / "u2net.onnx"
+            )
+            matte_model = Path(model_value).expanduser()
+            if configured_model and not matte_model.is_absolute():
+                matte_model = args.config.resolve().parent / matte_model
+            if matte_model.is_symlink() or not matte_model.is_file():
+                raise ComfyError(f"u2net model must be a regular non-symlink file: {matte_model}")
+            cfg["matte_model"] = str(matte_model.resolve(strict=True))
+            try:
+                import importlib.util
+                if importlib.util.find_spec("onnxruntime") is None:
+                    raise ComfyError("u2net mode requires ONNX Runtime; install requirements-alpha-matte.txt")
+            except (ImportError, ValueError) as exc:
+                raise ComfyError("u2net mode requires ONNX Runtime; install requirements-alpha-matte.txt") from exc
 
         workflow_value = cfg.get("workflow_file")
         if not isinstance(workflow_value, str) or not workflow_value.strip():
