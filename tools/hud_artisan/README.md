@@ -94,7 +94,8 @@ python3 tools/hud_artisan/generate.py ingest \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
   --jobs build/hud-artisan/jobs/jobs.json \
   --drop build/hud-artisan/drop \
-  --out build/hud-artisan/pack
+  --out build/hud-artisan/pack \
+  --font-source analysis/hudskin/final/wc3rust-hud-final/fonts
 
 python3 tools/hud_artisan/generate.py validate \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
@@ -115,8 +116,7 @@ The staging output directory must be empty; the importer will not overwrite an e
 
 Strict dimensions are the default. Use contain/crop only when explicitly acceptable. Non-uniform
 stretch is never implicit. Opaque silhouettes (icons/cursors) and filled portrait/minimap apertures are rejected unless an
-explicit override is requested. Five font files are mandatory runtime dependencies; they must be
-supplied and are never replaced with empty stubs.
+explicit override is requested. Five font files are mandatory runtime dependencies; they must be supplied and are never replaced with empty stubs. `--font-source` lets ingestion copy them directly from the original local pack, so they do not need to be staged inside the ComfyUI drop directory.
 
 ## Art direction and release-quality gate
 
