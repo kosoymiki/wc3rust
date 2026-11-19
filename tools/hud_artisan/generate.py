@@ -745,7 +745,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
     print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
     return int(bool(fail))
 
-def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool,font_source:Path|None=None)->int:
     plan_doc,doc=verify_plan(manifest,jobs_path)
     mods=pil_modules()
     if not mods: raise RuntimeError("ingestion requires Pillow; install tools/hud_artisan/requirements.txt")
@@ -862,13 +862,16 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
                 except Exception as exc:errors.append(f"atlas cell {cell.get('id')}: {exc}")
             dst=safe_join(out,atlas_file);dst.parent.mkdir(parents=True,exist_ok=True)
             canvas.save(dst,"PNG",optimize=True,compress_level=9);done.append("atlas:"+atlas_file)
+    font_root = font_source.expanduser().resolve() if font_source is not None else safe_join_any(drop,"fonts")
+    if font_root.is_symlink() or not font_root.is_dir():
+        errors.append(f"font source must be an existing non-symlink directory: {font_root}")
     for font in doc["font_files"]:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
-        src=safe_join_any(drop,Path("fonts")/font)
+        src=safe_join_any(font_root,font)
         dst=safe_join_any(out,Path("fonts")/font)
         if not dst.is_relative_to(out.resolve()):errors.append(f"font destination escapes staging pack: {font}")
         elif src.is_file():shutil.copy2(src,dst)
-        else:errors.append(f"missing font dependency fonts/{font}")
+        else:errors.append(f"missing font dependency fonts/{font} in {font_root}")
     if provenance is not None:
         shutil.copy2(provenance_path,safe_join_any(out,"provenance.json"))
     (out/"reports").mkdir(exist_ok=True)
@@ -880,7 +883,7 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
     print(f"HUD_ARTISAN_INGEST_STAGE {'PASS' if not errors else 'FAIL'} imported={len(done)} errors={len(errors)}")
     return int(bool(errors))
 
-def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool)->int:
+def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:bool,font_source:Path|None=None)->int:
     """Build in a sibling temp directory and atomically promote only a complete pack."""
     requested=out.expanduser()
     if requested.is_symlink():
@@ -893,7 +896,7 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
     final_out.parent.mkdir(parents=True,exist_ok=True)
     stage=Path(tempfile.mkdtemp(prefix=f".{final_out.name}.hudartisan-",dir=final_out.parent))
     try:
-        result=_ingest_stage(manifest,jobs_path,drop,stage,fit,allow_opaque)
+        result=_ingest_stage(manifest,jobs_path,drop,stage,fit,allow_opaque,font_source)
         if result:
             return result
         if final_out.exists():
@@ -1228,7 +1231,7 @@ def main(argv=None):
     q.add_argument("--engine-contract",action="store_true")
     q=s.add_parser("ingest",help="normalize agent PNG drop into a pack")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--drop",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
-    q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
+    q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true");q.add_argument("--font-source",type=Path,help="existing directory containing the manifest font_files")
     q=s.add_parser("dispatch",help="run a provider CLI adapter over the jobs with retries and bounded concurrency")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
     q.add_argument("--parallel",type=int);q.add_argument("--resume",action="store_true",
@@ -1254,7 +1257,7 @@ def main(argv=None):
             atomic_write_text(a.out,json.dumps(profile,indent=2)+"\n")
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
-        if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
+        if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque,a.font_source)
         if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel,a.resume)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
