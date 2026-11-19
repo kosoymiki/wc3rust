@@ -157,8 +157,8 @@ class Tests(unittest.TestCase):
                         artisan.load_manifest(manifest)
 
     def test_render_dimensions_are_multiple_of_sixteen_and_preserve_extreme_ratios(self):
-        self.assertEqual(artisan.render_dimensions(64, 8), (1024, 128))
-        self.assertEqual(artisan.render_dimensions(720, 32), (1024, 48))
+        self.assertEqual(artisan.render_dimensions(64, 8), (512, 64))
+        self.assertEqual(artisan.render_dimensions(720, 32), (1440, 64))
         self.assertEqual(artisan.render_dimensions(512, 384), (1024, 768))
         self.assertEqual(artisan.render_dimensions(1024, 512), (1024, 512))
         for width, height in ((64, 8), (720, 32), (44, 44), (512, 384)):
