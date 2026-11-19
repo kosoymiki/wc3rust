@@ -20,7 +20,9 @@
     "seed",
     "state",
     "theme",
-    "width"
+    "width",
+    "render_width",
+    "render_height"
   ],
   "properties": {
     "job_id": {
@@ -179,6 +181,18 @@
     "negative_prompt_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "render_width": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 8192,
+      "multipleOf": 16
+    },
+    "render_height": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 8192,
+      "multipleOf": 16
     }
   }
 }
