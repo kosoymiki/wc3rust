@@ -379,6 +379,7 @@ impl HudPack {
             return Err(PackError::Manifest(format!("font_files must contain five entries, found {}", font_values.len())));
         }
         let mut font_files = Vec::with_capacity(font_values.len());
+        // Windows game installations commonly use case-insensitive filesystems.
         let mut seen_fonts = std::collections::HashSet::new();
         for item in font_values {
             let font = item.as_str().ok_or_else(|| PackError::Manifest("font filename must be a string".to_string()))?;
@@ -387,7 +388,7 @@ impl HudPack {
                 || Path::new(font).components().count() != 1
                 || !matches!(Path::new(font).components().next(), Some(std::path::Component::Normal(_)))
                 || !font.to_ascii_lowercase().ends_with(".ttf")
-                || !seen_fonts.insert(font.to_string())
+                || !seen_fonts.insert(font.to_ascii_lowercase())
             {
                 return Err(PackError::Manifest(format!("unsafe or duplicate font filename: {font:?}")));
             }
@@ -409,6 +410,7 @@ impl HudPack {
         let mut loaded_textures: Vec<TextureImage> = Vec::with_capacity(declarations.len() + 4);
         let mut assets = Vec::with_capacity(declarations.len());
         let mut by_name = HashMap::with_capacity(declarations.len());
+        let mut seen_asset_files = std::collections::HashSet::with_capacity(declarations.len());
         for declaration in declarations {
             let name = string(declaration, &["name"])?;
             let file = string(declaration, &["file"])?;
@@ -431,22 +433,52 @@ impl HudPack {
                 number(insets, &["r"])?,
                 number(insets, &["b"])?,
             ];
-            let states = declaration["states"]
-                .as_array()
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|item| item.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let atlas = declaration["atlas"].as_str().unwrap_or("standalone").to_string();
-            let mips = declaration["mips"].as_bool().unwrap_or(false);
+            let states = match declaration.get("states") {
+                None => Vec::new(),
+                Some(serde_json::Value::Array(list)) => {
+                    let mut parsed = Vec::with_capacity(list.len());
+                    let mut seen = std::collections::HashSet::with_capacity(list.len());
+                    for item in list {
+                        let state = item.as_str().ok_or_else(|| PackError::Manifest(
+                            format!("{name}: every states entry must be a string")
+                        ))?;
+                        if state.trim().is_empty() || !seen.insert(state.to_string()) {
+                            return Err(PackError::Manifest(format!("{name}: empty or duplicate state {state:?}")));
+                        }
+                        parsed.push(state.to_string());
+                    }
+                    parsed
+                }
+                Some(_) => return Err(PackError::Manifest(format!("{name}: states must be an array"))),
+            };
+            let atlas = match declaration.get("atlas") {
+                None => "standalone".to_string(),
+                Some(value) => {
+                    let category = value.as_str().ok_or_else(|| PackError::Manifest(
+                        format!("{name}: atlas must be a string")
+                    ))?;
+                    if category.trim().is_empty() {
+                        return Err(PackError::Manifest(format!("{name}: atlas must not be empty")));
+                    }
+                    category.to_string()
+                }
+            };
+            let mips = match declaration.get("mips") {
+                None => false,
+                Some(value) => value.as_bool().ok_or_else(|| PackError::Manifest(
+                    format!("{name}: mips must be a boolean")
+                ))?,
+            };
 
             if w == 0 || h == 0 || (w as u64) * (h as u64) > 64_000_000 {
                 return Err(PackError::Manifest(format!("{name}: invalid or excessive dimensions {w}x{h}")));
             }
-            if by_name.contains_key(&name) || assets.iter().any(|asset: &HudAsset| asset.file == file) {
-                return Err(PackError::Manifest(format!("duplicate asset name or file: {name} ({file})")));
+            let folded_name = name.to_ascii_lowercase();
+            let folded_file = file.to_ascii_lowercase();
+            if by_name.keys().any(|existing: &String| existing.to_ascii_lowercase() == folded_name)
+                || !seen_asset_files.insert(folded_file)
+            {
+                return Err(PackError::Manifest(format!("duplicate asset name or file (case-insensitive): {name} ({file})")));
             }
             if insets.iter().any(|value| !value.is_finite() || *value < 0.0) {
                 return Err(PackError::Manifest(format!("{name}: insets must be finite and non-negative")));
