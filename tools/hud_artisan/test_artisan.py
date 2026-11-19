@@ -96,9 +96,34 @@ class Tests(unittest.TestCase):
                 artisan.safe_join(root,"alias.png")
             with self.assertRaisesRegex(ValueError,"symlink path is not allowed"):
                 artisan.safe_join_any(root,"alias.png")
+            root_alias=root/"root-alias"
+            try:
+                root_alias.symlink_to(root,target_is_directory=True)
+            except (OSError,NotImplementedError):
+                self.skipTest("directory symlink creation is unavailable on this platform")
+            with self.assertRaisesRegex(ValueError,"root directory must not be a symlink"):
+                artisan.safe_join_any(root_alias,"asset.png")
     def test_traversal_rejected(self):
         for x in ("../x.png","/tmp/x.png",""): 
             with self.assertRaises(ValueError):artisan.safe_rel(x)
+    def test_manifest_insets_reject_strings_and_booleans(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);manifest=root/"manifest.json"
+            panel={"name":"panel","file":"panel.png","w":8,"h":8,
+                   "insets":{"l":0,"t":0,"r":0,"b":0}}
+            atlas={"name":"atlas","file":"atlas.png","w":8,"h":8,
+                   "insets":{"l":0,"t":0,"r":0,"b":0}}
+            doc={"design_height":768,"reference_resolution":{},"safe_area_1080p":{},
+                 "command_card":{},"control_groups":{},
+                 "atlas":{"commandbuttons":{"file":"atlas.png","entries":[
+                     {"id":"cell","x":0,"y":0,"w":4,"h":4}]}},
+                 "assets":[panel,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            for invalid in (True,"2"):
+                doc["assets"][0]["insets"]["l"]=invalid
+                manifest.write_text(json.dumps(doc))
+                with self.subTest(value=invalid):
+                    with self.assertRaisesRegex(ValueError,"insets values must be numbers"):
+                        artisan.load_manifest(manifest)
     def test_semantic_prompt(self):
         a={"name":"icon_gold_normal_32","file":"icons/gold.png","w":32,"h":32,"insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
         j=artisan.make_job(a,"classic-modern",9);self.assertTrue(j["requires_alpha"]);self.assertIn("9-slice",j["prompt"])
