@@ -35,7 +35,7 @@ python3 tools/hud_artisan/generate.py plan \
   --theme classic-modern --seed 20261118 --engine-contract
 ~~~
 
-The plan is deterministic for a fixed manifest, theme and seed. Every prompt describes the semantic
+The checked-in final manifest is normalized with explicit source_asset links for all 20 command-button atlas cells, so the planner produces 91 unique asset jobs and then assembles the 2048×2048 atlas. The 92 PNG/font payload files are still in the local Termux pack and are not yet mirrored into this branch; the manifest-only CI test does not claim that the full pack is present. The plan is deterministic for a fixed manifest, theme and seed. Every prompt describes the semantic
 object (not merely the filename), target dimensions, visual family, UI state, palette, materials,
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
 its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar. For OpenCode 2 role separation and session prompts, see OPENCODE_WORKFLOW.md. For accepted visual references and master asset briefs, see REFERENCE_BOARD.md. For the external donor survey, research basis and licensing cautions, see RESEARCH_DONORS.md.
