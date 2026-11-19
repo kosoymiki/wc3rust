@@ -395,7 +395,13 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
             alpha=crop.getchannel("A");hist=alpha.histogram();total=w*h
             bbox=alpha.getbbox()
             sample=crop.resize((min(32,w),min(32,h)),Image.Resampling.LANCZOS)
-            colors=len(set(sample.getdata()))
+            # Pillow >=12.3 deprecates Image.getdata(); prefer the flattened accessor
+            # and keep the old call as a fallback for older Pillow builds.
+            try:
+                sample_data=sample.get_flattened_data()
+            except AttributeError:
+                sample_data=sample.getdata()
+            colors=len(set(sample_data))
             cell={"id":ident,"x":x,"y":y,"width":w,"height":h,
                   "transparent_ratio":round(hist[0]/total,6),
                   "semi_transparent_pixels":sum(hist[1:255]),
