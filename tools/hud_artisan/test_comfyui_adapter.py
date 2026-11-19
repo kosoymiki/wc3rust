@@ -227,11 +227,15 @@ class ComfyAdapterTests(unittest.TestCase):
         self.assertEqual(result.getpixel((10, 10))[3], 255)
         self.assertEqual(result.getpixel((15, 15))[3], 255)
 
-    def test_frame_aperture_is_cut_out(self):
-        from PIL import Image
+    def test_frame_aperture_removes_only_near_key_pixels(self):
+        from PIL import Image, ImageDraw
         image = Image.new("RGBA", (100, 100), (120, 80, 30, 255))
-        result = adapter.enforce_frame_aperture(image)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((30, 30, 69, 69), fill=(255, 0, 255, 255))
+        image.putpixel((35, 35), (30, 150, 60, 255))
+        result = adapter.enforce_frame_aperture(image, (255, 0, 255), 48)
         self.assertEqual(result.getpixel((50, 50))[3], 0)
+        self.assertEqual(result.getpixel((35, 35))[3], 255, "non-key art inside aperture is never erased")
         self.assertEqual(result.getpixel((10, 10))[3], 255)
 
 
