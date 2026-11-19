@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageChops
 except ImportError as exc:  # pragma: no cover - exercised by CLI users
     raise SystemExit("Pillow is required; install tools/hud_artisan/requirements.txt") from exc
 
@@ -49,16 +49,17 @@ def inspect_png(path: Path, root: Path, key=DEFAULT_KEY, key_tolerance: int = 48
         # Count non-transparent pixels close to the configured chroma key.
         # This is a warning metric, not a semantic classifier.
         rgb = rgba.convert("RGB")
-        pixels = rgb.load()
+        red, green, blue = rgb.split()
+        key_channels = []
+        for channel, value in zip((red, green, blue), key):
+            reference = Image.new("L", (width, height), value)
+            key_channels.append(ImageChops.difference(channel, reference))
+        distance = ImageChops.add(ImageChops.add(key_channels[0], key_channels[1]), key_channels[2])
+        near_mask = distance.point(lambda value: 255 if value <= key_tolerance * 3 else 0)
+        visible_mask = alpha.point(lambda value: 255 if value > 0 else 0)
+        near_mask = ImageChops.multiply(near_mask, visible_mask)
+        near_key = near_mask.histogram()[255]
         alpha_pixels = alpha.load()
-        near_key = 0
-        for y in range(height):
-            for x in range(width):
-                if alpha_pixels[x, y] == 0:
-                    continue
-                pixel = pixels[x, y]
-                if sum(abs(int(pixel[i]) - key[i]) for i in range(3)) <= key_tolerance * 3:
-                    near_key += 1
         border_points = []
         if width and height:
             border_points.extend((x, 0) for x in range(width))
