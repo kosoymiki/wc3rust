@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 
 CRITERIA = (
@@ -257,9 +259,19 @@ def main() -> int:
     try:
         result = evaluate(args.manifest, args.jobs, args.pack, args.reviews)
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        temporary = args.out.with_name(args.out.name + ".tmp")
-        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(args.out)
+        if args.out.is_symlink():
+            raise ValueError(f"review report output must not be a symlink: {args.out}")
+        fd, temp_name = tempfile.mkstemp(prefix=f".{args.out.name}.", suffix=".tmp", dir=args.out.parent)
+        temporary = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as stream:
+                stream.write(json.dumps(result, ensure_ascii=False, indent=2) + "\\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, args.out)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
         print(
             f"HUD_ARTISAN_REVIEW {result['result']} assets={result['reviewed_count']}/"
             f"{result['asset_count']} failures={len(result['failures'])} report={args.out}"
