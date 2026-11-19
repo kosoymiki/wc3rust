@@ -42,7 +42,7 @@ def read(path: Path):
 
 def safe_pack_file(pack: Path, relative: object) -> Path:
     """Resolve a manifest asset path without traversal or symlink escapes."""
-    if not isinstance(relative, str) or not relative or "\\\\" in relative or "\\x00" in relative:
+    if not isinstance(relative, str) or not relative or "\\\\" in relative or "\\x00" in relative or ":" in relative:
         raise ValueError(f"unsafe asset path: {relative!r}")
     posix = PurePosixPath(relative)
     if posix.is_absolute() or any(part in ("", ".", "..") for part in posix.parts):
