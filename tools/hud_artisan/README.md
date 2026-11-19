@@ -19,7 +19,7 @@ python3 -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
 
 ### Batch visual QA, state consistency and BLP compatibility
 
-Run the production QA after ingest/validation. It creates three contact sheets (dark, light and checkerboard transparency backgrounds); every asset is shown at native, 50% and 25% size. It also groups explicit UI state suffixes (normal/pressed/disabled/autocast/active/inactive/hover/selected) and measures silhouette IoU plus visible-image difference.
+Run the production QA after ingest/validation. It creates three contact sheets (dark, light and checkerboard transparency backgrounds); every asset is shown at native, 50% and 25% size. It also runs the pixel-level alpha/chroma diagnostics (including semi-transparent key fringes and hidden RGB), groups explicit UI state suffixes (normal/pressed/disabled/autocast/active/inactive/hover/selected), and measures silhouette IoU plus visible-image difference. QA candidates now carry their exact findings and are marked dispatchable only when an independent compiled job exists.
 
 ~~~sh
 python3 tools/hud_artisan/production_qa.py \
