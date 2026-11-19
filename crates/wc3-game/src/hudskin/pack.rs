@@ -265,6 +265,39 @@ fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackEr
     Ok(resolved)
 }
 
+fn validate_atlas_grid(
+    entries: &[serde_json::Value],
+    width: u32,
+    height: u32,
+    columns: u32,
+    rows: u32,
+    cell: [u32; 2],
+) -> Result<(), PackError> {
+    if u64::from(columns) * u64::from(cell[0]) > u64::from(width)
+        || u64::from(rows) * u64::from(cell[1]) > u64::from(height)
+    {
+        return Err(PackError::Manifest("atlas columns/rows/cell exceed declared atlas dimensions".to_string()));
+    }
+    for entry in entries {
+        let id = string(entry, &["id"])?;
+        let x = integer(entry, &["x"])?;
+        let y = integer(entry, &["y"])?;
+        let w = integer(entry, &["w"])?;
+        let h = integer(entry, &["h"])?;
+        if [w, h] != [i64::from(cell[0]), i64::from(cell[1])]
+            || x % i64::from(cell[0]) != 0
+            || y % i64::from(cell[1]) != 0
+            || x / i64::from(cell[0]) >= i64::from(columns)
+            || y / i64::from(cell[1]) >= i64::from(rows)
+        {
+            return Err(PackError::Manifest(format!(
+                "atlas cell {id} must match declared cell size and grid alignment"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_atlas_entries(
     entries: &[serde_json::Value],
     width: u32,
@@ -602,30 +635,13 @@ impl HudPack {
                 declared_atlas_size[0], declared_atlas_size[1], atlas_asset.w, atlas_asset.h
             )));
         }
-        if u64::from(atlas_columns) * u64::from(atlas_cell_size[0]) > u64::from(atlas_asset.w)
-            || u64::from(atlas_rows) * u64::from(atlas_cell_size[1]) > u64::from(atlas_asset.h)
-        {
-            return Err(PackError::Manifest("atlas columns/rows/cell exceed declared atlas dimensions".to_string()));
-        }
         let atlas_texture = Some(atlas_asset.texture);
         let entries = atlas["entries"].as_array()
             .ok_or_else(|| PackError::Manifest("atlas.commandbuttons.entries is not an array".to_string()))?;
         validate_atlas_entries(entries, atlas_asset.w, atlas_asset.h)?;
-        for entry in entries {
-            let id = string(entry, &["id"])?;
-            let x = integer(entry, &["x"])?;
-            let y = integer(entry, &["y"])?;
-            let w = integer(entry, &["w"])?;
-            let h = integer(entry, &["h"])?;
-            if [w, h] != [i64::from(atlas_cell_size[0]), i64::from(atlas_cell_size[1])]
-                || x % i64::from(atlas_cell_size[0]) != 0
-                || y % i64::from(atlas_cell_size[1]) != 0
-            {
-                return Err(PackError::Manifest(format!(
-                    "atlas cell {id} must match the declared cell size and grid alignment"
-                )));
-            }
-        }
+        validate_atlas_grid(
+            entries, atlas_asset.w, atlas_asset.h, atlas_columns, atlas_rows, atlas_cell_size
+        )?;
         let mut cells = HashMap::with_capacity(entries.len());
         for entry in entries {
             let id = string(entry, &["id"])?;
@@ -1585,6 +1601,22 @@ mod tests {
         assert!(asset_atlas(&serde_json::json!({"atlas":7}),"asset").is_err());
         assert!(asset_atlas(&serde_json::json!({"atlas":" "}),"asset").is_err());
         assert!(asset_mips(&serde_json::json!({"mips":"true"}),"asset").is_err());
+    }
+
+    #[test]
+    fn atlas_grid_rejects_misaligned_oversized_and_out_of_grid_cells() {
+        let valid=vec![
+            serde_json::json!({"id":"one","x":0,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
+        ];
+        assert!(validate_atlas_grid(&valid,16,8,2,1,[8,8]).is_ok());
+        let misaligned=vec![serde_json::json!({"id":"bad","x":4,"y":0,"w":8,"h":8})];
+        assert!(validate_atlas_grid(&misaligned,16,8,2,1,[8,8]).is_err());
+        let wrong_size=vec![serde_json::json!({"id":"bad","x":0,"y":0,"w":16,"h":8})];
+        assert!(validate_atlas_grid(&wrong_size,16,8,2,1,[8,8]).is_err());
+        let outside=vec![serde_json::json!({"id":"bad","x":16,"y":0,"w":8,"h":8})];
+        assert!(validate_atlas_grid(&outside,24,8,2,1,[8,8]).is_err());
+        assert!(validate_atlas_grid(&valid,16,8,1,1,[8,8]).is_err());
     }
 
     #[test]
