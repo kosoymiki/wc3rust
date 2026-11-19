@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "project": "wc3rust HUD Artisan",
+  "references": [
+    {
+      "id": "wc3rust-style-board",
+      "kind": "reference_image",
+      "source_url": "https://github.com/kosoymiki/wc3rust/tree/tools/hud-artisan-v1/tools/hud_artisan",
+      "revision": null,
+      "sha256": null,
+      "license": "PROJECT_OWNED_PENDING_REVIEW",
+      "license_evidence_url": null,
+      "allowed_use": "pixel_conditioning",
+      "conditioning_allowed": true,
+      "commercial_use": "unknown",
+      "redistribution": "unknown",
+      "upstream_notice_required": false,
+      "notes": "Project-authored material board; attach exact file hash and owner approval before conditioning."
+    },
+    {
+      "id": "comfyui-core",
+      "kind": "code",
+      "source_url": "https://github.com/comfy-org/ComfyUI",
+      "revision": null,
+      "sha256": null,
+      "license": "SEE_UPSTREAM_LICENSE",
+      "license_evidence_url": "https://github.com/comfy-org/ComfyUI/blob/master/LICENSE",
+      "allowed_use": "runtime_dependency",
+      "conditioning_allowed": false,
+      "commercial_use": "unknown",
+      "redistribution": "unknown",
+      "upstream_notice_required": true,
+      "notes": "Optional local runtime only. Model files, custom nodes and partner API nodes are separate dependencies and must be recorded independently."
+    },
+    {
+      "id": "warcraft3-retail-ui",
+      "kind": "reference_image",
+      "source_url": "https://www.blizzard.com/",
+      "revision": null,
+      "sha256": null,
+      "license": "PROPRIETARY",
+      "license_evidence_url": null,
+      "allowed_use": "textual_reference",
+      "conditioning_allowed": false,
+      "commercial_use": "prohibited",
+      "redistribution": "prohibited",
+      "upstream_notice_required": false,
+      "notes": "High-level study of broad genre conventions only; do not extract, trace, upload or condition on retail pixels."
+    }
+  ]
+}
