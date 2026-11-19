@@ -161,6 +161,20 @@ def validate_engine_contract(doc:dict[str,Any])->None:
         if actual!=expected_size:
             raise ValueError(f"engine role {name} must be {expected_size[0]}x{expected_size[1]}, found {actual[0]}x{actual[1]}")
 
+def validate_json_schema(value:dict[str,Any],schema_path:Path,label:str)->None:
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError as exc:
+        raise RuntimeError("schema validation requires jsonschema; install tools/hud_artisan/requirements.txt") from exc
+    schema=read_json(schema_path)
+    Draft202012Validator.check_schema(schema)
+    errors=sorted(Draft202012Validator(schema).iter_errors(value),
+                  key=lambda error:(list(map(str,error.absolute_path)),error.message))
+    if errors:
+        first=errors[0]
+        where="/".join(str(part) for part in first.absolute_path) or "<root>"
+        raise ValueError(f"{label} schema violation at {where}: {first.message}")
+
 def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
     doc=read_json(path); missing=[k for k in REQUIRED if k not in doc]
     if missing: raise ValueError("manifest missing: "+", ".join(missing))
@@ -722,6 +736,7 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
     else:
         try:
             provenance=read_json(provenance_path)
+            validate_json_schema(provenance,Path(__file__).with_name("provenance.schema.json"),"provenance")
             if not re.fullmatch(r"[a-f0-9]{64}",str(provenance.get("adapter_config_sha256",""))):
                 raise ValueError("provenance adapter_config_sha256 is missing or malformed")
             if provenance.get("jobs_sha256") != sha(jobs_path.read_bytes()):
