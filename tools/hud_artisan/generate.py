@@ -1136,7 +1136,8 @@ def main(argv=None):
     q.add_argument("--fit",choices=("strict","contain","crop","stretch"),default="strict");q.add_argument("--allow-opaque",action="store_true")
     q=s.add_parser("dispatch",help="run a provider CLI adapter over the jobs with retries and bounded concurrency")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
-    q.add_argument("--parallel",type=int)
+    q.add_argument("--parallel",type=int);q.add_argument("--resume",action="store_true",
+        help="reuse only hash-verified outputs from a prior run with identical jobs and adapter config")
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
     q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true");q.add_argument("--engine-contract",action="store_true")
@@ -1154,11 +1155,11 @@ def main(argv=None):
              "asset_count_required":92,"commandbuttons_atlas":{"size":[2048,2048],"entries":20},
              "font_files_required":5,"required_unique_assets":ENGINE_ROLES,
              "note":"Contract reference only. Unknown insets, complete filenames, font binaries and source art are intentionally not fabricated."}
-            a.out.parent.mkdir(parents=True,exist_ok=True);a.out.write_text(json.dumps(profile,indent=2)+"\n",encoding="utf-8")
+            atomic_write_text(a.out,json.dumps(profile,indent=2)+"\n")
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
         if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque)
-        if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel)
+        if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel,a.resume)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
