@@ -249,6 +249,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(jobs),91,"the declared atlas must reuse existing command icon assets, not synthesize duplicate jobs")
         self.assertEqual(len(atlas_plan["cells"]),20)
         self.assertTrue(all(entry.get("source_asset") for entry in doc["atlas"]["commandbuttons"]["entries"]))
+        for job in jobs:
+            self.assertEqual(job["render_width"] % 16,0,job["asset"])
+            self.assertEqual(job["render_height"] % 16,0,job["asset"])
+            self.assertLessEqual(max(job["render_width"],job["render_height"]),4096,job["asset"])
+            self.assertIn(f"render canvas {job['render_width']}x{job['render_height']}",job["prompt"])
 
     def test_engine_contract_exact_manifest(self):
         assets=[]
