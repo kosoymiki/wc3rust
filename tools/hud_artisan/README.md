@@ -40,11 +40,9 @@ object (not merely the filename), target dimensions, visual family, UI state, pa
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
 its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar. For OpenCode 2 role separation and session prompts, see OPENCODE_WORKFLOW.md. For the external donor survey, research basis and licensing cautions, see RESEARCH_DONORS.md.
 
-### Run the built-in ComfyUI adapter
+### Optional local HTTP renderer adapter
 
-HUD Artisan includes a real ComfyUI HTTP API adapter; only the model workflow itself is supplied by
-the operator. Export a ComfyUI workflow in API format and copy the examples into a private build
-directory:
+HUD Artisan includes an optional adapter for a locally running ComfyUI-compatible HTTP server. It is not required, and it is not a hosted service. No Comfy Cloud, paid endpoint, subscription or API key is part of the pipeline. If you use another local renderer, OpenCode agent workflow or custom CLI, skip this section and use the provider-neutral adapter contract. Export a local workflow in API format and copy the examples into a private build directory:
 
 ~~~sh
 mkdir -p build/hud-artisan
@@ -69,11 +67,7 @@ python3 tools/hud_artisan/generate.py dispatch \
   --drop build/hud-artisan/drop --parallel 1
 ~~~
 
-The adapter injects the exact prompts, dimensions and compiled per-asset seed, preflights the configured SaveImage node before submitting inference, polls ComfyUI
-history and downloads the final SaveImage output. It rejects non-PNG data, wrong dimensions and
-opaque output for alpha-required assets. The ComfyUI workflow must include a valid transparent-
-background path for icons/cursors; a stock opaque Stable Diffusion workflow is not sufficient.
-See COMFYUI.md and comfyui.schema.json.
+The optional local adapter injects exact prompts, dimensions and the compiled per-asset seed, checks the SaveImage node, waits for the matching job and downloads its output. It rejects invalid PNGs, wrong dimensions and insufficient transparency. See COMFYUI.md and comfyui.schema.json. OpenCode 2 remains the agent/review layer; it is not coupled to this renderer.
 
 A custom CLI/API adapter is also supported: command is an argv array, never a shell string, with
 {job_json}, {output_path} and {job_id} placeholders. Bounded concurrency, retries, timeouts,
