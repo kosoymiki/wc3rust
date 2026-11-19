@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def inspect_runtime(config_path: Path) -> dict:
         configured_model=cfg.get("matte_model")
         if configured_model is not None and (not isinstance(configured_model,str) or not configured_model.strip()):
             raise adapter.ComfyError("matte_model must be a non-empty path string")
-        model_value=configured_model or __import__("os").environ.get("U2NET_MODEL") or str(
+        model_value=configured_model or os.environ.get("U2NET_MODEL") or str(
             Path.home()/"src"/"comfyui-termux"/"models"/"u2net.onnx"
         )
         model_path=Path(model_value).expanduser()
