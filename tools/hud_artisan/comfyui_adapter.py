@@ -362,7 +362,7 @@ def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
 
 def enforce_frame_aperture(image, key=(255, 0, 255), tolerance=48):
     """Remove only chroma-key pixels inside the frame aperture; never erase artwork."""
-    from PIL import ImageChops, ImageDraw
+    from PIL import Image, ImageChops, ImageDraw
     if image.mode != "RGBA":
         image = image.convert("RGBA")
     width, height = image.size
