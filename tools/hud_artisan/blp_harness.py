@@ -109,7 +109,17 @@ def compare_png(source: Path, decoded: Path) -> dict[str, Any]:
                 "exact_match": mse == 0, "alpha_silhouette_iou": round(inter / max(1, union), 5)}
 
 
-def roundtrip(source: Path, work: Path, encode: list[str], decode: list[str], timeout: int) -> dict[str, Any]:
+def raw_rgba_to_png(raw_path: Path, png_path: Path, width: int, height: int) -> None:
+    expected = width * height * 4
+    if raw_path.is_symlink() or not raw_path.is_file() or raw_path.stat().st_size != expected:
+        raise BLPError(f"raw RGBA decoder output must be exactly {expected} bytes")
+    data = raw_path.read_bytes()
+    image = Image.frombytes("RGBA", (width, height), data)
+    image.save(png_path, format="PNG")
+
+
+def roundtrip(source: Path, work: Path, encode: list[str], decode: list[str], timeout: int,
+             decode_raw_rgba: bool = False) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file():
         raise BLPError("source PNG must be a regular non-symlink file")
     with Image.open(source) as im:
@@ -119,17 +129,23 @@ def roundtrip(source: Path, work: Path, encode: list[str], decode: list[str], ti
     work.mkdir(parents=True, exist_ok=True)
     blp = work / (source.stem + ".roundtrip.blp")
     decoded = work / (source.stem + ".decoded.png")
-    for path in (blp, decoded):
+    decoder_output = work / (source.stem + (".decoded.rgba" if decode_raw_rgba else ".decoded.png"))
+    for path in (blp, decoded, decoder_output):
         if path.exists() or path.is_symlink():
             if path.is_symlink() or not path.is_file():
                 raise BLPError(f"unsafe output path: {path}")
             path.unlink()
     command_run(encode, source, blp, timeout)
     blp_info = inspect_blp(blp)
-    command_run(decode, blp, decoded, timeout)
+    command_run(decode, blp, decoder_output, timeout)
+    if decode_raw_rgba:
+        raw_rgba_to_png(decoder_output, decoded, blp_info["width"], blp_info["height"])
+    else:
+        decoded = decoder_output
     metrics = compare_png(source, decoded)
     return {"source": str(source), "blp": blp_info, "roundtrip": metrics,
-            "encoder_argv": encode, "decoder_argv": decode}
+            "encoder_argv": encode, "decoder_argv": decode,
+            "decoder_output": "raw-rgba" if decode_raw_rgba else "png"}
 
 
 def main(argv=None) -> int:
@@ -144,6 +160,8 @@ def main(argv=None) -> int:
                    help="one argv token; use {input} and {output} placeholders")
     q.add_argument("--decode-arg", action="append", required=True)
     q.add_argument("--timeout", type=int, default=120)
+    q.add_argument("--decode-raw-rgba", action="store_true",
+                   help="decoder writes tightly packed RGBA8 bytes; dimensions come from the BLP header")
     q.add_argument("--report", type=Path, required=True)
     a = p.parse_args(argv)
     try:
@@ -152,7 +170,7 @@ def main(argv=None) -> int:
         else:
             if not 1 <= a.timeout <= 3600:
                 raise BLPError("timeout must be 1..3600 seconds")
-            result = roundtrip(a.input, a.work, a.encode_arg, a.decode_arg, a.timeout)
+            result = roundtrip(a.input, a.work, a.encode_arg, a.decode_arg, a.timeout, a.decode_raw_rgba)
             a.report.parent.mkdir(parents=True, exist_ok=True)
             if a.report.is_symlink():
                 raise BLPError("report path must not be a symlink")
