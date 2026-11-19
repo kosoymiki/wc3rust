@@ -320,6 +320,7 @@ class Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"overlap"):
                 artisan.plan(m,root/"bad-plan","classic-modern",12,False)
     def test_provider_dispatch_ingest_atlas_and_provenance(self):
+        import shutil
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);manifest=root/"manifest.json";drop=root/"drop";out=root/"pack"
             panel={"name":"panel","file":"panels/panel.png","w":16,"h":16,"insets":{"l":2,"t":2,"r":2,"b":2},"states":["normal"]}
