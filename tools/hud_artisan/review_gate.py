@@ -273,7 +273,7 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
 
     report = {
         "tool": "HUD Artisan review gate",
-        "schema_version": 1,
+        "schema_version": 2,
         "manifest_sha256": manifest_hash,
         "jobs_sha256": jobs_hash,
         "asset_count": len(jobs_by_id),
