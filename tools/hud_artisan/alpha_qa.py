@@ -59,6 +59,13 @@ def inspect_png(path: Path, root: Path, key=DEFAULT_KEY, key_tolerance: int = 48
         visible_mask = alpha.point(lambda value: 255 if value > 0 else 0)
         near_mask = ImageChops.multiply(near_mask, visible_mask)
         near_key = near_mask.histogram()[255]
+        semi_mask = alpha.point(lambda value: 255 if 0 < value < 255 else 0)
+        semi_near = ImageChops.multiply(near_mask, semi_mask).histogram()[255]
+        transparent_mask = alpha.point(lambda value: 255 if value == 0 else 0)
+        nonzero_rgb = ImageChops.lighter(ImageChops.lighter(red, green), blue).point(
+            lambda value: 255 if value > 0 else 0
+        )
+        hidden_rgb_pixels = ImageChops.multiply(transparent_mask, nonzero_rgb).histogram()[255]
         alpha_pixels = alpha.load()
         border_points = []
         if width and height:
@@ -88,8 +95,12 @@ def inspect_png(path: Path, root: Path, key=DEFAULT_KEY, key_tolerance: int = 48
             },
             "chroma_key": {
                 "key_rgb": list(key),
-                "near_key_opaque_pixels": near_key,
-                "near_key_opaque_ratio": round(near_key / max(1, total - transparent), 6),
+                "near_key_visible_pixels": near_key,
+                "near_key_visible_ratio": round(near_key / max(1, total - transparent), 6),
+                "near_key_semi_transparent_pixels": semi_near,
+                "near_key_semi_transparent_ratio": round(semi_near / max(1, semi), 6),
+                "transparent_pixels_with_hidden_rgb": hidden_rgb_pixels,
+                "hidden_rgb_transparent_ratio": round(hidden_rgb_pixels / max(1, transparent), 6),
                 "tolerance": key_tolerance,
             },
         }
@@ -107,7 +118,7 @@ def _sha256(path: Path) -> str:
 def classify(item: dict[str, Any], require_alpha: bool, max_key_ratio: float) -> list[str]:
     findings: list[str] = []
     alpha = item["alpha"]
-    key_ratio = item["chroma_key"]["near_key_opaque_ratio"]
+    key_ratio = item["chroma_key"]["near_key_visible_ratio"]
     if alpha["bbox"] is None:
         findings.append("fully_transparent")
     if require_alpha and alpha["transparent_pixels"] == 0:
