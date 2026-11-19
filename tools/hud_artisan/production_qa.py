@@ -200,6 +200,8 @@ def save_atomic(image: Image.Image, path: Path) -> None:
 
 def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> dict[str, Any]:
     atlas_spec=manifest.get("atlas",{}).get("commandbuttons",{})
+    if not atlas_spec:
+        return {"status":"not_configured","reason":"manifest has no commandbuttons atlas","cells":[],"findings":[]}
     atlas_file=atlas_spec.get("file")
     entries=atlas_spec.get("entries",[])
     if not isinstance(atlas_file,str) or not isinstance(entries,list):
@@ -345,7 +347,7 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             raise ValueError("jobs.json manifest hash mismatch")
         job_map = {job.get("asset"): job for job in plan.get("jobs", [])}
     atlas_report=atlas_qa(manifest,pack,out,plan)
-    if atlas_report.get("status")!="ok":
+    if atlas_report.get("status")=="error":
         errors.append({"asset":"commandbuttons_atlas","error":atlas_report.get("reason","atlas QA unavailable")})
     for finding in atlas_report.get("findings",[]):
         if finding.get("asset"):
