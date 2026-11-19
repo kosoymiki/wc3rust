@@ -292,7 +292,7 @@ fn validate_atlas_entries(
             )));
         }
         for (other_id, ox, oy, ow, oh) in &rects {
-            let overlaps = x < ox + ow && ox < x + w && y < oy + oh && oy < y + h;
+            let overlaps = x < *ox + *ow && *ox < x + w && y < *oy + *oh && *oy < y + h;
             if overlaps {
                 return Err(PackError::Manifest(format!(
                     "atlas cells {other_id} and {id} overlap"
