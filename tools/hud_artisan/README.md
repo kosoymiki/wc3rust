@@ -22,8 +22,8 @@ python3 -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
 Run the complete integrated QA directly through the main CLI after ingest/validation:
 
 ~~~sh
-python tools/hud_artisan/generate.py qa \\
-  --manifest MANIFEST --pack PACK --jobs JOBS_JSON \\
+python tools/hud_artisan/generate.py qa \
+  --manifest MANIFEST --pack PACK --jobs JOBS_JSON \
   --out build/hud-artisan/production-qa --strict
 ~~~
 
