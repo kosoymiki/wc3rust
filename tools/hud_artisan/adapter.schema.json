@@ -102,6 +102,13 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "dependency_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     }
   }
 }
