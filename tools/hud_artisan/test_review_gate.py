@@ -90,6 +90,7 @@ class ReviewGateTests(unittest.TestCase):
             manifest.write_text(json.dumps(manifest_doc))
             jobs_doc = json.loads(jobs.read_text())
             jobs_doc["source_manifest_sha256"] = sha(manifest)
+            jobs_doc["jobs"][0]["output"] = "../outside.png"
             jobs.write_text(json.dumps(jobs_doc))
             review_doc = json.loads(reviews.read_text())
             review_doc["manifest_sha256"] = sha(manifest)
