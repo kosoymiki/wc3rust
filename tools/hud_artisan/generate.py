@@ -1089,6 +1089,13 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         log_path.write_text("\n\n".join(history),encoding="utf-8")
         return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
                 "generated_at":generated_at,"error":error,"sha256":sha_file(out) if status=="succeeded" else None}
+    def checkpoint_report(rows):
+        ordered=sorted(rows,key=lambda row:row["job_id"])
+        return {"tool":"HUD Artisan","version":VERSION,"jobs_sha256":jobs_digest,
+                "adapter_config_sha256":adapter_digest,
+                "adapter":{"provider":provider,"model":model},"parallel":parallel,"results":ordered,
+                "succeeded":sum(row["status"]=="succeeded" for row in ordered),
+                "failed":sum(row["status"]!="succeeded" for row in ordered)}
     try:
         results=[]
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
@@ -1102,14 +1109,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                          "output":job.get("output"),"status":"failed","generated_at":None,
                          "error":f"worker setup/runtime exception: {exc}","sha256":None}
                 results.append(row)
+                # Persist each completed job immediately so an interrupted batch can resume.
+                atomic_write_text(worker_report,json.dumps(checkpoint_report(results),ensure_ascii=False,indent=2)+"\n")
                 print(f"HUD_ARTISAN_JOB {row['status']} id={row['job_id']} output={row['output']}")
         results.sort(key=lambda row:row["job_id"])
         ok=all(row["status"]=="succeeded" for row in results)
-        report={"tool":"HUD Artisan","version":VERSION,"jobs_sha256":jobs_digest,
-                "adapter_config_sha256":adapter_digest,
-                "adapter":{"provider":provider,"model":model},"parallel":parallel,"results":results,
-                "succeeded":sum(row["status"]=="succeeded" for row in results),
-                "failed":sum(row["status"]!="succeeded" for row in results)}
+        report=checkpoint_report(results)
         worker_report.parent.mkdir(parents=True,exist_ok=True)
         atomic_write_text(worker_report,json.dumps(report,ensure_ascii=False,indent=2)+"\n")
         if ok:
