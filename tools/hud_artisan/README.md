@@ -57,6 +57,13 @@ The Termux profile is already mapped to the discovered Z-Image canvas workflow: 
 Set COMFYUI_URL when the server is not http://127.0.0.1:8188, then run:
 
 ~~~sh
+python3 tools/hud_artisan/comfyui_doctor.py \
+  --config build/hud-artisan/comfyui.json
+~~~
+
+The read-only doctor checks the live ComfyUI version/runtime, queue, workflow conversion, required node classes, model-loader selections where enumerated, all five input mappings and SaveImage target. It never submits a generation job.
+
+~~~sh
 python3 tools/hud_artisan/generate.py dispatch \
   --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
   --jobs build/hud-artisan/jobs/jobs.json \
