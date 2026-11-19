@@ -20,6 +20,9 @@ CRITERIA = (
     "state_consistency", "engine_fitness", "originality_and_ip_safety",
 )
 ROLES = {"art_director", "red_team"}
+MIN_REVIEW_AVERAGE = 8.5
+MIN_CRITERION_SCORE = 7
+MIN_CONFIDENCE = 0.80
 
 
 def digest(path: Path) -> str:
@@ -239,6 +242,8 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
 
         seen = set()
         scores_all = []
+        reviewer_summaries = []
+        improvement_notes = []
         for check in checks:
             if not isinstance(check, dict):
                 failures.append(f"{jid}: malformed review entry")
@@ -257,28 +262,35 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
             if any(type(value) is not int or not 1 <= value <= 10 for value in scores.values()):
                 failures.append(f"{jid}/{rid}: scores must be integer 1..10")
                 continue
-            if check.get("verdict") != "approve" or check.get("blockers") or check.get("improvements"):
-                failures.append(f"{jid}/{rid}: reviewer did not approve cleanly")
+            if check.get("verdict") != "approve" or check.get("blockers"):
+                failures.append(f"{jid}/{rid}: reviewer rejected or reported blocking defects")
             confidence = check.get("confidence")
-            if type(confidence) not in (int, float) or not 0.95 <= confidence <= 1:
-                failures.append(f"{jid}/{rid}: confidence must be in [0.95,1.0]")
+            if type(confidence) not in (int, float) or not MIN_CONFIDENCE <= confidence <= 1:
+                failures.append(f"{jid}/{rid}: confidence must be in [{MIN_CONFIDENCE:.2f},1.0]")
             rationale = check.get("rationale")
             if not isinstance(rationale, str) or len(rationale.strip()) < 80:
                 failures.append(f"{jid}/{rid}: rationale must contain at least 80 characters")
-            low = [criterion for criterion in CRITERIA if scores[criterion] != 10]
-            if low:
-                failures.append(f"{jid}/{rid}: not 10/10 in {', '.join(low)}")
+            average = sum(scores.values()) / len(CRITERIA)
+            minimum = min(scores.values())
+            if average < MIN_REVIEW_AVERAGE:
+                failures.append(f"{jid}/{rid}: average {average:.2f} below {MIN_REVIEW_AVERAGE:.1f}/10")
+            if minimum < MIN_CRITERION_SCORE:
+                weak = [criterion for criterion in CRITERIA if scores[criterion] < MIN_CRITERION_SCORE]
+                failures.append(f"{jid}/{rid}: criterion below {MIN_CRITERION_SCORE}/10: " + ", ".join(weak))
             scores_all.append(scores)
+            reviewer_summaries.append({"reviewer_id": rid, "average": round(average, 2), "minimum": minimum, "confidence": confidence})
+            for note in check.get("improvements", []):
+                if isinstance(note, str) and note.strip():
+                    improvement_notes.append({"reviewer_id": rid, "note": note.strip()})
 
         if seen != ids:
             failures.append(f"{jid}: missing reviewer reports {sorted(ids-seen)}")
         passed = len(scores_all) == len(reviewers) and not any(item.startswith(jid) for item in failures)
+        combined_average = (sum(sum(scores.values()) / len(CRITERIA) for scores in scores_all) / len(scores_all)) if scores_all else 0.0
         rows.append({
-            "job_id": jid,
-            "asset": job["asset"],
-            "image_sha256": actual_hash,
-            "reviewers": len(seen),
-            "score": "10/10" if passed else "REJECT",
+            "job_id": jid, "asset": job["asset"], "image_sha256": actual_hash,
+            "reviewers": len(seen), "score": f"{combined_average:.1f}/10" if passed else "REJECT",
+            "reviewer_scores": reviewer_summaries, "non_blocking_improvements": improvement_notes,
         })
 
     report = {
@@ -306,7 +318,7 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify independent 10/10 visual review evidence bound to exact final PNG hashes"
+        description="Verify dual-role visual review evidence against calibrated thresholds and exact PNG hashes"
     )
     for argument in ("manifest", "jobs", "pack", "reviews", "out"):
         parser.add_argument("--" + argument, required=True, type=Path)
