@@ -79,6 +79,28 @@ class ProductionQATests(unittest.TestCase):
         self.assertEqual(report["findings"][0]["asset"],"command_icon_empty")
         self.assertTrue(Path(report["contact_sheet"]).is_file())
 
+    def test_atlas_source_asset_maps_findings_without_jobs_plan(self):
+        atlas=Image.new("RGBA",(16,8),(0,0,0,0))
+        ImageDraw.Draw(atlas).rectangle((8,0,15,7),fill=(200,120,30,255))
+        atlas.save(self.pack/"atlas.png")
+        manifest={"assets":[{"name":"command_icon_01","file":"source.png","w":8,"h":8}],
+            "atlas":{"commandbuttons":{"file":"atlas.png","cell":[8,8],"entries":[
+                {"id":"command_01","x":0,"y":0,"w":8,"h":8,"source_asset":"command_icon_01"},
+                {"id":"command_02","x":8,"y":0,"w":8,"h":8}
+            ]}}}
+        Image.new("RGBA",(8,8),(0,0,0,0)).save(self.pack/"source.png")
+        report=qa.atlas_qa(manifest,self.pack,self.root/"atlas-source",None)
+        self.assertEqual(report["findings"][0]["asset"],"command_icon_01")
+        self.assertEqual(report["cells"][0]["source_asset"],"command_icon_01")
+
+    def test_atlas_cell_geometry_must_match_manifest(self):
+        atlas=Image.new("RGBA",(16,8),(100,100,100,255));atlas.save(self.pack/"atlas.png")
+        report=qa.atlas_qa({"atlas":{"commandbuttons":{"file":"atlas.png","cell":[8,8],"entries":[
+            {"id":"wrong-size","x":0,"y":0,"w":16,"h":8}
+        ]}}},self.pack,self.root/"atlas-size",None)
+        self.assertEqual(report["scanned"],0)
+        self.assertIn("differ from declared cell",report["findings"][0]["reason"])
+
     def test_offline_gallery_escapes_names_and_uses_relative_assets(self):
         out=self.root/"gallery"
         thumbs=out/"thumbnails";thumbs.mkdir(parents=True)
