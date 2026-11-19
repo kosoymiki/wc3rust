@@ -1,9 +1,6 @@
 name: HUD Artisan — ComfyUI CPU render
 
 on:
-  push:
-    branches:
-      - tools/hud-artisan-v1
   workflow_dispatch:
     inputs:
       scope:
