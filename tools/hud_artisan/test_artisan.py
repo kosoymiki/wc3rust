@@ -155,6 +155,27 @@ class Tests(unittest.TestCase):
                 with self.subTest(value=invalid):
                     with self.assertRaisesRegex(ValueError,"insets values must be numbers"):
                         artisan.load_manifest(manifest)
+
+    def test_render_dimensions_are_multiple_of_sixteen_and_preserve_extreme_ratios(self):
+        self.assertEqual(artisan.render_dimensions(64, 8), (1024, 128))
+        self.assertEqual(artisan.render_dimensions(720, 32), (1024, 48))
+        self.assertEqual(artisan.render_dimensions(512, 384), (1024, 768))
+        self.assertEqual(artisan.render_dimensions(1024, 512), (1024, 512))
+        for width, height in ((64, 8), (720, 32), (44, 44), (512, 384)):
+            rw, rh = artisan.render_dimensions(width, height)
+            self.assertEqual(rw % 16, 0)
+            self.assertEqual(rh % 16, 0)
+            self.assertGreaterEqual(rw, 16)
+            self.assertGreaterEqual(rh, 16)
+
+    def test_jobs_include_native_and_render_dimensions(self):
+        asset={"name":"icon_gold_normal_64","file":"icons/gold.png","w":64,"h":64,
+               "insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
+        job=artisan.make_job(asset,"classic-modern",1)
+        self.assertEqual((job["width"],job["height"]),(64,64))
+        self.assertEqual((job["render_width"],job["render_height"]),(1024,1024))
+        self.assertIn("#FF00FF",job["prompt"])
+
     def test_semantic_prompt(self):
         a={"name":"icon_gold_normal_32","file":"icons/gold.png","w":32,"h":32,"insets":{"l":0,"t":0,"r":0,"b":0},"states":["normal"]}
         j=artisan.make_job(a,"classic-modern",9);self.assertTrue(j["requires_alpha"]);self.assertIn("9-slice",j["prompt"])
