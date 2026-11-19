@@ -910,6 +910,66 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
         if stage.exists():
             shutil.rmtree(stage,ignore_errors=True)
 
+def runtime_provenance(cfg:dict[str,Any],adapter_path:Path)->dict[str,Any]:
+    """Capture workflow, model and node-selection identity without storing secrets."""
+    runtime={}
+    workflow_value=cfg.get("workflow_file")
+    if workflow_value is not None:
+        if not isinstance(workflow_value,str) or not workflow_value.strip():
+            raise ValueError("workflow_file must be a non-empty path")
+        workflow=Path(workflow_value).expanduser()
+        if not workflow.is_absolute():
+            workflow=(adapter_path.resolve().parent/workflow).resolve()
+        if workflow.is_symlink() or not workflow.is_file():
+            raise ValueError(f"workflow_file must be a regular non-symlink file: {workflow}")
+        workflow_hash=sha_file(workflow)
+        expected=cfg.get("workflow_sha256")
+        if expected is not None and expected!=workflow_hash:
+            raise ValueError(f"workflow SHA-256 mismatch: expected {expected}, found {workflow_hash}")
+        runtime.update({"workflow_file":workflow.name,"workflow_sha256":workflow_hash,
+                        "workflow_format":cfg.get("workflow_format","unknown")})
+        workflow_doc=read_json(workflow)
+        nodes=workflow_doc.get("nodes")
+        model_nodes=[]
+        sampler_nodes=[]
+        if isinstance(nodes,list):
+            for node in nodes:
+                if not isinstance(node,dict): continue
+                node_type=node.get("type","")
+                widgets=node.get("widgets_values",[])
+                if any(token in str(node_type).lower() for token in ("checkpointloader","unetloader","cliploader","vaeloader","loraloader")):
+                    model_nodes.append({"node_id":str(node.get("id","")),"class_type":node_type,"selected":widgets})
+                if "ksampler" in str(node_type).lower() or "sampler" in str(node_type).lower():
+                    sampler_nodes.append({"node_id":str(node.get("id","")),"class_type":node_type,"settings":widgets})
+        elif all(isinstance(v,dict) for v in workflow_doc.values()):
+            for node_id,node in workflow_doc.items():
+                node_type=node.get("class_type","")
+                inputs=node.get("inputs",{})
+                if any(token in str(node_type).lower() for token in ("checkpointloader","unetloader","cliploader","vaeloader","loraloader")):
+                    model_nodes.append({"node_id":str(node_id),"class_type":node_type,
+                        "selected":{k:v for k,v in inputs.items() if any(t in k.lower() for t in ("ckpt","model","clip","vae","lora"))}})
+                if "ksampler" in str(node_type).lower() or "sampler" in str(node_type).lower():
+                    sampler_nodes.append({"node_id":str(node_id),"class_type":node_type,"settings":inputs})
+        runtime["model_nodes"]=model_nodes
+        runtime["sampler_nodes"]=sampler_nodes
+    for key in ("node_inputs","output_node_id","custom_nodes","model_revision","model_sha256"):
+        if key in cfg:
+            runtime[key]=cfg[key]
+    model_files=cfg.get("model_files",[])
+    if model_files:
+        if not isinstance(model_files,list) or any(not isinstance(item,str) or not item.strip() for item in model_files):
+            raise ValueError("model_files must be an array of non-empty paths")
+        model_records=[]
+        for value in model_files:
+            path=Path(value).expanduser()
+            if not path.is_absolute():
+                path=(adapter_path.resolve().parent/path).resolve()
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"model file must be regular and non-symlink: {path}")
+            model_records.append({"file":path.name,"sha256":sha_file(path),"bytes":path.stat().st_size})
+        runtime["model_files"]=model_records
+    return runtime
+
 def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None,resume:bool=False)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
     cfg=read_json(adapter_path)
@@ -1189,10 +1249,10 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
                     "output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
+            runtime=runtime_provenance(cfg,adapter_path)
             atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
-                "jobs":records},ensure_ascii=False,indent=2)+"\n")
-        print(f"HUD_ARTISAN_DISPATCH {'PASS' if ok else 'FAIL'} jobs={len(results)} succeeded={report['succeeded']} failed={report['failed']} logs={logs}")
+                "runtime":runtime,"jobs":records},ensure_ascii=False,indent=2)+"\\n")
         return 0 if ok else 1
     finally:
         shutil.rmtree(work,ignore_errors=True)
