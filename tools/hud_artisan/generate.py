@@ -630,7 +630,7 @@ def repair_plan(manifest:Path,jobs_path:Path,qa_path:Path,out:Path,revision:str)
         "source_manifest_sha256":payload["source_manifest_sha256"],
         "source_jobs_sha256":sha(jobs_path.read_bytes()),"jobs_sha256":sha(target.read_bytes()),
         "selected":selected,"dispatch_command":"python tools/hud_artisan/generate.py dispatch --manifest MANIFEST --jobs JOBS_JSON --adapter ADAPTER --drop DROP --only ASSET_OR_JOB_ID --resume"
-    },ensure_ascii=False,indent=2)+"\\n")
+    },ensure_ascii=False,indent=2)+"\n")
     print(f"HUD_ARTISAN_REPAIR_PLAN_OK selected={len(selected)} full_jobs={len(new_jobs)} revision={revision}")
     return 0
 
