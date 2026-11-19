@@ -28,16 +28,25 @@ class ComfyError(RuntimeError):
     pass
 
 
+class RejectRedirects(request.HTTPRedirectHandler):
+    """ComfyUI API calls must not silently change origin or transport security."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def open_http(req, base: str, timeout: int):
-    """Bypass environment proxies for loopback; retain proxies for remote HTTPS."""
+    """Bypass proxies for loopback and reject redirects for every endpoint."""
     hostname = parse.urlsplit(base).hostname
     if hostname in ("127.0.0.1", "localhost", "::1"):
-        opener = request.build_opener(request.ProxyHandler({}))
-        return opener.open(req, timeout=timeout)
-    return request.urlopen(req, timeout=timeout)
+        opener = request.build_opener(request.ProxyHandler({}), RejectRedirects())
+    else:
+        opener = request.build_opener(RejectRedirects())
+    return opener.open(req, timeout=timeout)
 
 
 def read_json(path: Path):
+    if path.is_symlink() or not path.is_file():
+        raise ComfyError(f"JSON input must be a regular non-symlink file: {path}")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -404,7 +413,9 @@ def main(argv=None) -> int:
             raise ComfyError("config.workflow_file must be a non-empty path")
         workflow_file = Path(workflow_value).expanduser()
         if not workflow_file.is_absolute():
-            workflow_file = (args.config.resolve().parent / workflow_file).resolve()
+            workflow_file = args.config.resolve().parent / workflow_file
+        # Check the unresolved final path first: calling resolve() here would
+        # erase evidence that the configured workflow itself is a symlink.
         verify_workflow_sha256(workflow_file, cfg.get("workflow_sha256"))
         workflow = read_json(workflow_file)
         workflow_format = cfg.get("workflow_format", "api")
