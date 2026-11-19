@@ -4,18 +4,18 @@
   "references": [
     {
       "id": "wc3rust-style-board",
-      "kind": "reference_image",
+      "kind": "documentation",
       "source_url": "https://github.com/kosoymiki/wc3rust/tree/tools/hud-artisan-v1/tools/hud_artisan",
       "revision": null,
       "sha256": null,
-      "license": "PROJECT_OWNED_PENDING_REVIEW",
+      "license": "PROJECT_AUTHORED",
       "license_evidence_url": null,
-      "allowed_use": "pixel_conditioning",
-      "conditioning_allowed": true,
+      "allowed_use": "textual_reference",
+      "conditioning_allowed": false,
       "commercial_use": "unknown",
       "redistribution": "unknown",
       "upstream_notice_required": false,
-      "notes": "Project-authored material board; attach exact file hash and owner approval before conditioning."
+      "notes": "Project-authored textual art-direction board; not a pixel reference. If exported visual boards are used for conditioning, add each exact file with hash and explicit owner approval."
     },
     {
       "id": "comfyui-core",
