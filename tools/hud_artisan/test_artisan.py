@@ -338,6 +338,15 @@ class Tests(unittest.TestCase):
             self.assertNotIn("TOP-SECRET-DO-NOT-LOG",combined)
             (drop/"fonts").mkdir()
             for name in doc["font_files"]:(drop/"fonts"/name).write_bytes(b"font-dependency-placeholder")
+            provenance_path=drop/"provenance.json"
+            valid_provenance=provenance_path.read_text()
+            malformed=json.loads(valid_provenance)
+            malformed["adapter_config_sha256"]="not-a-sha256"
+            provenance_path.write_text(json.dumps(malformed))
+            rejected_out=root/"rejected-pack"
+            self.assertEqual(artisan.ingest(manifest,jobs,drop,rejected_out,"strict",False),1)
+            self.assertFalse(rejected_out.exists(),"invalid provenance must never promote a pack")
+            provenance_path.write_text(valid_provenance)
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
