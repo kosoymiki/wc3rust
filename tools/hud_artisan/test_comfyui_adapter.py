@@ -44,6 +44,17 @@ class ComfyAdapterTests(unittest.TestCase):
             thread.join(timeout=2)
             server.server_close()
 
+    def test_read_json_enforces_a_bounded_read(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/"workflow.json"
+            source.write_text('{"x":"123456"}',encoding="utf-8")
+            self.assertEqual(adapter.read_json(source,max_bytes=32),{"x":"123456"})
+            with self.assertRaisesRegex(adapter.ComfyError,"exceeds 8 byte limit"):
+                adapter.read_json(source,max_bytes=8)
+
     def test_read_json_rejects_symlink_inputs(self):
         import tempfile
         from pathlib import Path
