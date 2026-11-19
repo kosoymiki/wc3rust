@@ -68,6 +68,42 @@
       "type": "number",
       "minimum": 0.2,
       "maximum": 30
+    },
+    "workflow_format": {
+      "enum": [
+        "api",
+        "ui",
+        "auto"
+      ],
+      "default": "api"
+    },
+    "alpha_strategy": {
+      "enum": [
+        "preserve",
+        "chroma_key"
+      ],
+      "default": "preserve"
+    },
+    "chroma_key_color": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "default": [
+        255,
+        0,
+        255
+      ]
+    },
+    "chroma_key_tolerance": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255,
+      "default": 48
     }
   },
   "$defs": {
