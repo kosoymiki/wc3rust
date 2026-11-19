@@ -9,6 +9,7 @@ If you use a different local renderer, OpenCode agent workflow or a custom CLI, 
 1. Copy comfyui.termux.example.json and adapter.termux.example.json into build/hud-artisan.
 2. The Termux profile reads ~/src/comfyui-termux/default_workflow.json directly as a saved canvas workflow (workflow_format=ui).
 3. Its current node map is positive prompt 67, negative prompt 71, latent width/height 68, seed 70 and SaveImage 9.
+4. The example profile pins the exact workflow bytes with workflow_sha256. The adapter and read-only doctor fail closed if the file changes; after an intentional workflow edit, inspect the new graph/model loaders and explicitly refresh the SHA-256 pin.
 4. The adapter converts the canvas graph into the API prompt format using the running server's /object_info response; no manual graph re-export is needed.
 5. If the workflow changes, update the node IDs or set workflow_format=api after exporting an API prompt.
 6. Run the dispatcher with max_parallel=1 and point COMFYUI_URL at the loopback endpoint if it is not the default.
