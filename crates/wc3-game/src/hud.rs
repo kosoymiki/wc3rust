@@ -2111,29 +2111,39 @@ fn log_missing_glyph(character: char) {
     }
 }
 
-/// Process-wide HUD face set, rasterised once per process from `root` and the
-/// operator's installed archive.
+/// Process-wide HUD face cache, keyed by the canonical pack root. A failed
+/// load is deliberately not cached so repaired packs can be retried.
 pub fn pack_fonts(root: &std::path::Path) -> Option<&'static HudFonts> {
-    static FONTS: std::sync::OnceLock<Option<HudFonts>> = std::sync::OnceLock::new();
-    FONTS
-        .get_or_init(|| {
-            let fonts = HudFonts::load_from_root(root)?;
-            if let Err(error) = fonts.verify() {
-                crate::dev_log!("{error}");
-                return None;
-            }
-            crate::dev_log!(
-                "HUD_FONT primary={} serif={} sans={} numeric={} digits_tabular={} min_px={}",
-                fonts.primary_source,
-                fonts.paths[0],
-                fonts.paths[1],
-                fonts.paths[2],
-                fonts.numeric_tabular_primary,
-                MIN_TEXT_PX
-            );
-            Some(fonts)
-        })
-        .as_ref()
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static FONTS: OnceLock<Mutex<HashMap<std::path::PathBuf, &'static HudFonts>>> =
+        OnceLock::new();
+    let root = root.canonicalize().ok()?;
+    let cache = FONTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().ok()?;
+    if let Some(fonts) = cache.get(&root) {
+        return Some(*fonts);
+    }
+
+    let fonts = HudFonts::load_from_root(&root)?;
+    if let Err(error) = fonts.verify() {
+        crate::dev_log!("{error}");
+        return None;
+    }
+    crate::dev_log!(
+        "HUD_FONT primary={} serif={} sans={} numeric={} digits_tabular={} min_px={} pack={}",
+        fonts.primary_source,
+        fonts.paths[0],
+        fonts.paths[1],
+        fonts.paths[2],
+        fonts.numeric_tabular_primary,
+        MIN_TEXT_PX,
+        root.display()
+    );
+    let fonts = Box::leak(Box::new(fonts));
+    cache.insert(root, fonts);
+    Some(fonts)
 }
 
 pub fn sanitize_hud_text(text: &str) -> String {
