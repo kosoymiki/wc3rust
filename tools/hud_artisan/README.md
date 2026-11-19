@@ -1,4 +1,4 @@
-# HUD Artisan 1.1.0
+# HUD Artisan 1.2.0
 
 HUD Artisan is the provider-neutral art-production and quality-assurance pipeline for wc3rust.
 It compiles the authoritative HUD manifest into independent generation jobs. Any image model,
@@ -7,7 +7,7 @@ strict, provenance-verified import stage.
 
 ## Install
 
-Python 3.10+ is required. Planning and PNG structure validation use the standard library.
+Python 3.10+ is required. The working Termux ComfyUI host was observed at ComfyUI 0.46.0 / Python 3.14.10 / PyTorch 2.15.0; generator CI remains tested on Python 3.10–3.12. Planning and PNG structure validation use the standard library.
 Pillow is required for normalization, pixel inspection and contact sheets.
 
 ~~~sh
@@ -42,20 +42,17 @@ its stable job ID is derived from that hash. Every asset also receives its own d
 
 ### Optional local HTTP renderer adapter
 
-HUD Artisan includes an optional adapter for a locally running ComfyUI-compatible HTTP server. It is not required, and it is not a hosted service. No Comfy Cloud, paid endpoint, subscription or API key is part of the pipeline. If you use another local renderer, OpenCode agent workflow or custom CLI, skip this section and use the provider-neutral adapter contract. Export a local workflow in API format and copy the examples into a private build directory:
+HUD Artisan includes a production adapter for a locally running ComfyUI-compatible HTTP server. It is a first-class local renderer path, not a hosted service. The adapter accepts both ComfyUI API prompt JSON and the ordinary saved canvas workflow JSON (workflow_format: ui), converting the latter against the running server's /object_info schema. This means an existing working Termux workflow can be used directly without hand-exporting or hand-rebuilding an API graph. No Comfy Cloud, paid endpoint, subscription or API key is part of the pipeline. If you use another local renderer, OpenCode agent workflow or custom CLI, skip this section and use the provider-neutral adapter contract. Copy the adapter profiles into a private build directory. For the existing Termux Z-Image Turbo workflow, start from comfyui.termux.example.json and adapter.termux.example.json:
 
 ~~~sh
 mkdir -p build/hud-artisan
 cp tools/hud_artisan/adapter.example.json build/hud-artisan/adapter.json
-cp tools/hud_artisan/comfyui.example.json build/hud-artisan/comfyui.json
-# Save your exported ComfyUI API workflow as:
-# build/hud-artisan/comfyui_api_workflow.json
+cp tools/hud_artisan/comfyui.termux.example.json build/hud-artisan/comfyui.json
+cp tools/hud_artisan/adapter.termux.example.json build/hud-artisan/adapter.json
+# The Termux profile reads ~/src/comfyui-termux/default_workflow.json directly.
 ~~~
 
-Edit comfyui.json: point "workflow_file" at the exported API JSON and map the five inputs to your
-actual workflow node IDs (positive_prompt, negative_prompt, width, height, seed). Set
-"output_node_id" to the final SaveImage node. The example IDs are placeholders, not a working
-workflow. Keep private workflow/checkpoint files out of Git.
+The Termux profile is already mapped to the discovered Z-Image canvas workflow: positive prompt node 67, negative prompt 71, latent width/height node 68, seed node 70 and SaveImage node 9. It reads ~/src/comfyui-termux/default_workflow.json; change only that path if your workflow lives elsewhere. For other workflows, update the five node mappings and output node. Keep private workflow/checkpoint files out of Git.
 
 Set COMFYUI_URL when the server is not http://127.0.0.1:8188, then run:
 
@@ -67,7 +64,7 @@ python3 tools/hud_artisan/generate.py dispatch \
   --drop build/hud-artisan/drop --parallel 1
 ~~~
 
-The optional local adapter injects exact prompts, dimensions and the compiled per-asset seed, checks the SaveImage node, waits for the matching job and downloads its output. It rejects invalid PNGs, wrong dimensions and insufficient transparency. See COMFYUI.md and comfyui.schema.json. OpenCode 2 remains the agent/review layer; it is not coupled to this renderer.
+The local adapter injects exact prompts, model-compatible render dimensions and the compiled per-asset seed, checks the SaveImage node, waits for the matching job and downloads its output. Small HUD assets are rendered on a larger 16-pixel-aligned latent canvas and Lanczos-downsampled to exact native dimensions. Alpha-required assets request a uniform magenta background; the adapter removes only border-connected chroma-key regions, cuts the declared frame aperture and rejects insufficient transparency. This is a deterministic matte, not a semantic segmentation model; visible magenta contamination remains a QA rejection. See COMFYUI.md and comfyui.schema.json. The Termux profile runs sequentially (max_parallel: 1) to avoid CPU/RAM contention. OpenCode 2 remains the agent/review layer; it is not coupled to this renderer.
 
 A custom CLI/API adapter is also supported: command is an argv array, never a shell string, with
 {job_json}, {output_path} and {job_id} placeholders. Bounded concurrency, retries, timeouts,
