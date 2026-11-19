@@ -89,7 +89,7 @@ These papers do not demonstrate Warcraft III asset production. They support cont
 
 **P0 — already implemented / retain:** deterministic manifest plan, job hashes, local renderer adapter, transactional import, atlas coordinate assembly, provenance, resumable dispatch, schema-backed review evidence, CI matrix.
 
-**P1 — implement next:** reference ledger + schema; alpha diagnostics; contact-sheet variants; workflow/model/node lock metadata; BLP1 conversion test harness; README correction and test coverage.
+**P1 — delivered in this iteration:** populated 19-entry donor/reference ledger + enforcing schema + CI tests; calibrated dual-review thresholds (8.5 average, 7 minimum criterion, 0.80 confidence), preserved non-blocking feedback; README engine-manifest correction and expanded source matrix. **P1 — remaining engineering work:** alpha diagnostics; light/dark contact-sheet variants; workflow/model/node lock metadata; BLP1 conversion and round-trip test harness.
 
 **P2 — only after first real render:** structural-guide conditioning, IP-Adapter A/B workflow, nine-slice visual metric, halo correction, state derivation experiments.
 
