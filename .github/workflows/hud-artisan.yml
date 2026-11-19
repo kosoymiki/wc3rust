@@ -124,17 +124,17 @@ jobs:
           draw.rectangle((8, 8, 23, 23), fill=(218, 194, 132, 0))
           image.save(sys.argv[1])
           PY
-          python tools/hud_artisan/blp_harness.py roundtrip \\
-            --input "$tmp/roundtrip/source.png" \\
-            --work "$tmp/roundtrip/work" \\
-            --encode-arg "$(command -v python)" \\
-            --encode-arg "$GITHUB_WORKSPACE/tools/png_to_blp1.py" \\
-            --encode-arg "{input}" --encode-arg "{output}" \\
-            --decode-arg=cargo --decode-arg=run --decode-arg=--quiet \\
-            --decode-arg=--manifest-path --decode-arg="$tmp/Cargo.toml" \\
-            --decode-arg=-p --decode-arg=wc3-formats --decode-arg=--example \\
-            --decode-arg=blp_dump_rgba --decode-arg=-- --decode-arg="{input}" \\
-            --decode-arg="{output}" --decode-raw-rgba \\
+          python tools/hud_artisan/blp_harness.py roundtrip \
+            --input "$tmp/roundtrip/source.png" \
+            --work "$tmp/roundtrip/work" \
+            --encode-arg "$(command -v python)" \
+            --encode-arg "$GITHUB_WORKSPACE/tools/png_to_blp1.py" \
+            --encode-arg "{input}" --encode-arg "{output}" \
+            --decode-arg=cargo --decode-arg=run --decode-arg=--quiet \
+            --decode-arg=--manifest-path --decode-arg="$tmp/Cargo.toml" \
+            --decode-arg=-p --decode-arg=wc3-formats --decode-arg=--example \
+            --decode-arg=blp_dump_rgba --decode-arg=-- --decode-arg="{input}" \
+            --decode-arg="{output}" --decode-raw-rgba \
             --report "$tmp/roundtrip/roundtrip.json"
           python - "$tmp/roundtrip/roundtrip.json" <<'PY'
           import json, sys
