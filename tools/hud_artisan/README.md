@@ -1,4 +1,4 @@
-# HUD Artisan 1.0.1
+# HUD Artisan 1.1.0
 
 HUD Artisan is the provider-neutral art-production and quality-assurance pipeline for wc3rust.
 It compiles the authoritative HUD manifest into independent generation jobs. Any image model,
