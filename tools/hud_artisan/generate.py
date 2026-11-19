@@ -1002,10 +1002,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         if not isinstance(row,dict) or row.get("status")!="succeeded":
             return None
         if (row.get("output")!=job["output"] or not isinstance(row.get("generated_at"),str)
+                or not row.get("generated_at").strip()
                 or row.get("prompt_sha256")!=job["prompt_sha256"]
                 or row.get("negative_prompt_sha256")!=job["negative_prompt_sha256"]
-                or row.get("seed")!=job["seed"]
-                or row.get("width")!=job["width"] or row.get("height")!=job["height"]):
+                or type(row.get("seed")) is not int or row.get("seed")!=job["seed"]
+                or type(row.get("width")) is not int or row.get("width")!=job["width"]
+                or type(row.get("height")) is not int or row.get("height")!=job["height"]):
             return None
         digest=row.get("sha256")
         if not isinstance(digest,str) or not re.fullmatch(r"[a-f0-9]{64}",digest):
