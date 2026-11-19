@@ -402,14 +402,16 @@ FAMILY_DIRECTION = {
     "misc-ui": "One functional fantasy RTS interface object with deliberate silhouette, clear hierarchy and no unrelated scenery."
 }
 
-def render_dimensions(width:int,height:int,max_edge:int=1024)->tuple[int,int]:
+def render_dimensions(width:int,height:int,max_edge:int=1024,min_side:int=64)->tuple[int,int]:
     """Choose a model-friendly latent canvas; native dimensions are restored after inference."""
     if type(width) is not int or type(height) is not int or width<1 or height<1:
         raise ValueError("render dimensions require positive integer native dimensions")
-    scale=max(1.0,max_edge/max(width,height))
+    scale=max(1.0,max_edge/max(width,height),min_side/min(width,height))
     def multiple16(value:float)->int:
         return max(16,int(round(value/16.0))*16)
     rw,rh=multiple16(width*scale),multiple16(height*scale)
+    if max(rw,rh)>4096:
+        raise ValueError(f"render canvas {rw}x{rh} exceeds the 4096px per-axis limit")
     if rw*rh>MAX_PIXELS:
         raise ValueError(f"render canvas {rw}x{rh} exceeds pixel budget")
     return rw,rh
