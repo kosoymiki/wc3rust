@@ -102,6 +102,14 @@ def validate_job(job: dict) -> None:
         raise ComfyError("job.requires_alpha must be a boolean")
     if "family" in job and not isinstance(job["family"], str):
         raise ComfyError("job.family must be a string")
+    for key in ("render_width", "render_height"):
+        value = job.get(key, job["width"] if key == "render_width" else job["height"])
+        if type(value) is not int or not 16 <= value <= 8192 or value % 16:
+            raise ComfyError(f"job.{key} must be a multiple of 16 between 16 and 8192")
+    render_width = job.get("render_width", job["width"])
+    render_height = job.get("render_height", job["height"])
+    if render_width * render_height > 64_000_000:
+        raise ComfyError("job render canvas exceeds the supported pixel budget")
 
 
 def apply_node_input(workflow: dict, mapping: dict, key: str, value):
@@ -195,6 +203,130 @@ def download_image(base: str, image_meta: dict, timeout: int) -> bytes:
     return data
 
 
+def ui_workflow_to_api(workflow: dict, object_info: dict) -> dict:
+    """Convert a saved ComfyUI canvas workflow into the API prompt format."""
+    nodes = workflow.get("nodes")
+    links = workflow.get("links")
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        raise ComfyError("UI workflow must contain nodes[] and links[] arrays")
+    link_map = {}
+    for link in links:
+        if not isinstance(link, list) or len(link) < 5:
+            raise ComfyError("UI workflow contains a malformed link")
+        link_id, origin_id, origin_slot, target_id, target_slot = link[:5]
+        if link_id in link_map:
+            raise ComfyError(f"UI workflow has duplicate link id {link_id!r}")
+        link_map[link_id] = (str(origin_id), origin_slot, str(target_id), target_slot)
+
+    prompt = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ComfyError("UI workflow node must be an object")
+        node_id = str(node.get("id", ""))
+        class_type = node.get("type")
+        if not node_id or not isinstance(class_type, str) or not class_type:
+            raise ComfyError("UI workflow node requires id and type")
+        if str(node.get("mode", 0)) not in ("0",):
+            raise ComfyError(f"UI workflow node {node_id} is disabled or bypassed; normalize it before generation")
+        schema = object_info.get(class_type)
+        if not isinstance(schema, dict):
+            raise ComfyError(f"ComfyUI server does not expose node class {class_type!r} in /object_info")
+        sockets = node.get("inputs", [])
+        if not isinstance(sockets, list):
+            raise ComfyError(f"UI workflow node {node_id} inputs must be an array")
+        socket_names = set()
+        api_inputs = {}
+        for socket in sockets:
+            if not isinstance(socket, dict) or not isinstance(socket.get("name"), str):
+                raise ComfyError(f"UI workflow node {node_id} has a malformed input socket")
+            name = socket["name"]
+            socket_names.add(name)
+            link_id = socket.get("link")
+            if link_id is None:
+                continue
+            link = link_map.get(link_id)
+            if link is None:
+                raise ComfyError(f"UI workflow node {node_id}.{name} references missing link {link_id}")
+            origin_id, origin_slot, target_id, target_slot = link
+            if target_id != node_id:
+                raise ComfyError(f"UI workflow link {link_id} targets {target_id}, not node {node_id}")
+            api_inputs[name] = [origin_id, origin_slot]
+
+        input_order = schema.get("input_order", {})
+        if not isinstance(input_order, dict):
+            raise ComfyError(f"ComfyUI /object_info has no input_order for {class_type}")
+        ordered_names = []
+        for group in ("required", "optional"):
+            values = input_order.get(group, [])
+            if not isinstance(values, list):
+                raise ComfyError(f"ComfyUI input_order.{group} is malformed for {class_type}")
+            ordered_names.extend(name for name in values if isinstance(name, str))
+        widget_names = [name for name in ordered_names if name not in socket_names]
+        widget_values = node.get("widgets_values", [])
+        if widget_values is None:
+            widget_values = []
+        if not isinstance(widget_values, list):
+            raise ComfyError(f"UI workflow node {node_id} widgets_values must be an array")
+        index = 0
+        for name in widget_names:
+            if index >= len(widget_values):
+                raise ComfyError(f"UI workflow node {node_id} is missing widget value for {name}")
+            api_inputs[name] = widget_values[index]
+            index += 1
+            spec = (schema.get("input", {}).get("required", {}).get(name)
+                    or schema.get("input", {}).get("optional", {}).get(name))
+            options = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if options.get("control_after_generate"):
+                index += 1
+        if index != len(widget_values):
+            raise ComfyError(
+                f"UI workflow node {node_id} has {len(widget_values) - index} unmapped widget value(s); "
+                "export an API workflow or update the converter for this node type"
+            )
+        required = schema.get("input", {}).get("required", {})
+        if isinstance(required, dict):
+            missing = [name for name in required if name not in api_inputs]
+            if missing:
+                raise ComfyError(f"UI workflow node {node_id} has unresolved required inputs: {', '.join(missing)}")
+        prompt[node_id] = {"class_type": class_type, "inputs": api_inputs}
+    if not prompt:
+        raise ComfyError("UI workflow contains no active nodes")
+    return prompt
+
+
+def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
+    """Remove only chroma-key regions connected to the image border."""
+    from PIL import ImageDraw
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
+    width, height = image.size
+    transparent = (0, 0, 0, 0)
+    seeds = [(x, 0) for x in range(width)]
+    seeds.extend((x, height - 1) for x in range(width))
+    seeds.extend((0, y) for y in range(1, height - 1))
+    seeds.extend((width - 1, y) for y in range(1, height - 1))
+    for point in seeds:
+        pixel = image.getpixel(point)
+        if pixel[3] and sum(abs(pixel[i] - key[i]) for i in range(3)) <= tolerance * 3:
+            ImageDraw.floodfill(image, point, transparent, thresh=tolerance * 3)
+    if image.getchannel("A").getbbox() is None:
+        raise ComfyError("chroma-key removal erased the entire image; inspect background/key contrast")
+    return image
+
+
+def enforce_frame_aperture(image):
+    """Make the declared central portrait/minimap viewport truly transparent."""
+    from PIL import ImageDraw
+    width, height = image.size
+    ImageDraw.Draw(image).rectangle(
+        (int(width * 0.30), int(height * 0.30),
+         max(int(width * 0.70) - 1, int(width * 0.30)),
+         max(int(height * 0.70) - 1, int(height * 0.30))),
+        fill=(0, 0, 0, 0),
+    )
+    return image
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run one HUD Artisan job through ComfyUI")
     parser.add_argument("--config", required=True, type=Path)
@@ -233,12 +365,27 @@ def main(argv=None) -> int:
         workflow_value = cfg.get("workflow_file")
         if not isinstance(workflow_value, str) or not workflow_value.strip():
             raise ComfyError("config.workflow_file must be a non-empty path")
-        workflow_file = Path(workflow_value)
+        workflow_file = Path(workflow_value).expanduser()
         if not workflow_file.is_absolute():
             workflow_file = (args.config.resolve().parent / workflow_file).resolve()
         workflow = read_json(workflow_file)
+        workflow_format = cfg.get("workflow_format", "api")
+        if workflow_format not in ("api", "ui", "auto"):
+            raise ComfyError("workflow_format must be api, ui or auto")
+        is_ui_workflow = isinstance(workflow.get("nodes"), list)
+        if workflow_format == "ui" or (workflow_format == "auto" and is_ui_workflow):
+            if not is_ui_workflow:
+                raise ComfyError("workflow_format=ui requires a ComfyUI canvas workflow with nodes[]")
+            object_info = http_json(base, "/object_info", timeout=timeout)
+            workflow = ui_workflow_to_api(workflow, object_info)
+        elif workflow_format == "api":
+            if not workflow or not all(isinstance(node, dict) and isinstance(node.get("class_type"), str)
+                                       for node in workflow.values()):
+                raise ComfyError("workflow_format=api requires a ComfyUI API prompt object")
+        else:
+            raise ComfyError("workflow_format=auto could not identify a supported workflow format")
         if not workflow:
-            raise ComfyError("ComfyUI API workflow must contain at least one node")
+            raise ComfyError("ComfyUI workflow must contain at least one node")
 
         mappings = cfg.get("node_inputs")
         required_mappings = ("positive_prompt", "negative_prompt", "width", "height", "seed")
@@ -252,8 +399,8 @@ def main(argv=None) -> int:
             target = apply_node_input(workflow, mapping, key, {
                 "positive_prompt": job["prompt"],
                 "negative_prompt": job["negative_prompt"],
-                "width": job["width"],
-                "height": job["height"],
+                "width": job.get("render_width", job["width"]),
+                "height": job.get("render_height", job["height"]),
                 "seed": job["seed"],
             }[key])
             if target in mapped_inputs:
