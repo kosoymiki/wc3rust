@@ -167,7 +167,9 @@ def validate_engine_contract(doc:dict[str,Any])->None:
     if not isinstance(entries,list) or len(entries)!=20:
         raise ValueError(f"engine contract commandbuttons atlas requires 20 entries, found {len(entries) if isinstance(entries,list) else 0}")
     font_files=doc.get("font_files")
-    if not isinstance(font_files,list) or len(font_files)!=5 or set(font_files)!=set(ENGINE_FONT_FILES):
+    if (not isinstance(font_files,list) or len(font_files)!=5
+            or any(not isinstance(name,str) for name in font_files)
+            or set(font_files)!=set(ENGINE_FONT_FILES)):
         raise ValueError("engine contract font_files must contain the five named HUD font assets")
     by_name={a.get("name"):a for a in assets}
     atlas_ids=set();atlas_sources=set();atlas_slots=set()
