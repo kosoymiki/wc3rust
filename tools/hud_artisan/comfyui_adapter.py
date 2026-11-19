@@ -88,10 +88,11 @@ def validate_job(job: dict) -> None:
     for key in ("prompt", "negative_prompt"):
         if not isinstance(job.get(key), str) or not job[key].strip():
             raise ComfyError(f"job.{key} must be a non-empty string")
-    for key in ("width", "height"):
-        value = job.get(key)
-        if type(value) is not int or value < 1 or value > 8192 or value * job.get("height", 1) > 64_000_000:
-            raise ComfyError(f"job.{key} is outside the supported integer/pixel range")
+    width, height = job.get("width"), job.get("height")
+    if (type(width) is not int or type(height) is not int
+            or not 1 <= width <= 8192 or not 1 <= height <= 8192
+            or width * height > 64_000_000):
+        raise ComfyError("job width/height are outside the supported integer/pixel range")
     seed = job.get("seed")
     if type(seed) is not int or seed < 0 or seed > 0xFFFFFFFF:
         raise ComfyError("job.seed must be an unsigned 32-bit integer")
