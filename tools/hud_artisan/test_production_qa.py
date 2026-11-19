@@ -94,6 +94,36 @@ class ProductionQATests(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>",html)
         self.assertIn('src="thumbnails/safe.png"',html)
 
+    def test_state_key_uses_rightmost_state_token(self):
+        self.assertEqual(qa.state_key("button_active_disabled"),("button_active","disabled"))
+        self.assertEqual(qa.state_key("ability_icon_pressed"),("ability_icon","pressed"))
+
+    def test_atlas_overlap_is_reported(self):
+        Image.new("RGBA",(16,8),(0,0,0,0)).save(self.pack/"atlas.png")
+        report=qa.atlas_qa({"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
+            {"id":"one","x":0,"y":0,"w":10,"h":8},
+            {"id":"two","x":8,"y":0,"w":8,"h":8}
+        ]}}},self.pack,self.root/"atlas-out",None)
+        self.assertEqual(report["scanned"],1)
+        self.assertIn("overlaps previously declared cell",report["findings"][0]["reason"])
+
+    def test_empty_unmapped_atlas_cell_cannot_false_pass_production_qa(self):
+        opaque=self.make_state("plain_icon",4,(140,100,40,255))
+        Image.new("RGBA",(8,8),(0,0,0,0)).save(self.pack/"atlas.png")
+        mp=self.root/"manifest.json"
+        mp.write_text(json.dumps({"assets":[opaque],"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
+            {"id":"empty","x":0,"y":0,"w":8,"h":8}
+        ]}}}))
+        report=qa.run(mp,self.pack,self.root/"qa-atlas",None,0.45,0.015,0.45)
+        self.assertEqual(report["summary"]["atlas_findings"],1)
+        self.assertFalse(report["summary"]["pass"])
+
+    def test_qa_rejects_invalid_state_thresholds(self):
+        asset=self.make_state("plain_icon",4,(140,100,40,255))
+        mp=self.root/"manifest.json";mp.write_text(json.dumps({"assets":[asset]}))
+        with self.assertRaisesRegex(ValueError,"state_iou_min"):
+            qa.run(mp,self.pack,self.root/"bad-thresholds",None,1.5,0.015,0.45)
+
     def test_nine_slice_stretch_zone_metrics(self):
         image = Image.new("RGBA", (64, 64), (20, 30, 40, 255))
         draw = ImageDraw.Draw(image)
