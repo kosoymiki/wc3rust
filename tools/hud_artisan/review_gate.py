@@ -177,14 +177,17 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
         session_id = reviewer["session_id"].strip()
         if not rid or not provider or not model or not session_id:
             raise ValueError("reviewer ID, provider, model and session ID must not be blank")
-        if rid != reviewer["reviewer_id"] or session_id != reviewer["session_id"]:
-            raise ValueError("reviewer IDs and session IDs must not contain surrounding whitespace")
+        if (rid != reviewer["reviewer_id"] or provider != reviewer["provider"]
+                or model != reviewer["model"] or session_id != reviewer["session_id"]):
+            raise ValueError("reviewer ID, provider, model and session ID must not contain surrounding whitespace")
         if rid in ids or model in models or role in roles or session_id in sessions:
             raise ValueError("reviewers must have distinct IDs, model identifiers, roles and session IDs")
         ids.add(rid)
         models.add(model)
         roles.add(role)
         sessions.add(session_id)
+        if len(reviewer["review_prompt"].strip()) < 80:
+            raise ValueError(f"{rid}: review prompt must contain at least 80 non-whitespace characters")
         prompt_hash = hashlib.sha256(reviewer["review_prompt"].encode("utf-8")).hexdigest()
         if prompt_hash != reviewer["review_prompt_sha256"]:
             raise ValueError(f"{rid}: review prompt hash mismatch")
@@ -192,6 +195,13 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
         if reviewer["raw_response_file"] in evidence_files:
             raise ValueError("reviewers must have separate raw response evidence files")
         evidence_files.add(reviewer["raw_response_file"])
+        raw_size = raw_path.stat().st_size
+        if raw_size < 1 or raw_size > 10 * 1024 * 1024:
+            raise ValueError(f"{rid}: raw reviewer response size must be between 1 byte and 10 MiB")
+        try:
+            raw_path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ValueError(f"{rid}: raw reviewer response must be UTF-8 text") from exc
         if digest(raw_path) != reviewer["raw_response_sha256"]:
             raise ValueError(f"{rid}: raw reviewer response hash mismatch")
     if roles != ROLES:
