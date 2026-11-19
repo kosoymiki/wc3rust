@@ -913,6 +913,32 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     cwd=Path(cwd_value).expanduser()
     if not cwd.is_absolute():cwd=(adapter_path.resolve().parent/cwd).resolve()
     if not cwd.is_dir():raise ValueError(f"adapter working_directory missing: {cwd}")
+    dependency_files=cfg.get("dependency_files",[])
+    if not isinstance(dependency_files,list) or any(not isinstance(item,str) or not item.strip() for item in dependency_files):
+        raise ValueError("adapter.dependency_files must be an array of non-empty paths")
+    dependencies={}
+    for item in dependency_files:
+        candidate=Path(item).expanduser()
+        if not candidate.is_absolute():candidate=(adapter_path.resolve().parent/candidate)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ValueError(f"adapter dependency must be a regular non-symlink file: {candidate}")
+        candidate=candidate.resolve()
+        dependencies[str(candidate)]=sha(candidate.read_bytes())
+    # Automatically fingerprint file arguments such as local adapter scripts and config files.
+    # Executable argv[0] is excluded to avoid hashing the Python/runtime binary.
+    for part in command[1:]:
+        if not isinstance(part,str) or not part or "{" in part or part.startswith("-"):
+            continue
+        candidate=Path(part).expanduser()
+        if not candidate.is_absolute():candidate=cwd/candidate
+        if candidate.is_symlink():
+            raise ValueError(f"command dependency must not be a symlink: {candidate}")
+        if candidate.is_file():
+            candidate=candidate.resolve()
+            dependencies[str(candidate)]=sha(candidate.read_bytes())
+    fingerprint_payload={"adapter_config_sha256":sha(adapter_path.read_bytes()),
+                         "dependencies":[{"path":path,"sha256":digest} for path,digest in sorted(dependencies.items())]}
+    adapter_digest=sha(json.dumps(fingerprint_payload,sort_keys=True,separators=(",",":")).encode("utf-8"))
     image_modules=pil_modules()
     if image_modules is None:
         raise RuntimeError("provider dispatch requires Pillow; install tools/hud_artisan/requirements.txt")
