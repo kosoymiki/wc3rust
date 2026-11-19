@@ -4,6 +4,20 @@ on:
     paths:
       - "tools/hud_artisan/**"
       - "crates/wc3-formats/**"
+      - "crates/wc3-game/**"
+      - "crates/wc3-core/**"
+      - "crates/wc3-mpq/**"
+      - "crates/wc3-re/**"
+      - "crates/wc3-assetdb/**"
+      - "crates/wc3-audio/**"
+      - "crates/wc3-data/**"
+      - "crates/wc3-path/**"
+      - "crates/wc3-sim/**"
+      - "crates/wc3-anim/**"
+      - "crates/wc3-render/**"
+      - "crates/wc3-input/**"
+      - "crates/wc3-bink/**"
+      - "tools/hud_pack_check.py"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/hud-artisan.yml"
@@ -30,6 +44,44 @@ jobs:
       - run: python -m pip install -r tools/hud_artisan/requirements.txt
       - run: python -m compileall -q tools/hud_artisan
       - run: python -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
+  hud-pack-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # checkout v7
+      - name: Compile and run HUD pack loader regression tests
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/crates"
+          for crate in wc3-game wc3-core wc3-formats wc3-mpq wc3-re wc3-assetdb wc3-audio wc3-data wc3-path wc3-sim wc3-anim wc3-render wc3-input wc3-bink; do
+            cp -R "crates/$crate" "$tmp/crates/"
+          done
+          cat > "$tmp/Cargo.toml" <<'EOF'
+          [workspace]
+          resolver = "2"
+          members = [
+            "crates/wc3-game", "crates/wc3-core", "crates/wc3-formats",
+            "crates/wc3-mpq", "crates/wc3-re", "crates/wc3-assetdb",
+            "crates/wc3-audio", "crates/wc3-data", "crates/wc3-path",
+            "crates/wc3-sim", "crates/wc3-anim", "crates/wc3-render",
+            "crates/wc3-input", "crates/wc3-bink"
+          ]
+          [workspace.package]
+          version = "0.1.0"
+          edition = "2024"
+          license = "MIT OR Apache-2.0"
+          [workspace.dependencies]
+          glam = "0.30"
+          wgpu = "30.0.1"
+          pollster = "0.4"
+          libc = "0.2"
+          flate2 = "1"
+          bzip2 = "0.5"
+          EOF
+          cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::pack_file_rejects_traversal_and_symlink_components
+          cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::atlas_validator_rejects_bounds_overlap_and_duplicate_ids
+          cargo test --manifest-path "$tmp/Cargo.toml" -p wc3-game --lib hudskin::pack::tests::numeric_manifest_helpers_reject_invalid_values
+
   blp-decoder:
     runs-on: ubuntu-latest
     timeout-minutes: 15
