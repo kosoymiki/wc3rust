@@ -388,6 +388,7 @@ class Tests(unittest.TestCase):
                 "import json,sys,os\nfrom PIL import Image,ImageDraw\n"
                 f"open({str(counter)!r},'a').write('x')\n"
                 "print(os.environ.get('HUD_ARTISAN_TEST_SECRET',''))\n"
+                "if os.environ.get('HUD_ARTISAN_TEST_SECRET') == 'FAIL-SELECTIVE-REPAIR': raise SystemExit(7)\n"
                 "j=json.load(open(sys.argv[1],encoding='utf-8'))\n"
                 "w,h=j['width'],j['height']\n"
                 "im=Image.new('RGBA',(w,h),(0,0,0,0) if j['requires_alpha'] else (40,35,30,255))\n"
@@ -448,6 +449,18 @@ class Tests(unittest.TestCase):
                                  "selective repair must render only the chosen asset")
                 repaired_prov=json.loads((drop/"provenance.json").read_text())
                 self.assertEqual({x["job_id"] for x in repaired_prov["jobs"]},
+                                 {x["job_id"] for x in repaired_plan["jobs"]})
+                # A failed selective attempt must not destroy the last full-batch
+                # receipt; a retry of that same selected asset can still verify all
+                # untouched outputs and complete the new receipt.
+                os.environ["HUD_ARTISAN_TEST_SECRET"]="FAIL-SELECTIVE-REPAIR"
+                self.assertEqual(artisan.dispatch(manifest,repair_jobs,adapter,drop,1,only=["panel"]),1)
+                self.assertTrue((drop/"provenance.json").is_file(),
+                                "failed selective repair must retain prior full-batch provenance")
+                os.environ["HUD_ARTISAN_TEST_SECRET"]="TOP-SECRET-DO-NOT-LOG"
+                self.assertEqual(artisan.dispatch(manifest,repair_jobs,adapter,drop,1,only=["panel"]),0)
+                retried_prov=json.loads((drop/"provenance.json").read_text())
+                self.assertEqual({x["job_id"] for x in retried_prov["jobs"]},
                                  {x["job_id"] for x in repaired_plan["jobs"]})
                 jobs=repair_jobs
             finally:
