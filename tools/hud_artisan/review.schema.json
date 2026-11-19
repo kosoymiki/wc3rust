@@ -53,7 +53,8 @@
             "const": true
           }
         }
-      }
+      },
+      "maxItems": 2
     },
     "reviews": {
       "type": "object",
