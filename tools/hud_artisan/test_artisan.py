@@ -309,7 +309,7 @@ class Tests(unittest.TestCase):
                 calls.append((endpoint,payload,timeout))
                 if endpoint=="/prompt":return {"prompt_id":"fake-prompt-1"}
                 if endpoint=="/history/fake-prompt-1":
-                    return {"fake-prompt-1":{"outputs":{"9":{"images":[
+                    return {"fake-prompt-1":{"status":{"status_str":"success","completed":True},"outputs":{"9":{"images":[
                         {"filename":"frame.png","subfolder":"","type":"output"}]}}}}
                 raise AssertionError(f"unexpected ComfyUI endpoint: {endpoint}")
             def fake_download_image(base,image_meta,timeout):
@@ -319,7 +319,7 @@ class Tests(unittest.TestCase):
             comfy.http_json=fake_http_json
             comfy.download_image=fake_download_image
             workflow={"6":{"inputs":{"text":"old-positive"}},"7":{"inputs":{"text":"old-negative"}},
-              "5":{"inputs":{"width":512,"height":512}},"3":{"inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{}}}
+              "5":{"inputs":{"width":512,"height":512}},"3":{"inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{"images":["8",0]}}}
             (root/"workflow.json").write_text(json.dumps(workflow))
             config={"schema_version":1,"server":"http://127.0.0.1:8188","workflow_file":"workflow.json",
               "node_inputs":{"positive_prompt":{"node_id":"6","input":"text"},
