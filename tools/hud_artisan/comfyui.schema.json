@@ -84,10 +84,11 @@
     },
     "alpha_strategy": {
       "enum": [
+        "auto",
         "preserve",
         "chroma_key"
       ],
-      "default": "preserve"
+      "default": "auto"
     },
     "chroma_key_color": {
       "type": "array",
