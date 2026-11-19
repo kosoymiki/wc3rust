@@ -6,7 +6,7 @@ one PNG per job into a drop directory. Python stdlib handles planning and PNG in
 Pillow provides decode, normalization and pixel-level QA.
 """
 from __future__ import annotations
-import argparse, concurrent.futures, datetime, hashlib, json, math, os, re, shutil, struct, subprocess, sys, tempfile, zlib
+import argparse, concurrent.futures, datetime, hashlib, json, math, os, re, shutil, signal, struct, subprocess, sys, tempfile, zlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -904,9 +904,28 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         for attempt in range(retries+1):
             try:
                 if out.exists():out.unlink()
+                timed_out=False
                 with tempfile.TemporaryFile(mode="w+t",encoding="utf-8",errors="replace") as stdout_file, \
                      tempfile.TemporaryFile(mode="w+t",encoding="utf-8",errors="replace") as stderr_file:
-                    result=subprocess.run(argv,cwd=cwd,env=env,stdout=stdout_file,stderr=stderr_file,timeout=timeout,check=False)
+                    process=subprocess.Popen(
+                        argv,cwd=cwd,env=env,stdout=stdout_file,stderr=stderr_file,
+                        start_new_session=(os.name=="posix"),
+                        creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name=="nt" else 0),
+                    )
+                    try:
+                        returncode=process.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        timed_out=True
+                        if os.name=="posix":
+                            try: os.killpg(process.pid,signal.SIGTERM)
+                            except ProcessLookupError: pass
+                            try: process.wait(timeout=3)
+                            except subprocess.TimeoutExpired:
+                                try: os.killpg(process.pid,signal.SIGKILL)
+                                except ProcessLookupError: pass
+                                process.wait()
+                        else:
+                            process.kill();process.wait()
                     stdout_file.flush();stderr_file.flush()
                     stdout_file.seek(0);stderr_file.seek(0)
                     stdout=stdout_file.read(MAX_LOG_CHARS+1);stderr=stderr_file.read(MAX_LOG_CHARS+1)
@@ -917,8 +936,9 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                         stderr=stderr.replace(secret,"[REDACTED]")
                 if len(stdout)>MAX_LOG_CHARS: stdout=stdout[:MAX_LOG_CHARS]+"\n[stdout truncated]"
                 if len(stderr)>MAX_LOG_CHARS: stderr=stderr[:MAX_LOG_CHARS]+"\n[stderr truncated]"
-                history.append(f"attempt={attempt+1} exit={result.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
-                if result.returncode!=0:raise RuntimeError(f"adapter exit code {result.returncode}")
+                history.append(f"attempt={attempt+1} exit={returncode}\\nSTDOUT:\\n{stdout}\\nSTDERR:\\n{stderr}")
+                if timed_out:raise RuntimeError(f"adapter timed out after {timeout}s; process group terminated")
+                if returncode!=0:raise RuntimeError(f"adapter exit code {returncode}")
                 if not out.is_file():raise RuntimeError("adapter returned success but output file is missing")
                 w,h,depth,color=png_info(out)
                 if (w,h)!=(job["width"],job["height"]):raise RuntimeError(f"output dimensions {w}x{h} != job {job['width']}x{job['height']}")
