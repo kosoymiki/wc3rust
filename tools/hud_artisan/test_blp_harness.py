@@ -65,6 +65,35 @@ class BLPHarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(blp.BLPError,"exactly"):
             blp.raw_rgba_to_png(raw,png,4,4)
 
+    def test_existing_png_to_blp1_encoder_roundtrip_harness(self):
+        import subprocess
+        import sys
+        encoder = Path(__file__).resolve().parents[2] / "tools" / "png_to_blp1.py"
+        self.assertTrue(encoder.is_file())
+        source = self.root/"source.png"
+        im = Image.new("RGBA",(16,16),(0,0,0,0))
+        for y in range(4,12):
+            for x in range(4,12):
+                im.putpixel((x,y),(210,140,35,255))
+        im.save(source)
+        decoder_code = (
+            "import pathlib,struct,sys; b=pathlib.Path(sys.argv[1]).read_bytes(); "
+            "w,h=struct.unpack_from('<II',b,12); off=struct.unpack_from('<I',b,28)[0]; "
+            "n=w*h; pal=b[156:1180]; idx=b[off:off+n]; alpha=b[off+n:off+2*n]; "
+            "out=bytearray(); "
+            "[(out.extend((pal[k*4+2],pal[k*4+1],pal[k*4],alpha[i]))) for i,k in enumerate(idx)]; "
+            "pathlib.Path(sys.argv[2]).write_bytes(out)"
+        )
+        result = blp.roundtrip(
+            source, self.root/"work",
+            [sys.executable, str(encoder), "{input}", "{output}"],
+            [sys.executable, "-c", decoder_code, "{input}", "{output}"],
+            30, True
+        )
+        self.assertEqual(result["blp"]["format"],"BLP1")
+        self.assertTrue(result["roundtrip"]["exact_match"])
+        self.assertEqual(result["roundtrip"]["alpha_silhouette_iou"],1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
