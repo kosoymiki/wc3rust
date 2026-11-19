@@ -26,7 +26,7 @@ python3 tools/hud_artisan/generate.py profile \
 
 Compile jobs from the actual pack manifest. The strict engine-contract option checks the full
 92-asset count, all 24 runtime roles, design height, reference resolutions, safe areas, card/control
-metrics, font count and command-buttons atlas requirements. Omit it only for test fixtures or subsets.
+metrics, font count and command-buttons atlas requirements. The manifest reference resolution is 1920×1080 / 1080×1920; 2414×1080 is a runtime viewport QA target scaled from the 768 design height, not the reference resolution. Omit it only for test fixtures or subsets.
 
 ~~~sh
 python3 tools/hud_artisan/generate.py plan \
