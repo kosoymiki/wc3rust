@@ -382,10 +382,12 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
         return {"status":"error","reason":"atlas cell must be two positive integers","file":atlas_file,"cells":[],"findings":[]}
     grid_columns,grid_rows=atlas_spec.get("columns"),atlas_spec.get("rows")
     if runtime_contract:
+        if expected_cell is None:
+            return {"status":"error","reason":"runtime atlas cell size is required","file":atlas_file,"cells":[],"findings":[]}
         if (type(grid_columns) is not int or type(grid_rows) is not int
                 or not 1<=grid_columns<=256 or not 1<=grid_rows<=256
                 or atlas_spec.get("rotation",False) is not False
-                or atlas_spec.get("padding",0)!=0):
+                or type(atlas_spec.get("padding",0)) is not int or atlas_spec.get("padding",0)!=0):
             return {"status":"error","reason":"runtime atlas grid or rotation/padding metadata is invalid","file":atlas_file,"cells":[],"findings":[]}
         if declared_size != [atlas_asset["w"],atlas_asset["h"]]:
             return {"status":"error","reason":"atlas size differs from declared manifest asset dimensions","file":atlas_file,"cells":[],"findings":[]}
