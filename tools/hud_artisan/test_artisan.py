@@ -396,6 +396,13 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.ingest(manifest,jobs,drop,out,"strict",False),0)
             self.assertEqual(artisan.png_info(out/"atlas/cmd.png")[:2],(16,16))
             self.assertEqual(artisan.validate(manifest,out,False,False),0)
+            # Reuse the original local pack's fonts without copying them into the renderer drop.
+            font_source=root/"original-fonts";font_source.mkdir()
+            for name in doc["font_files"]:(font_source/name).write_bytes(b"original-font-binary")
+            shutil.rmtree(drop/"fonts")
+            font_pack=root/"font-source-pack"
+            self.assertEqual(artisan.ingest(manifest,jobs,drop,font_pack,"strict",False,font_source),0)
+            self.assertTrue(all((font_pack/"fonts"/name).is_file() for name in doc["font_files"]))
             # A failed subsequent batch must invalidate prior success evidence.
             failing= root/"failing-adapter.json"
             failing.write_text(json.dumps({"schema_version":1,"provider":"test-provider","model":"test-model",
