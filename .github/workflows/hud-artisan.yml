@@ -3,6 +3,9 @@ on:
   push:
     paths:
       - "tools/hud_artisan/**"
+      - "crates/wc3-formats/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/hud-artisan.yml"
   pull_request:
     paths:
@@ -27,3 +30,9 @@ jobs:
       - run: python -m pip install -r tools/hud_artisan/requirements.txt
       - run: python -m compileall -q tools/hud_artisan
       - run: python -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
+  blp-decoder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # checkout v7
+      - run: cargo check --locked -p wc3-formats --example blp_dump_rgba
