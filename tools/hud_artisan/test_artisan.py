@@ -511,7 +511,7 @@ class Tests(unittest.TestCase):
               "insets":{"l":16,"t":16,"r":16,"b":16},"states":["normal"]}
         job=artisan.make_job(icon,"classic-modern",73)
         self.assertTrue(job["requires_alpha"])
-        self.assertIn("complete central aperture must be genuinely transparent",job["prompt"])
+        self.assertIn("same flat solid chroma-key magenta matte",job["prompt"])
         self.assertEqual(job["seed"],artisan.make_job(icon,"classic-modern",73)["seed"])
         sibling={**icon,"name":"minimap_frame_normal_216"}
         self.assertNotEqual(job["seed"],artisan.make_job(sibling,"classic-modern",73)["seed"])
