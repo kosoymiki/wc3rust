@@ -43,7 +43,7 @@ The adapter:
 - in alpha_strategy=u2net mode, builds the alpha from the u2net salient-object model through onnxruntime (model from matte_model or U2NET_MODEL); it needs no key-coloured background, so it works with any RGB workflow, including SD1.5 on CPU;
 - checks final native-size alpha/aperture requirements, then atomically writes RGBA8 PNG; unexpected render dimensions and any implicit stretching are rejected.
 
-The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
+The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files and, when using U2Net, the `matte_model` file to `dependency_files` (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint. The doctor also reports the U2Net model SHA-256.
 
 ## u2net matte mode (Termux/Android)
 
