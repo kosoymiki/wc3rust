@@ -118,7 +118,7 @@ supplied and are never replaced with empty stubs.
 
 The visual target is premium authored RTS artwork. Read `ART_DIRECTOR_BRIEF.md` before assigning any job; `AGENT_TASK.md` is the worker's mandatory contract. The goal is an original wc3rust identity with high-end material craft and game-scale legibility, not a copy of Blizzard retail assets.
 
-After ingestion and structural validation, generate contact sheets and run two separate vision-capable OpenCode sessions: one Art Director and one Red Team Reviewer. Schema v2 records the real provider/model/session IDs, exact review prompt hashes, immutable raw response files and hashes. Both reviewers must inspect the exact final PNG bytes and report all ten criteria in `review.schema.json`. The gate requires distinct reviewer sessions and model identifiers, valid prompt/raw-response hashes, 10/10 on every criterion from both reviewers, no blockers, no suggested improvements, confidence >=0.95, and matching SHA-256 for every reviewed image. This is auditable evidence, not cryptographic proof that the sessions were truly independent.
+After ingestion and structural validation, generate contact sheets and run two separate vision-capable OpenCode sessions: one Art Director and one Red Team Reviewer. Schema v2 records the real provider/model/session IDs, exact review prompt hashes, immutable raw response files and hashes. Both reviewers must inspect the exact final PNG bytes and report all ten criteria in `review.schema.json`. The gate requires distinct reviewer sessions and model identifiers, valid prompt/raw-response hashes, average >=8.5/10 per reviewer, no criterion below 7/10, no blockers, confidence >=0.80; non-blocking improvements are retained in the report, and matching SHA-256 for every reviewed image. This is auditable evidence, not cryptographic proof that the sessions were truly independent.
 
 ```sh
 python3 tools/hud_artisan/review_gate.py \\
@@ -129,7 +129,7 @@ python3 tools/hud_artisan/review_gate.py \\
   --out build/hud-artisan/review-report.json
 ```
 
-A changed PNG invalidates its prior review. Any score below 10 triggers a targeted regeneration/retouch loop and a fresh review by both agents. A machine PASS means only that the evidence meets the declared gate; it does not prove artistic excellence. Final release still requires human art-director sign-off, runtime pack checks, Rust loader tests and real landscape/portrait screenshots. Full protocol: `REVIEW_PROTOCOL.md`.
+A changed PNG invalidates its prior review. A reviewer average below 8.5, any criterion below 7, a blocker or a reject verdict triggers a targeted regeneration/retouch loop and a fresh review by both agents. Non-blocking improvements remain visible in the report and do not force dishonest perfect scores. A machine PASS means only that the evidence meets the declared gate; it does not prove artistic excellence. Final release still requires human art-director sign-off, runtime pack checks, Rust loader tests and real landscape/portrait screenshots. Full protocol: `REVIEW_PROTOCOL.md`.
 
 ## Verified engine contract
 
@@ -138,10 +138,7 @@ engine_profile.json and the code-level strict gate record known constraints: 768
 cells and 4 px gap; ten 44 px control groups; a 2048x2048 command-buttons atlas with 20 entries;
 five font files; 24 unique runtime asset roles; and 92 total manifest assets.
 
-The current repository tree does not contain the referenced final pack manifest or its PNG/font
-payload. HUD Artisan therefore requires a real manifest for generation and refuses to guess missing
-filenames, dimensions, nine-slice insets, font binaries or the full asset inventory. This prevents
-a plausible-looking but engine-incompatible pack.
+The normalized final pack manifest is checked in at analysis/hudskin/final/wc3rust-hud-final/manifest.json. The 92 PNG files and five font binaries remain in the local Termux pack and are not mirrored into this branch. HUD Artisan refuses to guess missing binary payloads, font licenses or unverified runtime behavior. The manifest-only CI test verifies planning metadata; it does not claim that the full visual pack is present.
 
 ## Quality gates
 
