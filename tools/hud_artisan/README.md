@@ -45,11 +45,11 @@ python3 tools/hud_artisan/blp_harness.py roundtrip \
   --input build/hud-artisan/pack/icons/example.png \
   --work build/hud-artisan/blp-roundtrip \
   --encode-arg /path/to/local-blp-encoder \
-  --encode-arg --input --encode-arg {input} \
-  --encode-arg --output --encode-arg {output} \
+  --encode-arg=--input --encode-arg={input} \
+  --encode-arg=--output --encode-arg={output} \
   --decode-arg /path/to/local-blp-decoder \
-  --decode-arg --input --decode-arg {input} \
-  --decode-arg --output --decode-arg {output} \
+  --decode-arg=--input --decode-arg={input} \
+  --decode-arg=--output --decode-arg={output} \
   --report build/hud-artisan/blp-roundtrip/report.json
 ~~~
 
