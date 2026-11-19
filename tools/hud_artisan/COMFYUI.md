@@ -43,6 +43,26 @@ The adapter:
 
 The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
 
+## Alpha strategies (adapter)
+
+`alpha_strategy` in the ComfyUI config selects how an alpha-required job gets its matte:
+
+- `none` (default): the workflow must already emit RGBA with transparency.
+- `chroma_key`: removes border-connected key pixels (`chroma_key_color`, `chroma_key_tolerance`);
+  needs a workflow that renders a solid key background (the Z-Image Termux profile).
+- `u2net` (Termux-friendly): runs the u2net salient-object model through onnxruntime and uses
+  the predicted mask as alpha. Works with any RGB workflow, including SD1.5 on CPU. Model path:
+  `matte_model` in the config or `U2NET_MODEL` (default `~/src/comfyui-termux/models/u2net.onnx`).
+  onnxruntime 1.31.1 ships an `android_aarch64` wheel; its cosmetic "Unsupported platform
+  (android)" warning is silenced by a one-line validation patch, and the runtime itself works
+  (u2net 320x320 inference ~1.1 s on CPU).
+
+Portrait/minimap frames additionally get the central aperture enforced. The u2net mask is
+saliency-based, not semantic segmentation: inspect the silhouette and fringes in the contact sheet.
+
+Verified on Termux (2026-11-19): SD1.5 fp16 256x256 -> adapter with `alpha_strategy=u2net` ->
+RGBA (alpha 0..230) -> `alpha_qa.py --require-alpha --strict` PASS (transparent 68.9%).
+
 ## Important limitations
 
 - A workflow that emits an opaque PNG cannot satisfy an alpha-required icon/cursor job without a matte. The Termux Z-Image profile requests solid #FF00FF and applies deterministic border-connected flood-fill; this is not semantic segmentation and must be visually inspected for magenta fringe/holes.

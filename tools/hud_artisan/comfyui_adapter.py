@@ -205,6 +205,37 @@ def wait_for_output(base: str, prompt_id: str, output_node_id: str,
     raise ComfyError(f"ComfyUI job timed out after {max_wait}s (prompt_id={prompt_id}); cancellation was requested")
 
 
+def apply_alpha_strategy(image, job: dict, cfg: dict):
+    """Apply the configured matte to an alpha-required job before the alpha checks.
+
+    chroma_key: remove border-connected key pixels (needs a workflow that renders a
+    solid key background). u2net/matte: run the u2net salient-object model through
+    onnxruntime (works on Android/Termux; ~1 s at 320x320 on CPU). Frames always get
+    the central aperture enforced.
+    """
+    if not job.get("requires_alpha"):
+        return image
+    strategy = str(cfg.get("alpha_strategy") or "none").strip().lower()
+    if strategy in ("chroma_key", "chroma-key"):
+        key = cfg.get("chroma_key_color") or (255, 0, 255)
+        if (not isinstance(key, (list, tuple)) or len(key) != 3
+                or any(type(v) is not int or not 0 <= v <= 255 for v in key)):
+            raise ComfyError("config.chroma_key_color must be [R,G,B] integers 0..255")
+        tolerance = cfg.get("chroma_key_tolerance", 48)
+        if type(tolerance) is not int or tolerance < 0:
+            raise ComfyError("config.chroma_key_tolerance must be a non-negative integer")
+        image = chroma_key_background(image, tuple(key), tolerance)
+    elif strategy in ("u2net", "matte", "matte_model"):
+        model = cfg.get("matte_model") or os.environ.get("U2NET_MODEL")
+        from alpha_matte import matte_rgba  # sibling module; lazy (onnxruntime only here)
+        image = matte_rgba(image, model)
+    elif strategy not in ("", "none"):
+        raise ComfyError(f"unknown alpha_strategy {strategy!r}")
+    if job.get("family") in ("portrait-frame", "minimap-frame"):
+        image = enforce_frame_aperture(image)
+    return image
+
+
 def download_image(base: str, image_meta: dict, timeout: int) -> bytes:
     for key in ("filename", "type"):
         if not isinstance(image_meta.get(key), str) or not image_meta[key]:
@@ -484,6 +515,7 @@ def main(argv=None) -> int:
                 expected = (job["width"], job["height"])
                 if rgba.size != expected:
                     raise ComfyError(f"ComfyUI output size {rgba.size} != requested {expected}; no silent resizing")
+                rgba = apply_alpha_strategy(rgba, job, cfg)
                 alpha = rgba.getchannel("A")
                 if alpha.getbbox() is None:
                     raise ComfyError("ComfyUI output is fully transparent")

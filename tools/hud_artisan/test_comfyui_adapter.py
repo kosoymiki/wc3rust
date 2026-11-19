@@ -1,3 +1,4 @@
+from PIL import Image
 import unittest
 from unittest import mock
 
@@ -254,3 +255,34 @@ class ComfyAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlphaStrategyTests(unittest.TestCase):
+    def test_chroma_key_removes_border_and_keeps_subject(self):
+        image = Image.new("RGBA", (32, 32), (255, 0, 255, 255))
+        image.paste(Image.new("RGBA", (8, 8), (10, 20, 30, 255)), (12, 12))
+        out = adapter.apply_alpha_strategy(
+            image, {"requires_alpha": True, "family": "icon"},
+            {"alpha_strategy": "chroma_key", "chroma_key_color": [255, 0, 255], "chroma_key_tolerance": 48},
+        )
+        self.assertEqual(out.getpixel((0, 0))[3], 0)
+        self.assertEqual(out.getpixel((16, 16))[3], 255)
+
+    def test_none_keeps_the_image_opaque(self):
+        image = Image.new("RGBA", (8, 8), (1, 2, 3, 255))
+        out = adapter.apply_alpha_strategy(image, {"requires_alpha": True, "family": "icon"}, {"alpha_strategy": "none"})
+        self.assertEqual(out.getchannel("A").getextrema(), (255, 255))
+
+    def test_non_alpha_job_is_untouched(self):
+        image = Image.new("RGBA", (8, 8), (1, 2, 3, 255))
+        out = adapter.apply_alpha_strategy(image, {"requires_alpha": False}, {"alpha_strategy": "u2net"})
+        self.assertEqual(out.getchannel("A").getextrema(), (255, 255))
+
+    def test_frame_aperture_is_enforced(self):
+        image = Image.new("RGBA", (100, 100), (1, 2, 3, 255))
+        out = adapter.apply_alpha_strategy(image, {"requires_alpha": True, "family": "portrait-frame"}, {"alpha_strategy": "none"})
+        self.assertEqual(out.getchannel("A").getpixel((50, 50)), 0)
+
+    def test_unknown_strategy_is_rejected(self):
+        with self.assertRaisesRegex(adapter.ComfyError, "unknown alpha_strategy"):
+            adapter.apply_alpha_strategy(Image.new("RGBA", (4, 4), (0, 0, 0, 255)), {"requires_alpha": True}, {"alpha_strategy": "nope"})
