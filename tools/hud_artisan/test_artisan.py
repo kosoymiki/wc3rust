@@ -321,11 +321,17 @@ class Tests(unittest.TestCase):
                                  "resume must not call the renderer for hash-verified outputs")
                 resume_logs="".join(path.read_text() for path in (drop/"reports"/"worker").glob("*.log"))
                 self.assertIn("RESUME verified",resume_logs)
-                # A renderer-script revision must invalidate the resume fingerprint,
-                # even when adapter.json itself is unchanged.
+                # Corrupting one job's checkpoint binding regenerates only that job.
+                checkpoint=drop/"reports"/"worker-results.json"
+                checkpoint_doc=json.loads(checkpoint.read_text())
+                checkpoint_doc["results"][0]["prompt_sha256"]="0"*64
+                checkpoint.write_text(json.dumps(checkpoint_doc))
+                self.assertEqual(artisan.dispatch(manifest,jobs,adapter,drop,2,resume=True),0)
+                self.assertEqual(len(counter.read_text()),first_call_count+1)
+                # A renderer-script revision invalidates the entire adapter fingerprint.
                 adapter_script.write_text(adapter_script.read_text()+"\n# renderer revision changed\n")
                 self.assertEqual(artisan.dispatch(manifest,jobs,adapter,drop,2,resume=True),0)
-                self.assertEqual(len(counter.read_text()),first_call_count+payload["job_count"])
+                self.assertEqual(len(counter.read_text()),first_call_count+1+payload["job_count"])
             finally:
                 os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
