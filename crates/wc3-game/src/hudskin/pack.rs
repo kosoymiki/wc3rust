@@ -252,6 +252,9 @@ fn pack_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf, PackEr
         }
     }
     let candidate = root.join(rel);
+    if !candidate.exists() {
+        return Err(PackError::Missing { file: relative.to_string() });
+    }
     let resolved = candidate.canonicalize().map_err(|error| PackError::Io {
         path: candidate.display().to_string(),
         error: error.to_string(),
