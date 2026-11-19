@@ -1054,7 +1054,7 @@ def runtime_provenance(cfg:dict[str,Any],adapter_path:Path)->dict[str,Any]:
         runtime["model_files"]=model_records
     return runtime
 
-def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None,resume:bool=False)->int:
+def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None,resume:bool=False,only:list[str]|None=None)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
     cfg=read_json(adapter_path)
     # Verify the workflow lock before creating workers or submitting inference.
@@ -1092,8 +1092,9 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         raise ValueError("adapter.references must contain source/license/purpose objects")
     if not isinstance(postprocessing,list) or any(not isinstance(x,str) or not x.strip() for x in postprocessing):
         raise ValueError("adapter.postprocessing must be an array of non-empty strings")
+    all_jobs=jobs
     ids=set();paths=set()
-    for job in jobs:
+    for job in all_jobs:
         jid=job.get("job_id");rel=safe_rel(job.get("output",""))
         # Resolve and validate all final output paths before any worker is started.
         safe_join(drop,rel)
@@ -1108,6 +1109,18 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             raise ValueError(f"{jid}: invalid target dimensions {width}x{height}")
         if str(rel) in paths:raise ValueError(f"two jobs target the same output path: {rel}")
         ids.add(jid);paths.add(str(rel))
+    selected_jobs=all_jobs
+    if only:
+        wanted=set(only)
+        if len(wanted)!=len(only):
+            raise ValueError("--only contains duplicate selectors")
+        selected_jobs=[job for job in all_jobs if job["job_id"] in wanted or job.get("asset") in wanted]
+        resolved={value for job in selected_jobs for value in (job["job_id"],job.get("asset"))}
+        unknown=wanted-resolved
+        if unknown:
+            raise ValueError("--only selectors did not match jobs: "+", ".join(sorted(unknown)))
+        if not selected_jobs or len({job["job_id"] for job in selected_jobs})!=len(selected_jobs):
+            raise ValueError("--only selected no jobs or resolved ambiguously")
     cwd_value=cfg.get("working_directory",".")
     if not isinstance(cwd_value,str) or not cwd_value.strip():
         raise ValueError("adapter.working_directory must be a non-empty string")
@@ -1159,11 +1172,45 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 print("HUD_ARTISAN_RESUME_RESET reason=job-or-adapter-fingerprint-mismatch")
         except Exception as exc:
             print(f"HUD_ARTISAN_RESUME_RESET reason=invalid-prior-report detail={exc}")
-    # Provenance certifies only a fully successful current batch; checkpoints are separate.
+    # Selective repair carries forward only unchanged jobs whose original PNG hash still verifies.
+    preserved_records={}
     stale_provenance=safe_join_any(drop,"provenance.json")
     if stale_provenance.exists():
-        if not stale_provenance.is_file():
-            raise ValueError(f"stale provenance is not a regular file: {stale_provenance}")
+        if stale_provenance.is_symlink() or not stale_provenance.is_file():
+            raise ValueError(f"provenance must be a regular non-symlink file: {stale_provenance}")
+        if only:
+            try:
+                previous_prov=read_json(stale_provenance)
+                validate_json_schema(previous_prov,Path(__file__).with_name("provenance.schema.json"),"provenance")
+                if previous_prov.get("adapter_config_sha256")!=adapter_digest or previous_prov.get("runtime")!=runtime:
+                    raise ValueError("prior provenance adapter/runtime fingerprint differs")
+                old_rows=previous_prov.get("jobs")
+                if not isinstance(old_rows,list):
+                    raise ValueError("prior provenance jobs is not an array")
+                old_by_id={row.get("job_id"):row for row in old_rows if isinstance(row,dict)}
+                selected_ids={job["job_id"] for job in selected_jobs}
+                for job in all_jobs:
+                    if job["job_id"] in selected_ids:
+                        continue
+                    row=old_by_id.get(job["job_id"])
+                    if not isinstance(row,dict):
+                        raise ValueError(f"untouched job lacks prior provenance: {job['asset']}")
+                    for key,value in (("prompt_sha256",job["prompt_sha256"]),
+                                      ("negative_prompt_sha256",job["negative_prompt_sha256"]),
+                                      ("seed",job["seed"])):
+                        if row.get(key)!=value:
+                            raise ValueError(f"untouched job provenance binding changed: {job['asset']} {key}")
+                    artifact=safe_join(drop,job["output"])
+                    if artifact.is_symlink() or not artifact.is_file() or row.get("output_sha256")!=sha_file(artifact):
+                        raise ValueError(f"untouched job output hash cannot be verified: {job['asset']}")
+                    width,height,depth,color=png_info(artifact)
+                    if (width,height,depth,color)!=(job["width"],job["height"],8,6):
+                        raise ValueError(f"untouched job PNG contract changed: {job['asset']}")
+                    preserved_records[job["job_id"]]=row
+                if len(preserved_records)!=len(all_jobs)-len(selected_jobs):
+                    raise ValueError("not all untouched jobs could be carried forward")
+            except Exception as exc:
+                raise ValueError(f"selective repair requires valid full-batch provenance: {exc}") from exc
         stale_provenance.unlink()
     if not resume and worker_report.exists():
         if not worker_report.is_file():
@@ -1303,7 +1350,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     try:
         results=[]
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
-            future_jobs={pool.submit(run_one,job):job for job in jobs}
+            future_jobs={pool.submit(run_one,job):job for job in selected_jobs}
             for future in concurrent.futures.as_completed(future_jobs):
                 job=future_jobs[future]
                 try:
@@ -1324,7 +1371,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         worker_report.parent.mkdir(parents=True,exist_ok=True)
         atomic_write_text(worker_report,json.dumps(report,ensure_ascii=False,indent=2)+"\n")
         if ok:
-            job_map={job["job_id"]:job for job in jobs}
+            job_map={job["job_id"]:job for job in all_jobs}
             records=[]
             for row in results:
                 job=job_map[row["job_id"]]
@@ -1334,10 +1381,15 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "references":refs,"postprocessing":cfg.get("postprocessing",[]),
                     "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
                     "output_sha256":row["sha256"]})
-            provenance_path=safe_join_any(drop,"provenance.json")
-            atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
-                "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
-                "runtime":runtime,"jobs":records},ensure_ascii=False,indent=2)+"\n")
+            merged={**preserved_records,**{row["job_id"]:row for row in records}}
+            if set(merged)=={job["job_id"] for job in all_jobs}:
+                provenance_path=safe_join_any(drop,"provenance.json")
+                atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
+                    "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
+                    "runtime":runtime,"jobs":[merged[job["job_id"]] for job in all_jobs]},ensure_ascii=False,indent=2)+"\n")
+            else:
+                print(f"HUD_ARTISAN_PROVENANCE_INCOMPLETE covered={len(merged)}/{len(all_jobs)}")
+                return 1
         return 0 if ok else 1
     finally:
         shutil.rmtree(work,ignore_errors=True)
@@ -1383,6 +1435,12 @@ def main(argv=None):
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True);q.add_argument("--adapter",type=Path,required=True);q.add_argument("--drop",type=Path,required=True)
     q.add_argument("--parallel",type=int);q.add_argument("--resume",action="store_true",
         help="reuse only hash-verified outputs from a prior run with identical jobs and adapter config")
+    q.add_argument("--only",action="append",metavar="ASSET_OR_JOB_ID",
+        help="selectively re-render a job; requires valid full-batch provenance")
+    q=s.add_parser("repair-plan",help="derive deterministic per-asset repair seeds from a production QA report")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--jobs",type=Path,required=True)
+    q.add_argument("--qa",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
+    q.add_argument("--revision",required=True,help="stable repair revision label")
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
     q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true");q.add_argument("--engine-contract",action="store_true")
@@ -1405,7 +1463,8 @@ def main(argv=None):
             print(f"HUD_ARTISAN_PROFILE_OK contract_only=true roles={len(ENGINE_ROLES)}");return 0
         if a.cmd=="plan":return plan(a.manifest,a.out,a.theme,a.seed,a.engine_contract)
         if a.cmd=="ingest":return ingest(a.manifest,a.jobs,a.drop,a.out,a.fit,a.allow_opaque,a.font_source)
-        if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel,a.resume)
+        if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel,a.resume,a.only)
+        if a.cmd=="repair-plan":return repair_plan(a.manifest,a.jobs,a.qa,a.out,a.revision)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
