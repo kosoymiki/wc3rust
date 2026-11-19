@@ -54,8 +54,10 @@ def inspect_png(path: Path, root: Path, key=DEFAULT_KEY, key_tolerance: int = 48
         for channel, value in zip((red, green, blue), key):
             reference = Image.new("L", (width, height), value)
             key_channels.append(ImageChops.difference(channel, reference))
-        distance = ImageChops.add(ImageChops.add(key_channels[0], key_channels[1]), key_channels[2])
-        near_mask = distance.point(lambda value: 255 if value <= key_tolerance * 3 else 0)
+        # Max per-channel distance avoids ImageChops.add saturation at 255,
+        # which otherwise makes tolerances above 85 behave as an always-match.
+        distance = ImageChops.lighter(ImageChops.lighter(key_channels[0], key_channels[1]), key_channels[2])
+        near_mask = distance.point(lambda value: 255 if value <= key_tolerance else 0)
         visible_mask = alpha.point(lambda value: 255 if value > 0 else 0)
         near_mask = ImageChops.multiply(near_mask, visible_mask)
         near_key = near_mask.histogram()[255]
