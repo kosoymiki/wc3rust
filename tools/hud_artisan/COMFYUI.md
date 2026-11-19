@@ -10,9 +10,9 @@ If you use a different local renderer, OpenCode agent workflow or a custom CLI, 
 2. The Termux profile reads ~/src/comfyui-termux/default_workflow.json directly as a saved canvas workflow (workflow_format=ui).
 3. Its current node map is positive prompt 67, negative prompt 71, latent width/height 68, seed 70 and SaveImage 9.
 4. The example profile pins the exact workflow bytes with workflow_sha256. The adapter and read-only doctor fail closed if the file changes; after an intentional workflow edit, inspect the new graph/model loaders and explicitly refresh the SHA-256 pin.
-4. The adapter converts the canvas graph into the API prompt format using the running server's /object_info response; no manual graph re-export is needed.
-5. If the workflow changes, update the node IDs or set workflow_format=api after exporting an API prompt.
-6. Run the dispatcher with max_parallel=1 and point COMFYUI_URL at the loopback endpoint if it is not the default.
+5. The adapter converts the canvas graph into the API prompt format using the running server's /object_info response; no manual graph re-export is needed.
+6. If the workflow changes, update the node IDs or set workflow_format=api after exporting an API prompt.
+7. Run the dispatcher with max_parallel=1 and point COMFYUI_URL at the loopback endpoint if it is not the default.
 
 Example config path:
 
@@ -52,6 +52,11 @@ cannot produce a solid key background (e.g. SD1.5 on CPU). It runs the u2net sal
 through onnxruntime (`cfg.matte_model` or `U2NET_MODEL`, default
 `~/src/comfyui-termux/models/u2net.onnx`) and uses the predicted mask as alpha. The matte runs on
 the render canvas; the existing premultiplied-alpha Lanczos step then restores the native size.
+
+Install the optional backend with `python -m pip install -r tools/hud_artisan/requirements-alpha-matte.txt`
+(the base requirements already include NumPy). A relative `matte_model` path is resolved from the
+ComfyUI config directory; otherwise `U2NET_MODEL` or the documented default is used. The read-only
+doctor checks the model file and both runtime dependencies before dispatch.
 
 Measured on Termux (2026-11-19): model load 0.31 s, 320x320 inference ~1.1 s. A painterly SD1.5
 render matted well (alpha 0..230, 68.9% transparent). A flat vector-like apple icon matted poorly
