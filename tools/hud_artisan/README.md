@@ -72,8 +72,8 @@ The optional local adapter injects exact prompts, dimensions and the compiled pe
 A custom CLI/API adapter is also supported: command is an argv array, never a shell string, with
 {job_json}, {output_path} and {job_id} placeholders. Bounded concurrency, retries, timeouts,
 allowlisted environment variables and secret-redacted worker logs are enforced by the dispatcher.
-For interrupted long batches, rerun dispatch with --resume. It skips only outputs whose PNG
-hash, dimensions, job fingerprint and exact adapter and local dependency fingerprint match the previous worker
+For interrupted long batches, rerun dispatch with --resume. A checkpoint is atomically written after each completed job. It skips only outputs whose PNG
+hash, dimensions, job fingerprint and exact adapter/local-dependency fingerprint match the previous worker
 checkpoint. Changed jobs/configuration or corrupted/missing PNGs are regenerated. Provenance is
 reissued only after every job succeeds; a failed batch never retains a stale success certificate.
 
