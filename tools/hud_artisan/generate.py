@@ -862,9 +862,11 @@ def _ingest_stage(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_
                 except Exception as exc:errors.append(f"atlas cell {cell.get('id')}: {exc}")
             dst=safe_join(out,atlas_file);dst.parent.mkdir(parents=True,exist_ok=True)
             canvas.save(dst,"PNG",optimize=True,compress_level=9);done.append("atlas:"+atlas_file)
-    font_root = font_source.expanduser().resolve() if font_source is not None else safe_join_any(drop,"fonts")
+    font_root = font_source.expanduser() if font_source is not None else safe_join_any(drop,"fonts")
     if font_root.is_symlink() or not font_root.is_dir():
         errors.append(f"font source must be an existing non-symlink directory: {font_root}")
+    else:
+        font_root = font_root.resolve()
     for font in doc["font_files"]:
         if not isinstance(font,str) or Path(font).name!=font:errors.append(f"unsafe font filename {font!r}");continue
         src=safe_join_any(font_root,font)
