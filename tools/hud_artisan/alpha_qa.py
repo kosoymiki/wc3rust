@@ -178,8 +178,8 @@ def main(argv=None) -> int:
         fd, temporary_name = tempfile.mkstemp(prefix=f".{args.out.name}.", suffix=".tmp", dir=args.out.parent)
         temporary = Path(temporary_name)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as stream:
-                stream.write(json.dumps(report, indent=2, ensure_ascii=False) + "\\n")
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, args.out)
