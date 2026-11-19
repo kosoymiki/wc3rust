@@ -311,11 +311,19 @@ class Tests(unittest.TestCase):
         assets.append({"name":"commandbuttons_atlas","file":"atlas/commandbuttons.png","w":2048,"h":2048})
         for i in range(67):
             assets.append({"name":f"extra_{i}","file":f"extra/{i}.png","w":64,"h":64})
+        for i in range(20):
+            assets.append({"name":f"command_icon_{i:02d}","file":f"icons/{i:02d}.png","w":64,"h":64})
+        # Keep the 92-asset contract: replace twenty generic extras with source icons.
+        assets=assets[:24]+assets[44:]
+        atlas_entries=[{"id":f"command_{i:02d}","x":(i-1)*64,"y":0,"w":64,"h":64,
+                        "source_asset":f"command_icon_{i-1:02d}"} for i in range(1,21)]
         doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
           "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
           "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
           "control_groups":{"count":10,"cell":[44,44]},
-          "assets":assets,"atlas":{"commandbuttons":{"file":"atlas/commandbuttons.png","entries":[{} for _ in range(20)]}}}
+          "font_files":list(artisan.ENGINE_FONT_FILES),
+          "assets":assets,"atlas":{"commandbuttons":{"file":"atlas/commandbuttons.png","size":[2048,2048],
+            "columns":32,"rows":32,"cell":[64,64],"padding":0,"rotation":False,"entries":atlas_entries}}}
         self.assertEqual(len(assets),92)
         artisan.validate_engine_contract(doc)
         wrong=next(a for a in assets if a["name"]=="button_glow_64")
@@ -325,6 +333,14 @@ class Tests(unittest.TestCase):
         wrong["w"]=64
         doc["atlas"]["commandbuttons"]["entries"].pop()
         with self.assertRaisesRegex(ValueError,"20 entries"):
+            artisan.validate_engine_contract(doc)
+        doc["atlas"]["commandbuttons"]["entries"].append(atlas_entries[-1])
+        doc["atlas"]["commandbuttons"]["entries"][0]["x"]=1
+        with self.assertRaisesRegex(ValueError,"grid-aligned"):
+            artisan.validate_engine_contract(doc)
+        doc["atlas"]["commandbuttons"]["entries"][0]["x"]=0
+        doc["font_files"].pop()
+        with self.assertRaisesRegex(ValueError,"five named HUD font"):
             artisan.validate_engine_contract(doc)
     def test_font_path_traversal_rejected(self):
         with tempfile.TemporaryDirectory() as d:
