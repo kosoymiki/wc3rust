@@ -28,7 +28,7 @@
     "lanczos_native_downsample"
   ],
   "dependency_files": [
-    "build/hud-artisan/comfyui.json",
+    "comfyui.json",
     "~/src/comfyui-termux/default_workflow.json"
   ]
 }
