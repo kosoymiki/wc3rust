@@ -294,6 +294,15 @@ class Tests(unittest.TestCase):
             self.assertLessEqual(max(job["render_width"],job["render_height"]),4096,job["asset"])
             self.assertIn(f"render canvas {job['render_width']}x{job['render_height']}",job["prompt"])
 
+    def test_engine_profile_reference_resolution_matches_runtime_contract(self):
+        profile=json.loads((Path(__file__).with_name("engine_profile.json")).read_text())
+        self.assertEqual(profile["reference_resolution"],
+                         {"landscape":[1920,1080],"portrait":[1080,1920]})
+        self.assertEqual(profile["safe_area_1080p"],
+                         {"landscape":[48,80,48,48],"portrait":[24,96,24,64]})
+        self.assertEqual(profile["asset_count_required"],92)
+        self.assertEqual(profile["commandbuttons_atlas"]["entries"],20)
+
     def test_engine_contract_exact_manifest(self):
         assets=[]
         for i,name in enumerate(artisan.ENGINE_ROLES):
