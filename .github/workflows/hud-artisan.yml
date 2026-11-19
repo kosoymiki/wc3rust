@@ -35,4 +35,25 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # checkout v7
-      - run: cargo check --locked -p wc3-formats --example blp_dump_rgba
+      # The upstream workspace currently references optional crates absent from this
+      # branch snapshot. Build the real format crates in an isolated minimal workspace
+      # so Cargo does not need to resolve unrelated engine members.
+      - name: Compile BLP decoder example
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/crates"
+          cp -R crates/wc3-formats "$tmp/crates/"
+          cp -R crates/wc3-mpq "$tmp/crates/"
+          cat > "$tmp/Cargo.toml" <<'EOF'
+          [workspace]
+          resolver = "2"
+          members = ["crates/wc3-formats", "crates/wc3-mpq"]
+          [workspace.package]
+          version = "0.1.0"
+          edition = "2024"
+          license = "MIT OR Apache-2.0"
+          [workspace.dependencies]
+          glam = "0.30"
+          flate2 = "1"
+          EOF
+          cargo check --manifest-path "$tmp/Cargo.toml" -p wc3-formats --example blp_dump_rgba
