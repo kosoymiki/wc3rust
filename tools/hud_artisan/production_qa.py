@@ -254,6 +254,8 @@ def main(argv=None) -> int:
     p.add_argument("--strict", action="store_true")
     a = p.parse_args(argv)
     try:
+        if a.out.is_symlink() or (a.out.exists() and not a.out.is_dir()):
+            raise ValueError("QA output must be a regular directory path, not a symlink")
         report = run(a.manifest, a.pack, a.out, a.jobs,
                      a.state_iou_min, a.state_difference_min, a.state_difference_max)
         a.out.mkdir(parents=True, exist_ok=True)
