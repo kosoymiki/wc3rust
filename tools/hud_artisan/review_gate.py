@@ -63,6 +63,31 @@ def safe_pack_file(pack: Path, relative: object) -> Path:
     return target
 
 
+def safe_evidence_file(root: Path, relative: object) -> Path:
+    """Resolve a raw reviewer-evidence path without traversal or symlink escapes."""
+    if not isinstance(relative, str) or not relative or "\\" in relative or "\\x00" in relative:
+        raise ValueError(f"unsafe reviewer evidence path: {relative!r}")
+    posix = PurePosixPath(relative)
+    if posix.is_absolute() or any(part in ("", ".", "..") for part in posix.parts):
+        raise ValueError(f"unsafe reviewer evidence path: {relative!r}")
+    if root.is_symlink():
+        raise ValueError(f"review evidence root must not be a symlink: {root}")
+    base = root.resolve()
+    cursor = base
+    for part in posix.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError(f"symlink is not allowed in reviewer evidence path: {relative!r}")
+    target = cursor.resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"reviewer evidence path escapes root: {relative!r}") from exc
+    if not target.is_file():
+        raise ValueError(f"reviewer evidence file is missing or not regular: {relative!r}")
+    return target
+
+
 def validate_review_schema(evidence: dict) -> None:
     schema_path = Path(__file__).with_name("review.schema.json")
     schema = read(schema_path)
@@ -142,17 +167,33 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
     ids = set()
     models = set()
     roles = set()
+    sessions = set()
+    evidence_files = set()
     for reviewer in reviewers:
         rid = reviewer["reviewer_id"].strip()
+        provider = reviewer["provider"].strip()
         model = reviewer["model"].strip()
         role = reviewer["role"]
-        if not rid or not model:
-            raise ValueError("reviewer IDs and model identifiers must not be blank")
-        if rid in ids or model in models or role in roles:
-            raise ValueError("reviewers must have distinct IDs, model identifiers and roles")
+        session_id = reviewer["session_id"].strip()
+        if not rid or not provider or not model or not session_id:
+            raise ValueError("reviewer ID, provider, model and session ID must not be blank")
+        if rid != reviewer["reviewer_id"] or session_id != reviewer["session_id"]:
+            raise ValueError("reviewer IDs and session IDs must not contain surrounding whitespace")
+        if rid in ids or model in models or role in roles or session_id in sessions:
+            raise ValueError("reviewers must have distinct IDs, model identifiers, roles and session IDs")
         ids.add(rid)
         models.add(model)
         roles.add(role)
+        sessions.add(session_id)
+        prompt_hash = hashlib.sha256(reviewer["review_prompt"].encode("utf-8")).hexdigest()
+        if prompt_hash != reviewer["review_prompt_sha256"]:
+            raise ValueError(f"{rid}: review prompt hash mismatch")
+        raw_path = safe_evidence_file(reviews.parent, reviewer["raw_response_file"])
+        if reviewer["raw_response_file"] in evidence_files:
+            raise ValueError("reviewers must have separate raw response evidence files")
+        evidence_files.add(reviewer["raw_response_file"])
+        if digest(raw_path) != reviewer["raw_response_sha256"]:
+            raise ValueError(f"{rid}: raw reviewer response hash mismatch")
     if roles != ROLES:
         raise ValueError("reviewers must include exactly one art_director and one red_team")
 
@@ -238,7 +279,11 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
         "asset_count": len(jobs_by_id),
         "reviewed_count": len(rows),
         "reviewers": [
-            {"reviewer_id": item["reviewer_id"], "model": item["model"], "role": item["role"]}
+            {"reviewer_id": item["reviewer_id"], "provider": item["provider"], "model": item["model"],
+             "role": item["role"], "session_id": item["session_id"],
+             "review_prompt_sha256": item["review_prompt_sha256"],
+             "raw_response_file": item["raw_response_file"],
+             "raw_response_sha256": item["raw_response_sha256"]}
             for item in reviewers
         ],
         "criteria": list(CRITERIA),
