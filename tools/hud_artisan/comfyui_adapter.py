@@ -44,11 +44,19 @@ def open_http(req, base: str, timeout: int):
     return opener.open(req, timeout=timeout)
 
 
-def read_json(path: Path):
+def read_json(path: Path, max_bytes: int = MAX_JSON_BYTES):
     if path.is_symlink() or not path.is_file():
         raise ComfyError(f"JSON input must be a regular non-symlink file: {path}")
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ComfyError("JSON input byte limit must be a positive integer")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            raw = stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise ComfyError(f"JSON input exceeds {max_bytes} byte limit: {path}")
+        value = json.loads(raw.decode("utf-8"))
+    except ComfyError:
+        raise
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ComfyError(f"cannot read JSON {path}: {exc}") from exc
     if not isinstance(value, dict):
