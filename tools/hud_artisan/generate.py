@@ -25,6 +25,13 @@ ENGINE_ROLES = [
 "button_border_autocast_64","button_border_disabled_64","button_border_empty_64","control_group_button_active_44","control_group_button_inactive_44",
 "selection_panel_normal_240x180","menu_button_normal_256x64","score_panel_normal_1024x512","menu_button_pressed_256x64",
 "loading_frame_normal_1024x512","minimap_frame_normal_216"]
+ENGINE_FONT_FILES = (
+    "primary_serif_cyrillic.ttf",
+    "primary_serif_bold_cyrillic.ttf",
+    "actionbar_sans_cyrillic.ttf",
+    "actionbar_sans_bold_cyrillic.ttf",
+    "numeric_tabular.ttf",
+)
 ENGINE_ROLE_DIMENSIONS = {
     "console_left_cap_normal_256x288": (256,288),
     "console_left_mid_normal_256x288": (256,288),
@@ -150,10 +157,45 @@ def validate_engine_contract(doc:dict[str,Any])->None:
         raise ValueError("engine contract commandbuttons atlas file must be a declared asset")
     if (atlas_asset.get("w"),atlas_asset.get("h"))!=(2048,2048):
         raise ValueError(f"engine contract commandbuttons atlas must be 2048x2048, found {atlas_asset.get('w')}x{atlas_asset.get('h')}")
+    if atlas.get("size") != [2048,2048]:
+        raise ValueError("engine contract commandbuttons atlas size must be [2048,2048]")
+    if atlas.get("columns") != 32 or atlas.get("rows") != 32 or atlas.get("cell") != [64,64]:
+        raise ValueError("engine contract atlas grid must be 32x32 with 64x64 cells")
+    if atlas.get("rotation",False) is not False or atlas.get("padding",0) != 0:
+        raise ValueError("engine contract atlas rotation must be false and padding must be zero")
     entries=atlas.get("entries")
     if not isinstance(entries,list) or len(entries)!=20:
         raise ValueError(f"engine contract commandbuttons atlas requires 20 entries, found {len(entries) if isinstance(entries,list) else 0}")
+    font_files=doc.get("font_files")
+    if not isinstance(font_files,list) or len(font_files)!=5 or set(font_files)!=set(ENGINE_FONT_FILES):
+        raise ValueError("engine contract font_files must contain the five named HUD font assets")
     by_name={a.get("name"):a for a in assets}
+    atlas_ids=set();atlas_sources=set();atlas_slots=set()
+    for index,entry in enumerate(entries):
+        if not isinstance(entry,dict):
+            raise ValueError(f"engine contract atlas entry {index} must be an object")
+        ident=entry.get("id")
+        if not isinstance(ident,str) or not ident.strip() or ident in atlas_ids:
+            raise ValueError(f"engine contract atlas entry {index} has an empty or duplicate id")
+        atlas_ids.add(ident)
+        values=[entry.get(key) for key in ("x","y","w","h")]
+        if any(type(value) is not int for value in values):
+            raise ValueError(f"engine contract atlas entry {ident} coordinates must be integers")
+        x,y,w,h=values
+        if w!=64 or h!=64 or x<0 or y<0 or x%64 or y%64 or x+64>2048 or y+64>2048:
+            raise ValueError(f"engine contract atlas entry {ident} must be a 64x64 grid-aligned cell")
+        slot=(x//64,y//64)
+        if slot in atlas_slots:
+            raise ValueError(f"engine contract atlas entries overlap at cell {ident}")
+        atlas_slots.add(slot)
+        source=entry.get("source_asset") or entry.get("asset")
+        if not isinstance(source,str) or source not in by_name or by_name[source].get("file")==atlas_file:
+            raise ValueError(f"engine contract atlas entry {ident} must reference a declared non-atlas source_asset")
+        if source in atlas_sources:
+            raise ValueError(f"engine contract atlas source_asset is duplicated: {source}")
+        atlas_sources.add(source)
+        if "source_file" in entry and entry["source_file"] != by_name[source].get("file"):
+            raise ValueError(f"engine contract atlas entry {ident} source_file disagrees with source_asset")
     absent=sorted(set(ENGINE_ROLES)-set(by_name))
     if absent: raise ValueError("required engine roles missing: "+", ".join(absent))
     for name,expected_size in ENGINE_ROLE_DIMENSIONS.items():
