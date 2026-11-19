@@ -22,5 +22,6 @@
   "retries": 1,
   "max_parallel": 1,
   "references": [],
-  "postprocessing": []
+  "postprocessing": [],
+  "dependency_files": []
 }
