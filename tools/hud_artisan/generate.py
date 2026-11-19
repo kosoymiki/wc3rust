@@ -93,6 +93,23 @@ def safe_join_any(root:Path,relative:str|Path)->Path:
 def safe_join(root:Path,relative:str|Path)->Path:
     return safe_join_any(root,safe_rel(str(relative)))
 
+def atomic_write_text(path:Path,text:str)->None:
+    """Write text through a same-directory temporary file and atomic replacement."""
+    path.parent.mkdir(parents=True,exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"refusing to write through a symlink: {path}")
+    fd,temp_name=tempfile.mkstemp(prefix=f".{path.name}.",suffix=".tmp",dir=path.parent)
+    temporary=Path(temp_name)
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8",newline="\\n") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary,path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
 def read_json(path:Path)->dict[str,Any]:
     try: obj=json.loads(path.read_text(encoding="utf-8"))
     except (OSError,json.JSONDecodeError) as e: raise ValueError(f"cannot read {path}: {e}") from e
@@ -490,12 +507,21 @@ def verify_plan(manifest:Path,jobs_path:Path)->tuple[dict[str,Any],dict[str,Any]
 def plan(manifest:Path,out:Path,theme:str,seed:int,engine_contract:bool)->int:
     doc=load_manifest(manifest,engine_contract)
     jobs,atlas_plan=compile_jobs(doc,theme,seed)
-    out.mkdir(parents=True,exist_ok=True)
+    requested=out.expanduser()
+    if requested.is_symlink():
+        raise ValueError(f"plan output directory must not be a symlink: {requested}")
+    if requested.exists() and not requested.is_dir():
+        raise ValueError(f"plan output path is not a directory: {requested}")
+    requested.mkdir(parents=True,exist_ok=True)
+    out=requested.resolve()
+    jobs_file=out/"jobs.json"
+    pd=out/"prompts"
+    if jobs_file.is_symlink() or pd.is_symlink():
+        raise ValueError("plan output jobs.json/prompts must not be symlinks")
     payload={"tool":"HUD Artisan","schema_version":1,"version":VERSION,"theme":theme,"seed":seed,
       "engine_contract":engine_contract,"source_manifest_sha256":sha(manifest.read_bytes()),
       "job_count":len(jobs),"jobs":jobs,"atlas":atlas_plan}
-    (out/"jobs.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    pd=out/"prompts"
+    atomic_write_text(jobs_file,json.dumps(payload,ensure_ascii=False,indent=2)+"\\n")
     if pd.exists(): shutil.rmtree(pd)
     pd.mkdir(parents=True,exist_ok=True)
     prompt_names=set()
@@ -1033,9 +1059,15 @@ def contact_sheet(manifest:Path,pack:Path,out:Path,cols:int,cell:int)->int:
             tile.alpha_composite(im,((tile.width-im.width)//2,(tile.height-im.height)//2));canvas.paste(tile.convert("RGB"),(x+6,y+6))
         draw.text((x+8,y+cell+2),a["name"][:40],fill=(236,224,198))
     out.parent.mkdir(parents=True,exist_ok=True)
-    temporary=out.with_name(out.name+".tmp")
-    canvas.save(temporary,format="PNG")
-    temporary.replace(out)
+    if out.is_symlink():
+        raise ValueError(f"contact-sheet output must not be a symlink: {out}")
+    with tempfile.NamedTemporaryFile(dir=out.parent,suffix=".png",delete=False) as temporary:
+        temporary_path=Path(temporary.name)
+    try:
+        canvas.save(temporary_path,format="PNG")
+        os.replace(temporary_path,out)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     print(f"HUD_ARTISAN_CONTACT_SHEET {out} {canvas.width}x{canvas.height}");return 0
 
 def main(argv=None):
