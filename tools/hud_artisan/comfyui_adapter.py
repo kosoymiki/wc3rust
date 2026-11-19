@@ -319,7 +319,7 @@ def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
     for point in seeds:
         pixel = image.getpixel(point)
         if pixel[3] and sum(abs(pixel[i] - key[i]) for i in range(3)) <= tolerance * 3:
-            ImageDraw.floodfill(image, point, transparent, thresh=tolerance * 3)
+            ImageDraw.floodfill(image, point, transparent, thresh=tolerance)
     if image.getchannel("A").getbbox() is None:
         raise ComfyError("chroma-key removal erased the entire image; inspect background/key contrast")
     return image
