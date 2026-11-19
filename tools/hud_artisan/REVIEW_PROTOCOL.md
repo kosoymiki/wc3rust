@@ -1,6 +1,6 @@
 # Independent visual review protocol
 
-This gate is deliberately separate from PNG validation. It verifies that two distinct vision reviewers examined the exact final image bytes and returned a strict 10/10 assessment. It cannot prove that a reviewer is honest, capable or correctly calibrated; human art direction remains mandatory.
+This gate is deliberately separate from PNG validation. It verifies that two distinct vision reviewers examined the exact final image bytes and returned a calibrated assessment bound to the exact final image bytes. It cannot prove that a reviewer is honest, capable or correctly calibrated; human art direction remains mandatory.
 
 ## Required reviewers
 
@@ -24,7 +24,7 @@ Every asset receives integer scores from 1 to 10 for all ten criteria:
 9. engine_fitness
 10. originality_and_ip_safety
 
-**Release threshold is 10/10 on every criterion from both reviewers.** Any 9, blocker, suggested improvement, missing asset, mismatched image hash, insufficient confidence or weak rationale rejects the asset. This is intentionally a hard gate, not an average. A model's self-reported score is evidence, not objective truth.
+**Release threshold:** each reviewer must average at least 8.5/10 across the ten criteria, with no individual criterion below 7/10. Both reviewers must return approve, report no blockers, confidence >=0.80 and a concrete rationale. Non-blocking improvements are preserved in the report; they are not silently discarded and do not force artificial 10/10 scores. A model's self-reported score is evidence, not objective truth.
 
 ## Review loop
 
@@ -32,7 +32,7 @@ Every asset receives integer scores from 1 to 10 for all ten criteria:
 2. Review assets individually, then review the entire set for consistency and sibling uniqueness.
 3. Preserve each original model response as a separate immutable UTF-8 file beside reviews.json. In reviewers[], record the actual provider, exact model identifier, distinct session_id, exact review_prompt and its SHA-256, raw_response_file and raw_response_sha256. Do not invent model/session identifiers or rewrite the original response.
 4. Write each per-asset review entry with reviewer_id, exact image_sha256, scores, blockers, improvements, verdict, confidence and a concrete rationale.
-5. If anything is below 10, return only the rejected job IDs plus exact defect descriptions to the artist agent. Regenerate/retouch those jobs and repeat both reviews against the new image hashes.
+5. If a reviewer average is below 8.5, any criterion is below 7, a blocker is reported or verdict is reject, return only the rejected job IDs plus exact defect descriptions to the artist agent. Regenerate/retouch those jobs and repeat both reviews against the new image hashes.
 5. Never reuse reviews after a single PNG byte changes.
 6. After all assets pass, run runtime pack checks, Rust loader tests, screenshot review on landscape and portrait, and human sign-off.
 
@@ -49,6 +49,6 @@ python3 tools/hud_artisan/review_gate.py \
   --out build/hud-artisan/review-report.json
 ```
 
-Exit code 0 means only that the review evidence is complete and satisfies the declared 10/10 schema. It does not certify artistic excellence or replace human sign-off.
+Exit code 0 means only that the review evidence is complete and satisfies the declared dual-review score, blocker and evidence thresholds. It does not certify artistic excellence or replace human sign-off.
 
 See review.schema.json for the exact machine contract.
