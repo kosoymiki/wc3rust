@@ -313,7 +313,7 @@ impl HudPack {
     /// Existing textures are untouched: the pack appends and records the
     /// returned indices.
     pub fn load(root: &Path, textures: &mut Vec<TextureImage>) -> Result<Self, PackError> {
-        let manifest_path = root.join("manifest.json");
+        let manifest_path = pack_file(root, "manifest.json", "manifest")?;
         let text = std::fs::read_to_string(&manifest_path).map_err(|error| PackError::Io {
             path: manifest_path.display().to_string(),
             error: error.to_string(),
@@ -1466,10 +1466,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temp");
         std::fs::create_dir_all(root.join("fonts")).expect("fonts dir");
-        std::fs::write(root.join("fonts/f.ttf"), b"").expect("placeholder font");
+        for font in ["f.ttf","f2.ttf","f3.ttf","f4.ttf","f5.ttf"] {
+            std::fs::write(root.join("fonts").join(font), b"").expect("placeholder font");
+        }
         std::fs::write(
             root.join("manifest.json"),
-            r#"{"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},"safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},"command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},"control_groups":{"count":10,"cell":[44,44]},"atlas":{"commandbuttons":{"file":"a.png","size":[64,64],"cell":[64,64],"columns":1,"rows":1,"entries":[{"id":"x","x":0,"y":0,"w":64,"h":64}]}},"assets":[{"name":"a","file":"a.png","w":64,"h":64,"insets":{"l":0,"t":0,"r":0,"b":0},"states":[],"atlas":"standalone","mips":false}],"font_files":["f.ttf"]}"#,
+            r#"{"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},"safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},"command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},"control_groups":{"count":10,"cell":[44,44]},"atlas":{"commandbuttons":{"file":"a.png","size":[64,64],"cell":[64,64],"columns":1,"rows":1,"entries":[{"id":"x","x":0,"y":0,"w":64,"h":64}]}},"assets":[{"name":"a","file":"a.png","w":64,"h":64,"insets":{"l":0,"t":0,"r":0,"b":0},"states":[],"atlas":"standalone","mips":false}],"font_files":["f.ttf","f2.ttf","f3.ttf","f4.ttf","f5.ttf"]}"#,
         )
         .expect("manifest");
         let error = HudPack::load(&root, &mut Vec::new()).expect_err("missing a.png");
