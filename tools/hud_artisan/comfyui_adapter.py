@@ -360,16 +360,34 @@ def chroma_key_background(image, key=(255, 0, 255), tolerance=48):
     return image
 
 
-def enforce_frame_aperture(image):
-    """Make the declared central portrait/minimap viewport truly transparent."""
-    from PIL import ImageDraw
+def enforce_frame_aperture(image, key=(255, 0, 255), tolerance=48):
+    """Remove only chroma-key pixels inside the frame aperture; never erase artwork."""
+    from PIL import ImageChops
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
     width, height = image.size
-    ImageDraw.Draw(image).rectangle(
-        (int(width * 0.30), int(height * 0.30),
-         max(int(width * 0.70) - 1, int(width * 0.30)),
-         max(int(height * 0.70) - 1, int(height * 0.30))),
-        fill=(0, 0, 0, 0),
-    )
+    x0, y0 = int(width * 0.30), int(height * 0.30)
+    x1, y1 = max(x0 + 1, int(width * 0.70)), max(y0 + 1, int(height * 0.70))
+    red, green, blue = image.convert("RGB").split()
+    differences = [
+        ImageChops.difference(channel, Image.new("L", (width, height), value))
+        for channel, value in zip((red, green, blue), key)
+    ]
+    distance = ImageChops.lighter(ImageChops.lighter(differences[0], differences[1]), differences[2])
+    key_mask = distance.point(lambda value: 255 if value <= tolerance else 0)
+    aperture_mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(aperture_mask).rectangle((x0, y0, x1 - 1, y1 - 1), fill=255)
+    remove_mask = ImageChops.multiply(key_mask, aperture_mask)
+    alpha = image.getchannel("A")
+    image.putalpha(ImageChops.multiply(alpha, ImageChops.invert(remove_mask)))
+    aperture_alpha = image.getchannel("A").crop((x0, y0, x1, y1))
+    histogram = aperture_alpha.histogram()
+    transparent_ratio = sum(histogram[:9]) / max(1, aperture_alpha.width * aperture_alpha.height)
+    if transparent_ratio < 0.97:
+        raise ComfyError(
+            f"frame aperture matte transparency is {transparent_ratio:.3f}; expected >=0.970; "
+            "only near-key pixels were removed"
+        )
     return image
 
 
@@ -407,6 +425,17 @@ def main(argv=None) -> int:
                 or not 1 <= timeout <= 300 or not 1 <= max_wait <= 86400
                 or not 0.2 <= interval <= 30):
             raise ComfyError("invalid request timeout / max wait / poll interval")
+        alpha_strategy = cfg.get("alpha_strategy", "auto")
+        if alpha_strategy not in ("auto", "preserve", "chroma_key"):
+            raise ComfyError("alpha_strategy must be auto, preserve or chroma_key")
+        raw_key = cfg.get("chroma_key_color", [255, 0, 255])
+        if (not isinstance(raw_key, list) or len(raw_key) != 3
+                or any(type(value) is not int or not 0 <= value <= 255 for value in raw_key)):
+            raise ComfyError("chroma_key_color must contain exactly three integers in 0..255")
+        key_tolerance = cfg.get("chroma_key_tolerance", 48)
+        if type(key_tolerance) is not int or not 1 <= key_tolerance <= 255:
+            raise ComfyError("chroma_key_tolerance must be an integer in 1..255")
+        chroma_key = tuple(raw_key)
 
         workflow_value = cfg.get("workflow_file")
         if not isinstance(workflow_value, str) or not workflow_value.strip():
@@ -481,9 +510,20 @@ def main(argv=None) -> int:
                 if image.format != "PNG":
                     raise ComfyError(f"ComfyUI returned {image.format}, expected PNG")
                 rgba = image.convert("RGBA")
+                render_expected = (job.get("render_width", job["width"]),
+                                   job.get("render_height", job["height"]))
+                if rgba.size != render_expected:
+                    raise ComfyError(
+                        f"ComfyUI output size {rgba.size} != render canvas {render_expected}"
+                    )
+                if job.get("requires_alpha") and alpha_strategy != "preserve":
+                    rgba = chroma_key_background(rgba, chroma_key, key_tolerance)
+                    if job.get("family") in ("portrait-frame", "minimap-frame"):
+                        rgba = enforce_frame_aperture(rgba, chroma_key, key_tolerance)
                 expected = (job["width"], job["height"])
                 if rgba.size != expected:
-                    raise ComfyError(f"ComfyUI output size {rgba.size} != requested {expected}; no silent resizing")
+                    # Resize premultiplied alpha to avoid RGB fringes around transparent edges.
+                    rgba = rgba.convert("RGBa").resize(expected, Image.Resampling.LANCZOS).convert("RGBA")
                 alpha = rgba.getchannel("A")
                 if alpha.getbbox() is None:
                     raise ComfyError("ComfyUI output is fully transparent")
