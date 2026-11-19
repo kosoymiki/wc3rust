@@ -198,6 +198,85 @@ def save_atomic(image: Image.Image, path: Path) -> None:
         temp.unlink(missing_ok=True)
 
 
+def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> dict[str, Any]:
+    atlas_spec=manifest.get("atlas",{}).get("commandbuttons",{})
+    atlas_file=atlas_spec.get("file")
+    entries=atlas_spec.get("entries",[])
+    if not isinstance(atlas_file,str) or not isinstance(entries,list):
+        return {"status":"unavailable","reason":"manifest atlas.commandbuttons is malformed","cells":[],"findings":[]}
+    try:
+        atlas_path=safe_file(pack,atlas_file)
+        with Image.open(atlas_path) as source:
+            source.load()
+            if source.format!="PNG":
+                raise ValueError("atlas is not PNG")
+            atlas=source.convert("RGBA")
+    except Exception as exc:
+        return {"status":"error","reason":str(exc),"file":atlas_file,"cells":[],"findings":[]}
+    jobs_by_output={}
+    if jobs_plan and isinstance(jobs_plan.get("jobs"),list):
+        jobs_by_output={job.get("output"):job for job in jobs_plan["jobs"] if isinstance(job,dict)}
+    planned_cells={}
+    if jobs_plan and isinstance(jobs_plan.get("atlas"),dict):
+        planned_cells={cell.get("id"):cell for cell in jobs_plan["atlas"].get("cells",[]) if isinstance(cell,dict)}
+    cells=[];findings=[];columns=4;card_w=184;card_h=208
+    rows=math.ceil(len(entries)/columns)
+    board=Image.new("RGB",(columns*card_w,max(1,rows)*card_h),(34,34,38))
+    draw=ImageDraw.Draw(board)
+    for index,entry in enumerate(entries):
+        if not isinstance(entry,dict):
+            findings.append({"id":f"entry-{index}","reason":"malformed_atlas_entry"})
+            continue
+        ident=str(entry.get("id",f"entry-{index}"))
+        try:
+            x,y,w,h=(int(entry[k]) for k in ("x","y","w","h"))
+            if min(x,y)<0 or min(w,h)<=0 or x+w>atlas.width or y+h>atlas.height:
+                raise ValueError("cell outside atlas bounds")
+            crop=atlas.crop((x,y,x+w,y+h))
+            alpha=crop.getchannel("A");hist=alpha.histogram();total=w*h
+            bbox=alpha.getbbox()
+            sample=crop.resize((min(32,w),min(32,h)),Image.Resampling.LANCZOS)
+            colors=len(set(sample.getdata()))
+            cell={"id":ident,"x":x,"y":y,"width":w,"height":h,
+                  "transparent_ratio":round(hist[0]/total,6),
+                  "semi_transparent_pixels":sum(hist[1:255]),
+                  "opaque_ratio":round(hist[255]/total,6),
+                  "alpha_bbox":list(bbox) if bbox else None,
+                  "sample_unique_rgba":colors,
+                  "sha256":hashlib.sha256(crop.tobytes()).hexdigest()}
+            planned=planned_cells.get(ident,{})
+            source_file=planned.get("source_file")
+            job=jobs_by_output.get(source_file)
+            if job:
+                cell["job_asset"]=job.get("asset")
+                cell["job_id"]=job.get("job_id")
+            if bbox is None:
+                cell["findings"]=["fully_transparent_atlas_cell"]
+                findings.append({"id":ident,"reason":"fully_transparent_atlas_cell",
+                                 "asset":cell.get("job_asset"),"job_id":cell.get("job_id")})
+            else:
+                cell["findings"]=[]
+            cells.append(cell)
+            cx=(index%columns)*card_w;cy=(index//columns)*card_h
+            draw.text((cx+8,cy+6),ident[:26],fill=(245,230,195))
+            preview=composite(crop,"checker")
+            preview.thumbnail((152,152),Image.Resampling.NEAREST)
+            board.paste(preview,(cx+16+(152-preview.width)//2,cy+36+(152-preview.height)//2))
+            draw.text((cx+8,cy+190),f"{w}x{h}  alpha {hist[0]/total:.2f}",
+                      fill=(235,235,235))
+        except Exception as exc:
+            findings.append({"id":ident,"reason":str(exc)})
+            cx=(index%columns)*card_w;cy=(index//columns)*card_h
+            draw.text((cx+8,cy+8),ident[:26],fill=(255,220,180))
+            draw.text((cx+8,cy+34),str(exc)[:26],fill=(255,80,80))
+    sheet_path=out/"contact-sheets"/"atlas-cells.png"
+    if entries:
+        save_atomic(board,sheet_path)
+    return {"status":"ok","file":atlas_file,"dimensions":[atlas.width,atlas.height],
+            "entry_count":len(entries),"scanned":len(cells),"findings":findings,
+            "cells":cells,"contact_sheet":str(sheet_path) if entries else None}
+
+
 def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         iou_min: float, diff_min: float, diff_max: float) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -259,11 +338,18 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             flagged.add(row["name"])
     regeneration = []
     job_map = {}
+    plan = None
     if jobs_path:
         plan = json.loads(jobs_path.read_text(encoding="utf-8"))
         if plan.get("source_manifest_sha256") != hashlib.sha256(manifest_path.read_bytes()).hexdigest():
             raise ValueError("jobs.json manifest hash mismatch")
         job_map = {job.get("asset"): job for job in plan.get("jobs", [])}
+    atlas_report=atlas_qa(manifest,pack,out,plan)
+    if atlas_report.get("status")!="ok":
+        errors.append({"asset":"commandbuttons_atlas","error":atlas_report.get("reason","atlas QA unavailable")})
+    for finding in atlas_report.get("findings",[]):
+        if finding.get("asset"):
+            flagged.add(finding["asset"])
     for name in sorted(flagged):
         job=job_map.get(name)
         reasons=[]
@@ -274,6 +360,9 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         asset_record=next((row for row in records if row["name"]==name),None)
         if asset_record:
             reasons.extend(asset_record.get("alpha_qa",{}).get("findings",[]))
+        for cell in atlas_report.get("cells",[]):
+            if cell.get("job_asset")==name:
+                reasons.extend(cell.get("findings",[]))
         regeneration.append({
             "asset": name, "reason": sorted(set(reasons)) or ["QA finding"],
             "job": job,
@@ -285,7 +374,7 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         "schema_version": 1, "tool": "HUD Artisan production QA",
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "pack_assets": len(assets), "scanned": len(records), "errors": errors,
-        "assets": records,
+        "assets": records, "atlas": atlas_report,
         "state_families": state_families, "regeneration_candidates": regeneration,
         "contact_sheets": sheets,
         "thresholds": {"state_iou_min": iou_min, "state_difference_min": diff_min,
