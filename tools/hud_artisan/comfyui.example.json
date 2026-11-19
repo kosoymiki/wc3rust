@@ -27,5 +27,13 @@
   "output_node_id": "9",
   "request_timeout_seconds": 60,
   "max_wait_seconds": 1800,
-  "poll_interval_seconds": 1
+  "poll_interval_seconds": 1,
+  "workflow_format": "api",
+  "alpha_strategy": "preserve",
+  "chroma_key_color": [
+    255,
+    0,
+    255
+  ],
+  "chroma_key_tolerance": 48
 }
