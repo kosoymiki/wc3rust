@@ -103,7 +103,9 @@ def validate_job(job: dict) -> None:
     if "family" in job and not isinstance(job["family"], str):
         raise ComfyError("job.family must be a string")
     for key in ("render_width", "render_height"):
-        value = job.get(key, job["width"] if key == "render_width" else job["height"])
+        if key not in job:
+            continue
+        value = job[key]
         if type(value) is not int or not 16 <= value <= 8192 or value % 16:
             raise ComfyError(f"job.{key} must be a multiple of 16 between 16 and 8192")
     render_width = job.get("render_width", job["width"])
