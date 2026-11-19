@@ -66,7 +66,7 @@ class ProductionQATests(unittest.TestCase):
         ImageDraw.Draw(atlas).rectangle((1, 1, 6, 6), fill=(210, 130, 35, 255))
         atlas.save(self.pack/"atlas.png")
         manifest = {"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
-            {"id":"visible","x":0,"y":0,"w":8,"h":8},
+            {"id":"visible","x":0,"y":0,"w":8,"h":8,"source_file":"atlas_sources/visible.png"},
             {"id":"empty","x":8,"y":0,"w":8,"h":8}
         ]}}}
         plan = {"jobs":[{"asset":"command_icon_empty","job_id":"0123456789abcdef",
@@ -86,7 +86,7 @@ class ProductionQATests(unittest.TestCase):
         manifest={"assets":[{"name":"command_icon_01","file":"source.png","w":8,"h":8}],
             "atlas":{"commandbuttons":{"file":"atlas.png","cell":[8,8],"entries":[
                 {"id":"command_01","x":0,"y":0,"w":8,"h":8,"source_asset":"command_icon_01"},
-                {"id":"command_02","x":8,"y":0,"w":8,"h":8}
+                {"id":"command_02","x":8,"y":0,"w":8,"h":8,"source_file":"atlas_sources/command_02.png"}
             ]}}}
         Image.new("RGBA",(8,8),(0,0,0,0)).save(self.pack/"source.png")
         report=qa.atlas_qa(manifest,self.pack,self.root/"atlas-source",None)
@@ -131,8 +131,8 @@ class ProductionQATests(unittest.TestCase):
     def test_atlas_overlap_is_reported(self):
         Image.new("RGBA",(16,8),(0,0,0,0)).save(self.pack/"atlas.png")
         report=qa.atlas_qa({"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
-            {"id":"one","x":0,"y":0,"w":10,"h":8},
-            {"id":"two","x":8,"y":0,"w":8,"h":8}
+            {"id":"one","x":0,"y":0,"w":10,"h":8,"source_file":"atlas_sources/one.png"},
+            {"id":"two","x":8,"y":0,"w":8,"h":8,"source_file":"atlas_sources/two.png"}
         ]}}},self.pack,self.root/"atlas-out",None)
         self.assertEqual(report["scanned"],1)
         self.assertTrue(any("overlaps previously declared cell" in item["reason"] for item in report["findings"]))
