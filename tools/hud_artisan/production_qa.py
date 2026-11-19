@@ -198,6 +198,101 @@ def save_atomic(image: Image.Image, path: Path) -> None:
         temp.unlink(missing_ok=True)
 
 
+def render_asset_thumbnails(assets: list[dict], pack: Path, out: Path) -> dict[str,str]:
+    out.mkdir(parents=True,exist_ok=True)
+    result={}
+    for asset in assets:
+        name=asset.get("name")
+        try:
+            source=safe_file(pack,asset["file"])
+            with Image.open(source) as raw:
+                raw.load()
+                tile=Image.new("RGBA",(176,176),(0,0,0,0))
+                image=raw.convert("RGBA")
+                image.thumbnail((160,160),Image.Resampling.LANCZOS)
+                tile.alpha_composite(image,((176-image.width)//2,(176-image.height)//2))
+            filename=hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:12]+".png"
+            path=out/filename
+            save_atomic(composite(tile,"checker"),path)
+            result[name]=path.relative_to(out.parent).as_posix()
+        except Exception:
+            continue
+    return result
+
+
+def write_review_gallery(records: list[dict], thumbnails: dict[str,str], sheets: list[str],
+                         atlas_report: dict, report: dict, out: Path) -> str:
+    import html
+    out.mkdir(parents=True,exist_ok=True)
+    summary=report.get("summary",{})
+    images=[]
+    for record in records:
+        name=str(record.get("name",""))
+        alpha=record.get("alpha_qa",{})
+        findings=alpha.get("findings",[])
+        thumb=thumbnails.get(name)
+        if not thumb:
+            continue
+        findings_html=", ".join(html.escape(str(x)) for x in findings) or "no alpha flags"
+        images.append(
+            '<article class="asset" data-name="'+html.escape(name,quote=True).lower()+'">'
+            '<img loading="lazy" src="'+html.escape(thumb,quote=True)+'" alt="'+html.escape(name,quote=True)+'">'
+            '<h3>'+html.escape(name)+'</h3>'
+            '<p>'+html.escape(str(record.get("width","?")))+' × '+html.escape(str(record.get("height","?")))+'</p>'
+            '<p>transparent '+html.escape(str(alpha.get("alpha",{}).get("transparent_ratio","?")))+
+            ' · semi '+html.escape(str(alpha.get("alpha",{}).get("semi_transparent_ratio","?")))+
+            '</p><p class="finding">'+findings_html+'</p></article>'
+        )
+    sheet_html="".join('<figure><img loading="lazy" src="'+html.escape(Path(path).relative_to(out.parent).as_posix(),quote=True)+
+                       '" alt="'+html.escape(Path(path).stem,quote=True)+'"><figcaption>'+
+                       html.escape(Path(path).stem)+'</figcaption></figure>' for path in sheets)
+    atlas_sheet=atlas_report.get("contact_sheet")
+    if atlas_sheet:
+        sheet_html+='<figure><img loading="lazy" src="'+html.escape(Path(atlas_sheet).relative_to(out.parent).as_posix(),quote=True)+
+                    '" alt="Atlas cells"><figcaption>Atlas cells</figcaption></figure>'
+    document='''<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HUD Artisan — Visual QA</title>
+<style>
+:root{color-scheme:dark;background:#171719;color:#eee;font:14px system-ui,sans-serif}
+body{max-width:1440px;margin:auto;padding:24px}h1,h2{color:#e9c98d}
+.summary{display:flex;gap:18px;flex-wrap:wrap;padding:14px;background:#252529;border-radius:10px}
+.sheets{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+figure{margin:0;background:#252529;padding:8px;border-radius:8px}figure img{width:100%;height:auto}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
+.asset{background:#252529;border-radius:8px;padding:10px;min-width:0}
+.asset img{display:block;width:176px;height:176px;max-width:100%;object-fit:contain;margin:auto}
+.asset h3{font-size:14px;overflow-wrap:anywhere}.asset p{margin:5px 0;color:#bbb}
+.finding{color:#efbd72!important}.search{width:min(420px,100%);padding:10px;border-radius:7px;border:1px solid #555;background:#222;color:#fff}
+</style>
+<body><h1>HUD Artisan — Visual QA</h1>
+<div class="summary"><span>Assets: '''+html.escape(str(report.get("scanned",0)))+'''</span>
+<span>Read errors: '''+html.escape(str(len(report.get("errors",[]))))+'''</span>
+<span>State families: '''+html.escape(str(summary.get("state_families",0)))+'''</span>
+<span>Flagged: '''+html.escape(str(summary.get("flagged_assets",0)))+'''</span>
+<span>Atlas cells: '''+html.escape(str(atlas_report.get("scanned",0)))+'''</span></div>
+<h2>Full-pack contact sheets</h2><div class="sheets">'''+sheet_html+'''</div>
+<h2>Asset gallery</h2><input class="search" id="filter" placeholder="Filter assets by name" autocomplete="off">
+<div class="gallery" id="gallery">'''+''.join(images)+'''</div>
+<script>
+const input=document.getElementById('filter');
+input.addEventListener('input',()=>{const q=input.value.toLowerCase();
+document.querySelectorAll('.asset').forEach(card=>{card.hidden=!card.dataset.name.includes(q)})});
+</script></body></html>
+'''
+    path=out/"review.html"
+    if path.is_symlink():
+        raise ValueError("review gallery output must not be a symlink")
+    fd,temp_name=tempfile.mkstemp(prefix=".review.",suffix=".tmp",dir=out)
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8") as stream:
+            stream.write(document);stream.flush();os.fsync(stream.fileno())
+        os.replace(temp_name,path)
+    finally:
+        Path(temp_name).unlink(missing_ok=True)
+    return str(path)
+
+
 def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> dict[str, Any]:
     atlas_spec=manifest.get("atlas",{}).get("commandbuttons",{})
     if not atlas_spec:
@@ -372,13 +467,17 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             "note": "Use generate.py repair-plan to create a deterministic full-batch plan; selective dispatch still requires verified prior provenance."
         })
     sheets = render_contact_sheets(assets, pack, out / "contact-sheets")
+    thumbnails=render_asset_thumbnails(assets,pack,out/"thumbnails")
+    gallery=write_review_gallery(records,thumbnails,sheets,atlas_report,
+        {"scanned":len(records),"errors":errors,"summary":{"state_families":len(state_families),
+         "flagged_assets":len(flagged)}},out)
     return {
         "schema_version": 1, "tool": "HUD Artisan production QA",
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "pack_assets": len(assets), "scanned": len(records), "errors": errors,
         "assets": records, "atlas": atlas_report,
         "state_families": state_families, "regeneration_candidates": regeneration,
-        "contact_sheets": sheets,
+        "contact_sheets": sheets, "review_gallery": gallery,
         "thresholds": {"state_iou_min": iou_min, "state_difference_min": diff_min,
                        "state_difference_max": diff_max},
         "summary": {"state_families": len(state_families), "flagged_assets": len(flagged),
