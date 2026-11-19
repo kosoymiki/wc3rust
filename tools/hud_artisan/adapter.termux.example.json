@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "termux-comfyui-z-image-local",
   "provider": "ComfyUI local (Termux)",
-  "model": "z_image_turbo_bf16.safetensors + qwen_3_4b.safetensors",
+  "model": "Z-Image Turbo BF16 + Qwen 3 4B CLIP + ae.safetensors VAE; AuraFlow shift=3; KSampler 8 steps / CFG 1 / res_multistep / simple",
   "license": "Record exact checkpoint/text-encoder license from their local model cards before redistribution",
   "working_directory": "../..",
   "command": [
