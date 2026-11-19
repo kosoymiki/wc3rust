@@ -1,0 +1,64 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+import alpha_qa
+
+
+class AlphaQATests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def save(self, name, image):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, format="PNG")
+        return path
+
+    def test_transparent_frame_is_measured_without_mutation(self):
+        image = Image.new("RGBA", (64, 64), (120, 80, 30, 255))
+        ImageDraw.Draw(image).rectangle((20, 20, 43, 43), fill=(0, 0, 0, 0))
+        path = self.save("frame.png", image)
+        before = alpha_qa._sha256(path)
+        item = alpha_qa.inspect_png(path, self.root)
+        self.assertGreater(item["alpha"]["transparent_ratio"], 0)
+        self.assertEqual(item["alpha"]["bbox"], [0, 0, 64, 64])
+        self.assertEqual(alpha_qa._sha256(path), before)
+
+    def test_opaque_image_flags_missing_required_alpha(self):
+        path = self.save("opaque.png", Image.new("RGB", (16, 16), (20, 30, 40)))
+        item = alpha_qa.inspect_png(path, self.root)
+        self.assertIn("alpha_required_but_opaque", alpha_qa.classify(item, True, 0.01))
+
+    def test_magenta_fringe_is_detected(self):
+        image = Image.new("RGBA", (16, 16), (40, 90, 50, 255))
+        image.putpixel((8, 8), (255, 0, 255, 255))
+        item = alpha_qa.inspect_png(self.save("fringe.png", image), self.root)
+        self.assertIn("possible_chroma_key_fringe", alpha_qa.classify(item, False, 0.001))
+
+    def test_fully_transparent_image_is_flagged(self):
+        item = alpha_qa.inspect_png(
+            self.save("empty.png", Image.new("RGBA", (8, 8), (0, 0, 0, 0))), self.root)
+        self.assertIn("fully_transparent", alpha_qa.classify(item, False, 0.01))
+
+    def test_build_report_counts_errors_and_flags(self):
+        self.save("good.png", Image.new("RGBA", (8, 8), (10, 20, 30, 255)))
+        self.save("bad.png", Image.new("RGBA", (8, 8), (0, 0, 0, 0)))
+        report = alpha_qa.build_report(list(self.root.glob("*.png")), self.root)
+        self.assertEqual(report["summary"]["scanned"], 2)
+        self.assertEqual(report["summary"]["flagged"], 1)
+        self.assertFalse(report["summary"]["pass"])
+
+    def test_invalid_ratio_rejected(self):
+        with self.assertRaises(ValueError):
+            alpha_qa.build_report([], self.root, max_key_ratio=1.1)
+
+
+if __name__ == "__main__":
+    unittest.main()
