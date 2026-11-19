@@ -952,7 +952,6 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
     Image,_,_=image_modules
     drop.mkdir(parents=True,exist_ok=True)
     jobs_digest=sha(jobs_path.read_bytes())
-    adapter_digest=sha(adapter_path.read_bytes())
     worker_report=safe_join_any(drop,"reports/worker-results.json")
     resume_rows={}
     if resume and worker_report.is_file():
