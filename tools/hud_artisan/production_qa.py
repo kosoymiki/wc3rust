@@ -416,6 +416,8 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
             if runtime_contract and (x%expected_cell[0] or y%expected_cell[1]
                 or x//expected_cell[0]>=grid_columns or y//expected_cell[1]>=grid_rows):
                 raise ValueError("cell is not aligned to the declared atlas grid")
+            if runtime_contract and (type(entry.get("page")) is not int or entry["page"] != 0):
+                raise ValueError("cell must reference atlas page 0")
             for previous in cells:
                 px,py,pw,ph=(previous[k] for k in ("x","y","width","height"))
                 if x<px+pw and px<x+w and y<py+ph and py<y+h:
