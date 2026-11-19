@@ -17,6 +17,45 @@ class ComfyAdapterTests(unittest.TestCase):
                 with self.assertRaises(adapter.ComfyError):
                     adapter.validate_server_url(value)
 
+    def test_comfyui_http_redirects_are_rejected(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from urllib import error, request
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "/redirect-target")
+                self.end_headers()
+            def log_message(self, *_args):
+                pass
+
+        server=HTTPServer(("127.0.0.1",0),RedirectHandler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        try:
+            base=f"http://127.0.0.1:{server.server_port}"
+            req=request.Request(base+"/")
+            with self.assertRaises(error.HTTPError) as caught:
+                adapter.open_http(req,base,2)
+            self.assertEqual(caught.exception.code,302)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_read_json_rejects_symlink_inputs(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/"source.json"
+            source.write_text("{}",encoding="utf-8")
+            link=Path(directory)/"alias.json"
+            link.symlink_to(source)
+            with self.assertRaisesRegex(adapter.ComfyError,"non-symlink"):
+                adapter.read_json(link)
+
     def test_workflow_sha256_pin_accepts_exact_file_and_rejects_drift(self):
         import hashlib
         import tempfile
