@@ -31,9 +31,13 @@ def digest(path: Path) -> str:
 
 
 def safe_file(root: Path, relative: str) -> Path:
+    if not isinstance(relative,str) or not relative or "\\" in relative or "\x00" in relative:
+        raise ValueError(f"unsafe relative asset path: {relative!r}")
     rel = Path(relative)
     if rel.is_absolute() or not rel.parts or any(x in ("", ".", "..") for x in rel.parts):
         raise ValueError(f"unsafe relative asset path: {relative!r}")
+    if root.is_symlink():
+        raise ValueError(f"pack root must not be a symlink: {root}")
     base = root.resolve()
     current = base
     for part in rel.parts:
@@ -44,6 +48,19 @@ def safe_file(root: Path, relative: str) -> Path:
     if not result.is_relative_to(base):
         raise ValueError(f"asset escapes pack root: {relative}")
     return result
+
+
+def ensure_output_dir(path: Path) -> Path:
+    absolute=path.absolute()
+    cursor=Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        cursor=cursor/part
+        if cursor.is_symlink():
+            raise ValueError(f"symlink output path component rejected: {cursor}")
+    path.mkdir(parents=True,exist_ok=True)
+    if not path.is_dir():
+        raise ValueError(f"output path is not a directory: {path}")
+    return path.resolve()
 
 
 def checker(size: tuple[int, int], cell: int = 12) -> Image.Image:
@@ -69,11 +86,10 @@ def composite(im: Image.Image, mode: str) -> Image.Image:
 
 def state_key(name: str) -> tuple[str, str | None]:
     tokens = name.lower().split("_")
-    found = [token for token in STATE_TOKENS if token in tokens]
-    if not found:
+    token = next((value for value in reversed(tokens) if value in STATE_TOKENS), None)
+    if token is None:
         return name.lower(), None
-    # Only remove one explicit state token. This avoids merging unrelated names.
-    token = found[-1]
+    # Remove the right-most state token: asset naming convention is base_state.
     tokens.remove(token)
     return "_".join(tokens), token
 
@@ -149,7 +165,7 @@ def render_contact_sheets(assets: list[dict], pack: Path, out: Path,
                           scales=(1.0, 0.5, 0.25), columns: int = 4) -> list[str]:
     if out.is_symlink() or (out.exists() and not out.is_dir()):
         raise ValueError("contact-sheet output directory must be a regular directory")
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_output_dir(out)
     paths = []
     card_w, image_h, label_h, gap = 560, 190, 48, 12
     for mode in ("dark", "light", "checker"):
@@ -189,7 +205,12 @@ def render_contact_sheets(assets: list[dict], pack: Path, out: Path,
 def save_atomic(image: Image.Image, path: Path) -> None:
     if path.is_symlink():
         raise ValueError(f"refusing symlink output: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_output_dir(path.parent)
+    cursor=path.parent
+    while cursor != cursor.parent:
+        if cursor.is_symlink():
+            raise ValueError(f"refusing symlink output directory: {cursor}")
+        cursor=cursor.parent
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     os.close(fd)
     temp = Path(temp_name)
@@ -203,7 +224,7 @@ def save_atomic(image: Image.Image, path: Path) -> None:
 def render_asset_thumbnails(assets: list[dict], pack: Path, out: Path) -> dict[str,str]:
     if out.is_symlink() or (out.exists() and not out.is_dir()):
         raise ValueError("thumbnail output directory must be a regular directory")
-    out.mkdir(parents=True,exist_ok=True)
+    ensure_output_dir(out)
     result={}
     for asset in assets:
         name=asset.get("name")
@@ -227,7 +248,7 @@ def render_asset_thumbnails(assets: list[dict], pack: Path, out: Path) -> dict[s
 def write_review_gallery(records: list[dict], thumbnails: dict[str,str], sheets: list[str],
                          atlas_report: dict, report: dict, out: Path) -> str:
     import html
-    out.mkdir(parents=True,exist_ok=True)
+    ensure_output_dir(out)
     summary=report.get("summary",{})
     images=[]
     for record in records:
@@ -336,9 +357,18 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
             continue
         ident=str(entry.get("id",f"entry-{index}"))
         try:
-            x,y,w,h=(int(entry[k]) for k in ("x","y","w","h"))
-            if min(x,y)<0 or min(w,h)<=0 or x+w>atlas.width or y+h>atlas.height:
-                raise ValueError("cell outside atlas bounds")
+            raw=(entry.get("x"),entry.get("y"),entry.get("w"),entry.get("h"))
+            if any(type(value) is not int for value in raw):
+                raise ValueError("cell coordinates and dimensions must be integers")
+            x,y,w,h=raw
+            if not ident or min(x,y)<0 or min(w,h)<=0 or x+w>atlas.width or y+h>atlas.height:
+                raise ValueError("cell outside atlas bounds or invalid ID")
+            for previous in cells:
+                px,py,pw,ph=(previous[k] for k in ("x","y","width","height"))
+                if x<px+pw and px<x+w and y<py+ph and py<y+h:
+                    raise ValueError(f"cell overlaps previously declared cell {previous['id']}")
+            if any(cell["id"]==ident for cell in cells):
+                raise ValueError("duplicate atlas cell ID")
             crop=atlas.crop((x,y,x+w,y+h))
             alpha=crop.getchannel("A");hist=alpha.histogram();total=w*h
             bbox=alpha.getbbox()
@@ -386,10 +416,26 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
 
 def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         iou_min: float, diff_min: float, diff_max: float) -> dict[str, Any]:
+    if not math.isfinite(iou_min) or not 0.0 <= iou_min <= 1.0:
+        raise ValueError("state_iou_min must be finite and between 0 and 1")
+    if not math.isfinite(diff_min) or not math.isfinite(diff_max) or not 0.0 <= diff_min <= diff_max <= 1.0:
+        raise ValueError("state difference thresholds must satisfy 0 <= min <= max <= 1")
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("manifest must be a regular non-symlink file")
+    if pack.is_symlink() or not pack.is_dir():
+        raise ValueError("pack root must be a regular non-symlink directory")
+    ensure_output_dir(out)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assets = manifest.get("assets")
     if not isinstance(assets, list) or not assets:
         raise ValueError("manifest assets must be a non-empty array")
+    names=set();files=set()
+    for index,asset in enumerate(assets):
+        if not isinstance(asset,dict) or not isinstance(asset.get("name"),str) or not asset["name"].strip():
+            raise ValueError(f"manifest assets[{index}] requires a non-empty name")
+        if asset["name"] in names or not isinstance(asset.get("file"),str) or asset["file"] in files:
+            raise ValueError(f"duplicate asset name or file at manifest index {index}")
+        names.add(asset["name"]);files.add(asset["file"])
     records, errors = [], []
     alpha_flagged = set()
     for asset in assets:
@@ -454,7 +500,8 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
     atlas_report=atlas_qa(manifest,pack,out,plan)
     if atlas_report.get("status")=="error":
         errors.append({"asset":"commandbuttons_atlas","error":atlas_report.get("reason","atlas QA unavailable")})
-    for finding in atlas_report.get("findings",[]):
+    atlas_findings=atlas_report.get("findings",[])
+    for finding in atlas_findings:
         if finding.get("asset"):
             flagged.add(finding["asset"])
     for name in sorted(flagged):
@@ -480,7 +527,7 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
     thumbnails=render_asset_thumbnails(assets,pack,out/"thumbnails")
     gallery=write_review_gallery(records,thumbnails,sheets,atlas_report,
         {"scanned":len(records),"errors":errors,"summary":{"state_families":len(state_families),
-         "flagged_assets":len(flagged)}},out)
+         "flagged_assets":len(flagged),"atlas_findings":len(atlas_findings)}},out)
     return {
         "schema_version": 1, "tool": "HUD Artisan production QA",
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
@@ -491,7 +538,8 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         "thresholds": {"state_iou_min": iou_min, "state_difference_min": diff_min,
                        "state_difference_max": diff_max},
         "summary": {"state_families": len(state_families), "flagged_assets": len(flagged),
-                    "read_errors": len(errors), "pass": not errors and not flagged},
+                    "atlas_findings": len(atlas_findings),
+                    "read_errors": len(errors), "pass": not errors and not flagged and not atlas_findings},
     }
 
 
@@ -511,17 +559,20 @@ def main(argv=None) -> int:
             raise ValueError("QA output must be a regular directory path, not a symlink")
         report = run(a.manifest, a.pack, a.out, a.jobs,
                      a.state_iou_min, a.state_difference_min, a.state_difference_max)
-        a.out.mkdir(parents=True, exist_ok=True)
+        ensure_output_dir(a.out)
         report_path = a.out / "production-qa.json"
         if report_path.is_symlink():
             raise ValueError("QA report output cannot be a symlink")
         fd, tmp_name = tempfile.mkstemp(prefix=".production-qa.", suffix=".tmp", dir=a.out)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(report, stream, indent=2, ensure_ascii=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_name, report_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, ensure_ascii=False)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_name, report_path)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)
         print(json.dumps(report["summary"], ensure_ascii=False))
         return 1 if a.strict and not report["summary"]["pass"] else 0
     except (OSError, ValueError, KeyError, TypeError) as exc:
