@@ -60,6 +60,7 @@ class ComfyDoctorTests(unittest.TestCase):
             with mock.patch.object(doctor.adapter, "http_json", side_effect=fake_http):
                 report = doctor.inspect_runtime(config_path)
             self.assertEqual(report["status"], "PASS")
+            self.assertEqual(report["alpha"]["strategy"], "auto")
             self.assertEqual(report["comfyui"]["version"], "0.46.0")
             self.assertEqual(report["workflow"]["api_node_count"], 5)
             self.assertEqual(report["queue"], {"running": 0, "pending": 0})
