@@ -12,11 +12,17 @@ class ReferenceLedgerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.schema = json.loads((ROOT / "reference_ledger.schema.json").read_text(encoding="utf-8"))
         cls.example = json.loads((ROOT / "reference_ledger.example.json").read_text(encoding="utf-8"))
+        cls.ledger = json.loads((ROOT / "reference_ledger.json").read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(cls.schema)
         cls.validator = Draft202012Validator(cls.schema)
 
     def test_example_is_valid(self):
         self.validator.validate(self.example)
+
+    def test_populated_donor_ledger_is_valid_and_complete(self):
+        self.validator.validate(self.ledger)
+        self.assertGreaterEqual(len(self.ledger["references"]), 15)
+        self.assertEqual(len({item["id"] for item in self.ledger["references"]}), len(self.ledger["references"]))
 
     def test_unknown_license_cannot_be_conditioned(self):
         doc = json.loads(json.dumps(self.example))
