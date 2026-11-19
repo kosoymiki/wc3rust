@@ -51,13 +51,19 @@ def safe_file(root: Path, relative: str) -> Path:
 
 
 def ensure_output_dir(path: Path) -> Path:
-    absolute=path.absolute()
-    cursor=Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        cursor=cursor/part
-        if cursor.is_symlink():
-            raise ValueError(f"symlink output path component rejected: {cursor}")
-    path.mkdir(parents=True,exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"symlink output directory rejected: {path}")
+    missing=[]
+    cursor=path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor=cursor.parent
+    if cursor.is_symlink() or not cursor.is_dir():
+        raise ValueError(f"output ancestor must be a real directory: {cursor}")
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError(f"unsafe output directory component: {directory}")
     if not path.is_dir():
         raise ValueError(f"output path is not a directory: {path}")
     return path.resolve()
