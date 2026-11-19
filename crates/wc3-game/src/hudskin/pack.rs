@@ -1255,7 +1255,7 @@ mod tests {
         assert_eq!(pack.assets.len(), 92, "manifest asset count");
         assert_eq!(pack.font_files.len(), 5, "font_files");
         for asset in &pack.assets {
-            assert!(loaded_textures.get(asset.texture - texture_base).is_some(), "texture for {}", asset.name);
+            assert!(textures.get(asset.texture).is_some(), "texture for {}", asset.name);
             let texture = &textures[asset.texture];
             assert_eq!(
                 (texture.width, texture.height),
