@@ -27,6 +27,29 @@ def inspect_runtime(config_path: Path) -> dict:
     timeout = cfg.get("request_timeout_seconds", 60)
     if type(timeout) is not int or not 1 <= timeout <= 300:
         raise adapter.ComfyError("invalid request_timeout_seconds")
+    alpha_strategy=cfg.get("alpha_strategy","auto")
+    if alpha_strategy not in adapter.ALPHA_STRATEGIES:
+        raise adapter.ComfyError(f"unsupported alpha_strategy: {alpha_strategy!r}")
+    if alpha_strategy=="u2net":
+        import importlib.util
+        configured_model=cfg.get("matte_model")
+        if configured_model is not None and (not isinstance(configured_model,str) or not configured_model.strip()):
+            raise adapter.ComfyError("matte_model must be a non-empty path string")
+        model_value=configured_model or __import__("os").environ.get("U2NET_MODEL") or str(
+            Path.home()/"src"/"comfyui-termux"/"models"/"u2net.onnx"
+        )
+        model_path=Path(model_value).expanduser()
+        if configured_model and not model_path.is_absolute():
+            model_path=config_path.resolve().parent/model_path
+        if model_path.is_symlink() or not model_path.is_file():
+            raise adapter.ComfyError(f"u2net model must be a regular non-symlink file: {model_path}")
+        for module in ("numpy","onnxruntime"):
+            try:
+                available=importlib.util.find_spec(module) is not None
+            except (ImportError,ValueError):
+                available=False
+            if not available:
+                raise adapter.ComfyError(f"u2net mode requires {module}; install alpha matte dependencies")
 
     stats = adapter.http_json(base, "/system_stats", timeout=timeout)
     queue = adapter.http_json(base, "/queue", timeout=timeout)
