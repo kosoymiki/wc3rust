@@ -53,6 +53,10 @@ class ProductionQATests(unittest.TestCase):
         self.assertEqual(report["summary"]["state_families"], 1)
         self.assertIn("button_normal", [x["asset"] for x in report["regeneration_candidates"]])
         self.assertIn("empty_icon", [x["asset"] for x in report["regeneration_candidates"]])
+        empty_record=next(x for x in report["assets"] if x["name"]=="empty_icon")
+        self.assertIn("fully_transparent",empty_record["alpha_qa"]["findings"])
+        empty_candidate=next(x for x in report["regeneration_candidates"] if x["asset"]=="empty_icon")
+        self.assertEqual(empty_candidate["reason"],["fully_transparent"])
 
     def test_nine_slice_stretch_zone_metrics(self):
         image = Image.new("RGBA", (64, 64), (20, 30, 40, 255))
