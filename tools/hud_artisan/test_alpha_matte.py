@@ -64,6 +64,26 @@ class AlphaMatteTests(unittest.TestCase):
         self.assertGreaterEqual(high, 250)  # Lanczos resize may stop at 254
         self.assertIn("input.1", session.assert_feed)
 
+    def test_session_cache_invalidates_when_model_file_changes(self):
+        import tempfile
+        import types
+        from pathlib import Path
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            model=Path(directory)/"u2net.onnx"
+            model.write_bytes(b"first")
+            created=[]
+            fake=types.ModuleType("onnxruntime")
+            fake.InferenceSession=lambda path,providers: created.append((path,providers)) or object()
+            with mock.patch.dict("sys.modules",{"onnxruntime":fake}):
+                first=alpha_matte.get_session(model)
+                self.assertIs(alpha_matte.get_session(model),first)
+                model.write_bytes(b"second-model")
+                second=alpha_matte.get_session(model)
+            self.assertIsNot(first,second)
+            self.assertEqual(len(created),2)
+
     def test_model_symlink_is_rejected_before_onnxruntime_import(self):
         import tempfile
         from pathlib import Path
