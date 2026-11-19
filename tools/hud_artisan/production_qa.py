@@ -11,6 +11,7 @@ from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 import alpha_qa
+import generate as artisan
 
 BG = {
     "dark": (22, 22, 25),
@@ -334,8 +335,12 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     entries=atlas_spec.get("entries",[])
     if not isinstance(atlas_file,str) or not isinstance(entries,list):
         return {"status":"unavailable","reason":"manifest atlas.commandbuttons is malformed","cells":[],"findings":[]}
-    if len(entries)>4096:
-        return {"status":"error","reason":"atlas entry count exceeds safety limit","file":atlas_file,"cells":[],"findings":[]}
+    declared_size=atlas_spec.get("size")
+    if declared_size is not None and (not isinstance(declared_size,list) or len(declared_size)!=2
+        or any(type(value) is not int or value<=0 for value in declared_size)):
+        return {"status":"error","reason":"atlas size must be two positive integers","file":atlas_file,"cells":[],"findings":[]}
+    if len(entries)>256:
+        return {"status":"error","reason":"atlas entry count exceeds safety limit (256)","file":atlas_file,"cells":[],"findings":[]}
     try:
         atlas_path=safe_file(pack,atlas_file)
         with Image.open(atlas_path) as source:
@@ -344,6 +349,8 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
             source.load()
             if source.format!="PNG":
                 raise ValueError("atlas is not PNG")
+            if declared_size is not None and [source.width,source.height] != declared_size:
+                raise ValueError(f"atlas dimensions {source.width}x{source.height} differ from manifest {declared_size}")
             atlas=source.convert("RGBA")
     except Exception as exc:
         return {"status":"error","reason":str(exc),"file":atlas_file,"cells":[],"findings":[]}
@@ -450,8 +457,18 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             if not path.is_file():
                 raise ValueError("file missing")
             record={"name": asset["name"], "file": asset["file"], **image_metrics(path)}
+            if record["width"] != asset.get("w") or record["height"] != asset.get("h"):
+                raise ValueError(f"PNG dimensions {record['width']}x{record['height']} differ from manifest {asset.get('w')}x{asset.get('h')}")
             alpha_record=alpha_qa.inspect_png(path,pack.resolve())
-            alpha_record["findings"]=alpha_qa.classify(alpha_record,bool(asset.get("requires_alpha",False)),0.01)
+            kind=artisan.family(asset["name"])
+            alpha_required=artisan.requires_alpha(kind) or bool(asset.get("requires_alpha",False))
+            alpha_record["findings"]=alpha_qa.classify(alpha_record,alpha_required,0.01)
+            if kind in ("portrait-frame","minimap-frame"):
+                with Image.open(path) as aperture_image:
+                    aperture=artisan.center_transparent_fraction(aperture_image.convert("RGBA"))
+                alpha_record["center_aperture_transparent_ratio"]=round(aperture,6)
+                if aperture < 0.97:
+                    alpha_record["findings"].append("center_aperture_not_transparent")
             record["alpha_qa"]=alpha_record
             if alpha_record["findings"]:
                 alpha_flagged.add(asset["name"])
