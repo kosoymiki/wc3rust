@@ -22,6 +22,10 @@ build/hud-artisan/comfyui_api_workflow.json
 
 The built-in adapter is invoked through the generic dispatcher. Its command is an argv array; no shell string is constructed from prompt content.
 
+## Read-only preflight
+
+Before dispatching a batch, run `python3 tools/hud_artisan/comfyui_doctor.py --config build/hud-artisan/comfyui.json`. It verifies the live server, canvas-to-API conversion, node classes, model selections when the server exposes them, five mappings, SaveImage target and queue state. It performs GET requests only and never queues an image.
+
 ## Execution contract
 
 The adapter:
