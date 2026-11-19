@@ -177,6 +177,7 @@ def inspect_runtime(config_path: Path) -> dict:
             "chroma_key_color": cfg.get("chroma_key_color", [255, 0, 255]),
             "chroma_key_tolerance": cfg.get("chroma_key_tolerance", 48),
             "matte_model": str(model_path.resolve()) if alpha_strategy=="u2net" else None,
+            "matte_model_sha256": sha_file(model_path) if alpha_strategy=="u2net" else None,
         },
         "model_nodes": [
             {"node_id": node_id, "class_type": node["class_type"],
