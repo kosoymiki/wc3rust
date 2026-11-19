@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "termux-comfyui-z-image-local",
+  "provider": "ComfyUI local (Termux)",
+  "model": "z_image_turbo_bf16.safetensors + qwen_3_4b.safetensors",
+  "license": "Record exact checkpoint/text-encoder license from their local model cards before redistribution",
+  "working_directory": "../..",
+  "command": [
+    "python3",
+    "tools/hud_artisan/comfyui_adapter.py",
+    "--config",
+    "build/hud-artisan/comfyui.json",
+    "--job-json",
+    "{job_json}",
+    "--output",
+    "{output_path}"
+  ],
+  "environment": [
+    "COMFYUI_URL"
+  ],
+  "timeout_seconds": 3700,
+  "retries": 1,
+  "max_parallel": 1,
+  "references": [],
+  "postprocessing": [
+    "chroma_key_background",
+    "frame_aperture_cutout",
+    "lanczos_native_downsample"
+  ],
+  "dependency_files": [
+    "~/src/comfyui-termux/default_workflow.json"
+  ]
+}
