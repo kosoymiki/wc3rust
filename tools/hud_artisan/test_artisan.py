@@ -215,6 +215,18 @@ class Tests(unittest.TestCase):
         prompt=artisan.make_job(a,"classic-modern",3)["prompt"]
         self.assertIn("inactive state",prompt)
         self.assertNotIn("active state: stronger",prompt)
+    def test_real_final_hud_manifest_compiles_full_plan(self):
+        repo_root=Path(__file__).resolve().parents[2]
+        manifest=repo_root/"analysis"/"hudskin"/"final"/"wc3rust-hud-final"/"manifest.json"
+        self.assertTrue(manifest.is_file(),"the authoritative final HUD manifest must be present in the branch")
+        doc=artisan.load_manifest(manifest,engine_contract=True)
+        self.assertEqual(len(doc["assets"]),92)
+        self.assertEqual(len(doc["atlas"]["commandbuttons"]["entries"]),20)
+        jobs,atlas_plan=artisan.compile_jobs(doc,"classic-modern",20261119)
+        self.assertEqual(len(jobs),91,"the declared atlas must reuse existing command icon assets, not synthesize duplicate jobs")
+        self.assertEqual(len(atlas_plan["entries"]),20)
+        self.assertTrue(all(entry.get("source_asset") for entry in doc["atlas"]["commandbuttons"]["entries"]))
+
     def test_engine_contract_exact_manifest(self):
         assets=[]
         for i,name in enumerate(artisan.ENGINE_ROLES):
@@ -223,7 +235,7 @@ class Tests(unittest.TestCase):
         assets.append({"name":"commandbuttons_atlas","file":"atlas/commandbuttons.png","w":2048,"h":2048})
         for i in range(67):
             assets.append({"name":f"extra_{i}","file":f"extra/{i}.png","w":64,"h":64})
-        doc={"design_height":768,"reference_resolution":{"landscape":[2414,1080],"portrait":[1080,2414]},
+        doc={"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},
           "safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},
           "command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},
           "control_groups":{"count":10,"cell":[44,44]},
