@@ -80,8 +80,13 @@ def validate_review_schema(evidence: dict) -> None:
 def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
     manifest_hash = digest(manifest)
     jobs_hash = digest(jobs)
-    m = read(manifest)
-    j = read(jobs)
+    # Recompile the deterministic plan before trusting review coverage. A correctly
+    # hashed but incomplete jobs.json must never be able to release a partial pack.
+    try:
+        from generate import verify_plan
+        j, m = verify_plan(manifest, jobs)
+    except Exception as exc:
+        raise ValueError(f"manifest/jobs plan verification failed: {exc}") from exc
     r = read(reviews)
 
     validate_review_schema(r)
@@ -136,9 +141,11 @@ def evaluate(manifest: Path, jobs: Path, pack: Path, reviews: Path) -> dict:
     models = set()
     roles = set()
     for reviewer in reviewers:
-        rid = reviewer["reviewer_id"]
-        model = reviewer["model"]
+        rid = reviewer["reviewer_id"].strip()
+        model = reviewer["model"].strip()
         role = reviewer["role"]
+        if not rid or not model:
+            raise ValueError("reviewer IDs and model identifiers must not be blank")
         if rid in ids or model in models or role in roles:
             raise ValueError("reviewers must have distinct IDs, model identifiers and roles")
         ids.add(rid)
