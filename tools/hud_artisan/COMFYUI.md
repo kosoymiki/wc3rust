@@ -38,8 +38,9 @@ The adapter:
 - waits for the matching prompt history entry to complete;
 - requires exactly one PNG from the selected output node;
 - rejects unsafe output filenames/subfolders and non-PNG responses;
-- decodes the image, optionally removes border-connected chroma-key background, cuts a transparent frame aperture, checks alpha requirements, then atomically writes native-size RGBA8 PNG;
-- never silently resizes or stretches an output.
+- verifies that the server returned the exact planned render canvas, then downsamples only when render_width/render_height differ from native width/height; it uses premultiplied-alpha Lanczos to prevent transparent-edge colour fringes;
+- in alpha_strategy=auto (default) or chroma_key mode, removes only border-connected matte pixels for alpha-required assets and removes near-key pixels—not arbitrary artwork—inside the declared frame aperture; preserve mode leaves source alpha untouched;
+- checks final native-size alpha/aperture requirements, then atomically writes RGBA8 PNG; unexpected render dimensions and any implicit stretching are rejected.
 
 The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
 
