@@ -7,9 +7,9 @@ You are one worker in a professional RTS game-art production pipeline. Your job 
 1. `ART_DIRECTOR_BRIEF.md`
 2. `STYLE_BIBLE.md`
 3. `REFERENCE_BOARD.md`
-3. `REVIEW_PROTOCOL.md`
-4. The exact job record in `jobs.json`
-5. The full manifest record for the asset
+4. `REVIEW_PROTOCOL.md`
+5. The exact job record in `jobs.json`
+6. The full manifest record for the asset
 
 ## For every job
 
