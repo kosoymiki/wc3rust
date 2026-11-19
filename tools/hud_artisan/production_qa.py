@@ -333,8 +333,8 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
         return {"status":"not_configured","reason":"manifest has no commandbuttons atlas","cells":[],"findings":[]}
     atlas_file=atlas_spec.get("file")
     entries=atlas_spec.get("entries",[])
-    if not isinstance(atlas_file,str) or not isinstance(entries,list):
-        return {"status":"unavailable","reason":"manifest atlas.commandbuttons is malformed","cells":[],"findings":[]}
+    if not isinstance(atlas_file,str) or not isinstance(entries,list) or not entries:
+        return {"status":"error","reason":"manifest atlas.commandbuttons requires a file and non-empty entries array","cells":[],"findings":[]}
     declared_size=atlas_spec.get("size")
     if declared_size is not None and (not isinstance(declared_size,list) or len(declared_size)!=2
         or any(type(value) is not int or value<=0 for value in declared_size)):
@@ -521,7 +521,7 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             raise ValueError("jobs.json manifest hash mismatch")
         job_map = {job.get("asset"): job for job in plan.get("jobs", [])}
     atlas_report=atlas_qa(manifest,pack,out,plan)
-    if atlas_report.get("status")=="error":
+    if atlas_report.get("status") not in ("ok","not_configured"):
         errors.append({"asset":"commandbuttons_atlas","error":atlas_report.get("reason","atlas QA unavailable")})
     atlas_findings=atlas_report.get("findings",[])
     for finding in atlas_findings:
