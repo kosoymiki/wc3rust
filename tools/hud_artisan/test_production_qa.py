@@ -83,8 +83,11 @@ class ProductionQATests(unittest.TestCase):
         atlas=Image.new("RGBA",(16,8),(0,0,0,0))
         ImageDraw.Draw(atlas).rectangle((8,0,15,7),fill=(200,120,30,255))
         atlas.save(self.pack/"atlas.png")
-        manifest={"assets":[{"name":"command_icon_01","file":"source.png","w":8,"h":8}],
-            "atlas":{"commandbuttons":{"file":"atlas.png","cell":[8,8],"entries":[
+        manifest={"assets":[
+            {"name":"commandbuttons_atlas","file":"atlas.png","w":16,"h":8},
+            {"name":"command_icon_01","file":"source.png","w":8,"h":8}],
+            "atlas":{"commandbuttons":{"file":"atlas.png","size":[16,8],"columns":2,"rows":1,
+                "cell":[8,8],"padding":0,"rotation":False,"entries":[
                 {"id":"command_01","x":0,"y":0,"w":8,"h":8,"source_asset":"command_icon_01"},
                 {"id":"command_02","x":8,"y":0,"w":8,"h":8,"source_file":"atlas_sources/command_02.png"}
             ]}}}
@@ -141,9 +144,12 @@ class ProductionQATests(unittest.TestCase):
         opaque=self.make_state("plain_icon",4,(140,100,40,255))
         Image.new("RGBA",(8,8),(0,0,0,0)).save(self.pack/"atlas.png")
         mp=self.root/"manifest.json"
-        mp.write_text(json.dumps({"assets":[opaque],"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
-            {"id":"empty","x":0,"y":0,"w":8,"h":8}
-        ]}}}))
+        atlas_asset={"name":"commandbuttons_atlas","file":"atlas.png","w":8,"h":8}
+        mp.write_text(json.dumps({"assets":[opaque,atlas_asset],"atlas":{"commandbuttons":{
+            "file":"atlas.png","size":[8,8],"columns":1,"rows":1,"cell":[8,8],
+            "padding":0,"rotation":False,"entries":[
+                {"id":"empty","x":0,"y":0,"w":8,"h":8}
+            ]}}}))
         report=qa.run(mp,self.pack,self.root/"qa-atlas",None,0.45,0.015,0.45)
         self.assertEqual(report["summary"]["atlas_findings"],1)
         self.assertFalse(report["summary"]["pass"])
