@@ -535,9 +535,9 @@ class Tests(unittest.TestCase):
         comfy=importlib.util.module_from_spec(spec);spec.loader.exec_module(comfy)
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);calls=[]
-            image=Image.new("RGBA",(8,8),(0,0,0,0))
-            for y in range(2,6):
-                for x in range(2,6):image.putpixel((x,y),(190,130,40,255))
+            image=Image.new("RGBA",(16,16),(0,0,0,0))
+            for y in range(4,12):
+                for x in range(4,12):image.putpixel((x,y),(190,130,40,255))
             stream=io.BytesIO();image.save(stream,format="PNG");image_bytes=stream.getvalue()
             def fake_http_json(base,endpoint,payload=None,timeout=60):
                 calls.append((endpoint,payload,timeout))
@@ -565,7 +565,8 @@ class Tests(unittest.TestCase):
               "output_node_id":"9","request_timeout_seconds":5,"max_wait_seconds":5,"poll_interval_seconds":0.2}
             config_path=root/"comfy.json";config_path.write_text(json.dumps(config))
             job={"job_id":"a1b2c3d4e5f60718","prompt":"a sculpted gold emblem","negative_prompt":"text, watermark",
-              "width":8,"height":8,"seed":123456789,"family":"icon","requires_alpha":True}
+              "width":8,"height":8,"render_width":16,"render_height":16,
+              "seed":123456789,"family":"icon","requires_alpha":True}
             job_path=root/"job.json";job_path.write_text(json.dumps(job))
             output=root/"out.png";stderr=io.StringIO()
             with redirect_stdout(io.StringIO()),redirect_stderr(stderr):
@@ -575,8 +576,8 @@ class Tests(unittest.TestCase):
             sent=calls[0][1]["prompt"]
             self.assertEqual(sent["6"]["inputs"]["text"],job["prompt"])
             self.assertEqual(sent["7"]["inputs"]["text"],job["negative_prompt"])
-            self.assertEqual(sent["5"]["inputs"]["width"],8)
-            self.assertEqual(sent["5"]["inputs"]["height"],8)
+            self.assertEqual(sent["5"]["inputs"]["width"],16)
+            self.assertEqual(sent["5"]["inputs"]["height"],16)
             self.assertEqual(sent["3"]["inputs"]["seed"],job["seed"])
             self.assertEqual(artisan.png_info(output),(8,8,8,6))
             from unittest import mock
