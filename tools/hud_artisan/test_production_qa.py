@@ -120,6 +120,13 @@ class ProductionQATests(unittest.TestCase):
         self.assertEqual(qa.state_key("button_active_disabled"),("button_active","disabled"))
         self.assertEqual(qa.state_key("ability_icon_pressed"),("ability_icon","pressed"))
 
+    def test_real_manifest_state_variants_are_grouped(self):
+        self.assertEqual(qa.state_key("build_progress_critical_64x8"),("build_progress_64x8","critical"))
+        self.assertEqual(qa.state_key("build_progress_warning_64x8"),("build_progress_64x8","warning"))
+        self.assertEqual(qa.state_key("minimap_frame_alert_216"),("minimap_frame_216","alert"))
+        self.assertEqual(qa.state_key("resource_pill_warn_236x32"),("resource_pill_236x32","warn"))
+        self.assertEqual(qa.state_key("button_border_empty_64"),("button_border_64","empty"))
+
     def test_atlas_overlap_is_reported(self):
         Image.new("RGBA",(16,8),(0,0,0,0)).save(self.pack/"atlas.png")
         report=qa.atlas_qa({"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
