@@ -58,6 +58,24 @@ class ProductionQATests(unittest.TestCase):
         empty_candidate=next(x for x in report["regeneration_candidates"] if x["asset"]=="empty_icon")
         self.assertEqual(empty_candidate["reason"],["fully_transparent"])
 
+    def test_atlas_cell_alpha_audit_and_repair_job_mapping(self):
+        atlas = Image.new("RGBA", (16, 8), (0, 0, 0, 0))
+        ImageDraw.Draw(atlas).rectangle((1, 1, 6, 6), fill=(210, 130, 35, 255))
+        atlas.save(self.pack/"atlas.png")
+        manifest = {"atlas":{"commandbuttons":{"file":"atlas.png","entries":[
+            {"id":"visible","x":0,"y":0,"w":8,"h":8},
+            {"id":"empty","x":8,"y":0,"w":8,"h":8}
+        ]}}}
+        plan = {"jobs":[{"asset":"command_icon_empty","job_id":"0123456789abcdef",
+                         "output":"atlas_sources/empty.png"}],
+                "atlas":{"cells":[{"id":"empty","source_file":"atlas_sources/empty.png"}]}}
+        report = qa.atlas_qa(manifest,self.pack,self.root/"out",plan)
+        self.assertEqual(report["status"],"ok")
+        self.assertEqual(report["scanned"],2)
+        self.assertEqual(report["findings"][0]["reason"],"fully_transparent_atlas_cell")
+        self.assertEqual(report["findings"][0]["asset"],"command_icon_empty")
+        self.assertTrue(Path(report["contact_sheet"]).is_file())
+
     def test_nine_slice_stretch_zone_metrics(self):
         image = Image.new("RGBA", (64, 64), (20, 30, 40, 255))
         draw = ImageDraw.Draw(image)
