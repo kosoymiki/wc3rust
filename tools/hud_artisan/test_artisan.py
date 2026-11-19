@@ -449,8 +449,11 @@ class Tests(unittest.TestCase):
             real_download_image=comfy.download_image
             comfy.http_json=fake_http_json
             comfy.download_image=fake_download_image
-            workflow={"6":{"inputs":{"text":"old-positive"}},"7":{"inputs":{"text":"old-negative"}},
-              "5":{"inputs":{"width":512,"height":512}},"3":{"inputs":{"seed":1}},"9":{"class_type":"SaveImage","inputs":{"images":["8",0]}}}
+            workflow={"6":{"class_type":"CLIPTextEncode","inputs":{"text":"old-positive"}},
+              "7":{"class_type":"CLIPTextEncode","inputs":{"text":"old-negative"}},
+              "5":{"class_type":"EmptySD3LatentImage","inputs":{"width":512,"height":512}},
+              "3":{"class_type":"KSampler","inputs":{"seed":1}},
+              "9":{"class_type":"SaveImage","inputs":{"images":["8",0]}}}
             (root/"workflow.json").write_text(json.dumps(workflow))
             config={"schema_version":1,"server":"http://127.0.0.1:8188","workflow_file":"workflow.json",
               "node_inputs":{"positive_prompt":{"node_id":"6","input":"text"},
