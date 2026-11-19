@@ -118,7 +118,7 @@ supplied and are never replaced with empty stubs.
 
 The visual target is premium authored RTS artwork. Read `ART_DIRECTOR_BRIEF.md` before assigning any job; `AGENT_TASK.md` is the worker's mandatory contract. The goal is an original wc3rust identity with high-end material craft and game-scale legibility, not a copy of Blizzard retail assets.
 
-After ingestion and structural validation, generate contact sheets and run two genuinely independent vision reviews: one Art Director and one Red Team Reviewer. They must inspect the exact final PNG bytes and report all ten criteria in `review.schema.json`. The gate requires 10/10 on every criterion from both reviewers, no blockers, no suggested improvements, confidence >=0.95, and matching SHA-256 for every reviewed image.
+After ingestion and structural validation, generate contact sheets and run two separate vision-capable OpenCode sessions: one Art Director and one Red Team Reviewer. Schema v2 records the real provider/model/session IDs, exact review prompt hashes, immutable raw response files and hashes. Both reviewers must inspect the exact final PNG bytes and report all ten criteria in `review.schema.json`. The gate requires distinct reviewer sessions and model identifiers, valid prompt/raw-response hashes, 10/10 on every criterion from both reviewers, no blockers, no suggested improvements, confidence >=0.95, and matching SHA-256 for every reviewed image. This is auditable evidence, not cryptographic proof that the sessions were truly independent.
 
 ```sh
 python3 tools/hud_artisan/review_gate.py \\
