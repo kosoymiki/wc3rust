@@ -337,6 +337,18 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     entries=atlas_spec.get("entries",[])
     if not isinstance(atlas_file,str) or not isinstance(entries,list) or not entries:
         return {"status":"error","reason":"manifest atlas.commandbuttons requires a file and non-empty entries array","cells":[],"findings":[]}
+    runtime_assets=manifest.get("assets")
+    runtime_contract=isinstance(runtime_assets,list)
+    if runtime_contract:
+        atlas_asset=next((asset for asset in runtime_assets
+                          if isinstance(asset,dict) and asset.get("file")==atlas_file),None)
+        if atlas_asset is None:
+            return {"status":"error","reason":"commandbuttons atlas file is not declared in manifest assets","file":atlas_file,"cells":[],"findings":[]}
+        for key in ("size","cell","columns","rows"):
+            if key not in atlas_spec:
+                return {"status":"error","reason":f"runtime atlas metadata is missing {key}","file":atlas_file,"cells":[],"findings":[]}
+        if type(atlas_asset.get("w")) is not int or type(atlas_asset.get("h")) is not int:
+            return {"status":"error","reason":"declared atlas asset dimensions are invalid","file":atlas_file,"cells":[],"findings":[]}
     declared_size=atlas_spec.get("size")
     if declared_size is not None and (not isinstance(declared_size,list) or len(declared_size)!=2
         or any(type(value) is not int or value<=0 for value in declared_size)):
@@ -368,6 +380,19 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     if expected_cell is not None and (not isinstance(expected_cell,list) or len(expected_cell)!=2
         or any(type(value) is not int or value<=0 for value in expected_cell)):
         return {"status":"error","reason":"atlas cell must be two positive integers","file":atlas_file,"cells":[],"findings":[]}
+    grid_columns,grid_rows=atlas_spec.get("columns"),atlas_spec.get("rows")
+    if runtime_contract:
+        if (type(grid_columns) is not int or type(grid_rows) is not int
+                or not 1<=grid_columns<=256 or not 1<=grid_rows<=256
+                or atlas_spec.get("rotation",False) is not False
+                or atlas_spec.get("padding",0)!=0):
+            return {"status":"error","reason":"runtime atlas grid or rotation/padding metadata is invalid","file":atlas_file,"cells":[],"findings":[]}
+        if declared_size != [atlas_asset["w"],atlas_asset["h"]]:
+            return {"status":"error","reason":"atlas size differs from declared manifest asset dimensions","file":atlas_file,"cells":[],"findings":[]}
+        if (grid_columns*expected_cell[0] > atlas_asset["w"]
+                or grid_rows*expected_cell[1] > atlas_asset["h"]
+                or len(entries)>grid_columns*grid_rows):
+            return {"status":"error","reason":"atlas grid exceeds declared atlas dimensions or capacity","file":atlas_file,"cells":[],"findings":[]}
     cells=[];findings=[];columns=4;card_w=184;card_h=208
     rows=math.ceil(len(entries)/columns)
     board=Image.new("RGB",(columns*card_w,max(1,rows)*card_h),(34,34,38))
@@ -386,6 +411,9 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
                 raise ValueError("cell outside atlas bounds or invalid ID")
             if expected_cell is not None and [w,h] != expected_cell:
                 raise ValueError(f"cell dimensions {w}x{h} differ from declared cell {expected_cell}")
+            if runtime_contract and (x%expected_cell[0] or y%expected_cell[1]
+                or x//expected_cell[0]>=grid_columns or y//expected_cell[1]>=grid_rows):
+                raise ValueError("cell is not aligned to the declared atlas grid")
             for previous in cells:
                 px,py,pw,ph=(previous[k] for k in ("x","y","width","height"))
                 if x<px+pw and px<x+w and y<py+ph and py<y+h:
