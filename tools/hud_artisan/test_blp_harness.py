@@ -40,6 +40,18 @@ class BLPHarnessTests(unittest.TestCase):
         self.assertEqual(info["format"], "BLP1")
         self.assertEqual((info["width"], info["height"]), (32, 16))
 
+    def test_inspect_blp1_jpeg_variable_header(self):
+        data=bytearray(168)
+        data[:4]=b"BLP1"
+        struct.pack_into("<6I",data,4,0,8,8,8,0,0)
+        struct.pack_into("<I",data,156,4)
+        struct.pack_into("<I",data,28,164)
+        struct.pack_into("<I",data,92,4)
+        path=self.root/"jpeg.blp";path.write_bytes(data)
+        info=blp.inspect_blp(path)
+        self.assertEqual(info["content_type"],0)
+        self.assertEqual((info["width"],info["height"]),(8,8))
+
     def test_rejects_bad_offset_and_unknown_magic(self):
         path=self.root/"bad.blp";path.write_bytes(b"NOPE"+bytes(1200))
         with self.assertRaises(blp.BLPError):
