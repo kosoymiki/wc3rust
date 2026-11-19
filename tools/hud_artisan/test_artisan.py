@@ -414,8 +414,11 @@ class Tests(unittest.TestCase):
                 self.assertEqual(artisan.repair_plan(manifest,jobs,qa_report,repair_dir,"test-repair-r1"),0)
                 repair_jobs=repair_dir/"jobs.json"
                 repaired_plan,_=artisan.verify_plan(manifest,repair_jobs)
-                plan_schema=json.loads((Path(__file__).with_name("plan.schema.json")).read_text())
-                Draft202012Validator(plan_schema).validate(repaired_plan)
+                base=Path(__file__).parent
+                plan_schema=json.loads((base/"plan.schema.json").read_text())
+                job_schema=json.loads((base/"job.schema.json").read_text())
+                resolver=RefResolver.from_schema(plan_schema,store={job_schema["$id"]:job_schema})
+                Draft202012Validator(plan_schema,resolver=resolver).validate(repaired_plan)
                 original_panel=next(x for x in payload["jobs"] if x["asset"]=="panel")
                 repaired_panel=next(x for x in repaired_plan["jobs"] if x["asset"]=="panel")
                 self.assertNotEqual(repaired_panel["job_id"],original_panel["job_id"])
