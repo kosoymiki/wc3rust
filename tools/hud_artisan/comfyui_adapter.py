@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import http.client
 import os
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from urllib import error, parse, request
 
 MAX_RESPONSE_BYTES = 256 * 1024 * 1024
+MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_PROMPT_ID_LENGTH = 128
 
 
@@ -52,14 +54,14 @@ def http_json(base: str, endpoint: str, payload=None, timeout: int = 60):
     req = request.Request(base.rstrip("/") + endpoint, data=data, headers=headers)
     try:
         with open_http(req, base, timeout) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+            raw = response.read(MAX_JSON_BYTES + 1)
     except error.HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", "replace")
         raise ComfyError(f"ComfyUI HTTP {exc.code} at {endpoint}: {detail}") from exc
-    except (error.URLError, TimeoutError, OSError) as exc:
+    except (error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise ComfyError(f"ComfyUI request failed at {endpoint}: {exc}") from exc
-    if len(raw) > MAX_RESPONSE_BYTES:
-        raise ComfyError(f"ComfyUI JSON response exceeds {MAX_RESPONSE_BYTES} bytes")
+    if len(raw) > MAX_JSON_BYTES:
+        raise ComfyError(f"ComfyUI JSON response exceeds {MAX_JSON_BYTES} bytes")
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -184,7 +186,7 @@ def download_image(base: str, image_meta: dict, timeout: int) -> bytes:
     except error.HTTPError as exc:
         detail = exc.read(4096).decode("utf-8", "replace")
         raise ComfyError(f"ComfyUI image download HTTP {exc.code}: {detail}") from exc
-    except (error.URLError, TimeoutError, OSError) as exc:
+    except (error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise ComfyError(f"ComfyUI image download failed: {exc}") from exc
     if len(data) > MAX_RESPONSE_BYTES:
         raise ComfyError("ComfyUI image exceeds 256 MiB limit")
@@ -269,7 +271,7 @@ def main(argv=None) -> int:
 
         client_id = str(uuid.uuid4())
         submitted = http_json(base, "/prompt", {"prompt": workflow, "client_id": client_id}, timeout)
-        if submitted.get("node_errors"):
+        if submitted.get("error") or submitted.get("node_errors"):
             raise ComfyError(f"ComfyUI rejected workflow nodes: {json.dumps(submitted['node_errors'], ensure_ascii=False)[:6000]}")
         prompt_id = submitted.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id or len(prompt_id) > MAX_PROMPT_ID_LENGTH:
