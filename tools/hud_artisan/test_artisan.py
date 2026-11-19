@@ -11,6 +11,16 @@ def png(w,h,rgba):
     raw=b"".join(b"\0"+bytes(rgba*w) for _ in range(h))
     return b"\x89PNG\r\n\x1a\n"+chunk(b"IHDR",struct.pack(">IIBBBBB",w,h,8,6,0,0,0))+chunk(b"IDAT",zlib.compress(raw))+chunk(b"IEND",b"")
 class Tests(unittest.TestCase):
+    def test_main_cli_qa_delegates_to_integrated_production_qa(self):
+        from unittest import mock
+        import production_qa
+        with mock.patch.object(production_qa,"main",return_value=0) as run_qa:
+            result=artisan.main(["qa","--manifest","manifest.json","--pack","pack",
+                                 "--out","qa-out","--jobs","jobs.json","--strict"])
+        self.assertEqual(result,0)
+        run_qa.assert_called_once_with(["--manifest","manifest.json","--pack","pack",
+                                        "--out","qa-out","--jobs","jobs.json","--strict"])
+
     def test_published_adapter_schemas_validate_examples(self):
         base=Path(__file__).parent
         pairs=[
