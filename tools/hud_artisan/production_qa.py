@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
+import alpha_qa
 
 BG = {
     "dark": (22, 22, 25),
@@ -204,12 +205,18 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
     if not isinstance(assets, list) or not assets:
         raise ValueError("manifest assets must be a non-empty array")
     records, errors = [], []
+    alpha_flagged = set()
     for asset in assets:
         try:
             path = safe_file(pack, asset["file"])
             if not path.is_file():
                 raise ValueError("file missing")
             record={"name": asset["name"], "file": asset["file"], **image_metrics(path)}
+            alpha_record=alpha_qa.inspect_png(path,pack.resolve())
+            alpha_record["findings"]=alpha_qa.classify(alpha_record,bool(asset.get("requires_alpha",False)),0.01)
+            record["alpha_qa"]=alpha_record
+            if alpha_record["findings"]:
+                alpha_flagged.add(asset["name"])
             if isinstance(asset.get("insets"),dict):
                 record["nine_slice"]=nine_slice_metrics(path,asset["insets"])
             records.append(record)
@@ -221,7 +228,7 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
         base, state = state_key(asset["name"])
         if state:
             groups.setdefault(base, []).append((state, asset["name"]))
-    state_families, flagged = [], set()
+    state_families, flagged = [], set(alpha_flagged)
     for base, members in sorted(groups.items()):
         if len(members) < 2:
             continue
@@ -258,11 +265,20 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             raise ValueError("jobs.json manifest hash mismatch")
         job_map = {job.get("asset"): job for job in plan.get("jobs", [])}
     for name in sorted(flagged):
+        job=job_map.get(name)
+        reasons=[]
+        for family_row in state_families:
+            for pair in family_row["pairs"]:
+                if name in (pair.get("a"),pair.get("b")):
+                    reasons.extend(pair.get("findings",[]))
+        asset_record=next((row for row in records if row["name"]==name),None)
+        if asset_record:
+            reasons.extend(asset_record.get("alpha_qa",{}).get("findings",[]))
         regeneration.append({
-            "asset": name, "reason": "state-family QA finding or fully transparent asset",
-            "job": job_map.get(name),
-            "dispatchable": False,
-            "note": "Review this candidate; targeted dispatch is intentionally not enabled until full provenance can be merged safely."
+            "asset": name, "reason": sorted(set(reasons)) or ["QA finding"],
+            "job": job,
+            "dispatchable": job is not None,
+            "note": "Use generate.py repair-plan to create a deterministic full-batch plan; selective dispatch still requires verified prior provenance."
         })
     sheets = render_contact_sheets(assets, pack, out / "contact-sheets")
     return {
