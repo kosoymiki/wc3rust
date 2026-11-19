@@ -1252,7 +1252,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             runtime=runtime_provenance(cfg,adapter_path)
             atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
-                "runtime":runtime,"jobs":records},ensure_ascii=False,indent=2)+"\\n")
+                "runtime":runtime,"jobs":records},ensure_ascii=False,indent=2)+"\n")
         return 0 if ok else 1
     finally:
         shutil.rmtree(work,ignore_errors=True)
