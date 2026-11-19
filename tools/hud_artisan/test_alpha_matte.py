@@ -27,6 +27,15 @@ class AlphaMatteTests(unittest.TestCase):
         self.assertEqual(mask.mode, "L")
         self.assertEqual(mask.getextrema(), (0, 255))
 
+    def test_prepare_input_rejects_unbounded_size(self):
+        with self.assertRaisesRegex(ValueError,"1..2048"):
+            alpha_matte.prepare_input(Image.new("RGB",(8,8)),size=4096)
+
+    def test_mask_rejects_non_finite_predictions(self):
+        pred=np.array([[0.0,np.nan],[0.5,1.0]],dtype=np.float32)
+        with self.assertRaisesRegex(ValueError,"NaN or infinite"):
+            alpha_matte.mask_from_prediction(pred,(8,8))
+
     def test_constant_mask_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "constant mask"):
             alpha_matte.mask_from_prediction(np.zeros((4, 4), dtype=np.float32), (4, 4))
@@ -54,6 +63,18 @@ class AlphaMatteTests(unittest.TestCase):
         self.assertEqual(low, 0)
         self.assertGreaterEqual(high, 250)  # Lanczos resize may stop at 254
         self.assertIn("input.1", session.assert_feed)
+
+    def test_model_symlink_is_rejected_before_onnxruntime_import(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/"model.onnx"
+            target.write_bytes(b"not-a-real-model")
+            link=Path(directory)/"model-link.onnx"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(FileNotFoundError,"non-symlink"):
+                alpha_matte.get_session(link)
 
     def test_missing_model_is_reported(self):
         with self.assertRaises(FileNotFoundError):
