@@ -37,7 +37,9 @@ def inspect_runtime(config_path: Path) -> dict:
         raise adapter.ComfyError("config.workflow_file must be a non-empty path")
     workflow_path = Path(workflow_value).expanduser()
     if not workflow_path.is_absolute():
-        workflow_path = (config_path.resolve().parent / workflow_path).resolve()
+        # Resolve only the config directory. Keep the workflow leaf unresolved
+        # so verify_workflow_sha256 can still detect a configured symlink.
+        workflow_path = config_path.resolve().parent / workflow_path
     workflow_digest = adapter.verify_workflow_sha256(workflow_path, cfg.get("workflow_sha256"))
     workflow = adapter.read_json(workflow_path)
     workflow_format = cfg.get("workflow_format", "api")
