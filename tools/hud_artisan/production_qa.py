@@ -363,6 +363,7 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
     if jobs_plan and isinstance(jobs_plan.get("atlas"),dict):
         planned_cells={cell.get("id"):cell for cell in jobs_plan["atlas"].get("cells",[]) if isinstance(cell,dict)}
     manifest_assets={asset.get("name"):asset for asset in manifest.get("assets",[]) if isinstance(asset,dict)}
+    manifest_files={asset.get("file"):asset for asset in manifest.get("assets",[]) if isinstance(asset,dict)}
     expected_cell=atlas_spec.get("cell")
     if expected_cell is not None and (not isinstance(expected_cell,list) or len(expected_cell)!=2
         or any(type(value) is not int or value<=0 for value in expected_cell)):
@@ -404,19 +405,28 @@ def atlas_qa(manifest: dict, pack: Path, out: Path, jobs_plan: dict | None) -> d
                   "sample_unique_rgba":colors,
                   "sha256":hashlib.sha256(crop.tobytes()).hexdigest()}
             planned=planned_cells.get(ident,{})
-            source_file=planned.get("source_file")
+            source_file=entry.get("source_file") or planned.get("source_file")
             source_asset=entry.get("source_asset") or entry.get("asset")
-            if not source_file and isinstance(source_asset,str):
-                source_record=manifest_assets.get(source_asset)
+            if not source_asset and ident in manifest_assets and manifest_assets[ident].get("file") != atlas_file:
+                source_asset=ident
+            if isinstance(source_asset,str):
+                source_record=manifest_assets.get(source_asset) or manifest_files.get(source_asset)
                 if source_record:
-                    source_file=source_record.get("file")
+                    source_asset=source_record.get("name")
+                    source_file=source_file or source_record.get("file")
                     cell["source_asset"]=source_asset
+                else:
+                    raise ValueError(f"unknown atlas source_asset {source_asset!r}")
             job=jobs_by_output.get(source_file)
             if job:
                 cell["job_asset"]=job.get("asset")
                 cell["job_id"]=job.get("job_id")
-            elif isinstance(source_asset,str) and source_asset in manifest_assets:
+            elif isinstance(source_asset,str):
                 cell["job_asset"]=source_asset
+            elif not source_file:
+                raise ValueError("atlas cell has no source_asset, source_file or planned generation job")
+            if source_file:
+                cell["source_file"]=source_file
             if bbox is None:
                 cell["findings"]=["fully_transparent_atlas_cell"]
                 findings.append({"id":ident,"reason":"fully_transparent_atlas_cell",
