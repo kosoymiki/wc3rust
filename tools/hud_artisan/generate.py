@@ -916,6 +916,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         history=[];status="failed";error=None;generated_at=None
         for attempt in range(retries+1):
             try:
+                if out.is_symlink():
+                    raise RuntimeError("refusing to replace a symlink at the declared output path")
                 if out.exists():out.unlink()
                 timed_out=False
                 with tempfile.TemporaryFile(mode="w+t",encoding="utf-8",errors="replace") as stdout_file, \
@@ -954,7 +956,11 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 history.append(f"attempt={attempt+1} exit={returncode}\\nSTDOUT:\\n{stdout}\\nSTDERR:\\n{stderr}")
                 if timed_out:raise RuntimeError(f"adapter timed out after {timeout}s; process group terminated")
                 if returncode!=0:raise RuntimeError(f"adapter exit code {returncode}")
-                if not out.is_file():raise RuntimeError("adapter returned success but output file is missing")
+                # Re-resolve after the untrusted provider process exits: it may have
+                # replaced a previously safe output path or parent with a symlink.
+                out=safe_join(drop,job["output"])
+                if out.is_symlink() or not out.is_file():
+                    raise RuntimeError("adapter output must be a regular file inside the drop directory")
                 w,h,depth,color=png_info(out)
                 if (w,h)!=(job["width"],job["height"]):raise RuntimeError(f"output dimensions {w}x{h} != job {job['width']}x{job['height']}")
                 if (depth,color)!=(8,6):raise RuntimeError(f"output format must be RGBA8 (depth={depth}, color={color})")
