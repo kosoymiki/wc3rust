@@ -63,6 +63,53 @@ saliency-based, not semantic segmentation: inspect the silhouette and fringes in
 Verified on Termux (2026-11-19): SD1.5 fp16 256x256 -> adapter with `alpha_strategy=u2net` ->
 RGBA (alpha 0..230) -> `alpha_qa.py --require-alpha --strict` PASS (transparent 68.9%).
 
+## Full-cycle fixture (plan → dispatch → ingest → validate → contact-sheet)
+
+A small, reproducible Termux fixture that exercises every stage on CPU. It is a pipeline proof,
+not art: the atlas cell is a synthetic 64x8 pseudo-asset whose u2net matte comes out nearly empty.
+
+Fixture manifest (`build/hud-artisan/fixture/manifest.json`): the three `build_progress_*_64x8`
+strips from the pack manifest plus a 128x16 commandbuttons atlas declaration whose single cell
+(64x8 at 0,0) has no `source_asset`, so `plan` compiles a pseudo-asset job for it. The five
+`font_files` are real system TTFs copied under the manifest names into
+`build/hud-artisan/fixture/fonts` (ingest copies them; it does not parse them).
+
+```sh
+B=build/hud-artisan/fixture
+python3 tools/hud_artisan/generate.py plan --manifest $B/manifest.json --out $B/jobs \
+  --theme classic-modern --seed 20261118
+# HUD_ARTISAN_PLAN_OK jobs=4 atlas_cells=1
+# every job renders 1024x128 (render_dimensions max_edge=1024); the cell requires alpha
+
+COMFYUI_URL=http://127.0.0.1:8188 python3 tools/hud_artisan/generate.py dispatch \
+  --manifest $B/manifest.json --jobs $B/jobs/jobs.json --adapter $B/adapter.json --drop $B/drop
+# HUD_ARTISAN_DISPATCH PASS jobs=4 succeeded=4 failed=0   (8m56s, SD1.5 fp16 1 step, CPU)
+
+python3 tools/hud_artisan/generate.py ingest --manifest $B/manifest.json --jobs $B/jobs/jobs.json \
+  --drop $B/drop --out $B/pack --fit strict --font-source $B/fonts
+# HUD_ARTISAN_INGEST PASS imported_to=.../pack
+
+python3 tools/hud_artisan/generate.py validate --manifest $B/manifest.json --pack $B/pack
+# HUD_ARTISAN_VALIDATE PASS assets=4/4 warnings=0 failures=0
+
+python3 tools/hud_artisan/generate.py contact-sheet --manifest $B/manifest.json --pack $B/pack \
+  --out $B/contact-sheet.png --cols 2 --cell 240
+# HUD_ARTISAN_CONTACT_SHEET $B/contact-sheet.png 480x548
+```
+
+`adapter.json` in the fixture points at `build/hud-artisan/comfyui_api_workflow_sd15.json`
+(steps=1, API format) with `alpha_strategy=u2net` and the local `u2net.onnx`; `working_directory`
+resolves to the repository root so `{job_json}`/`{output_path}` stay repo-relative.
+
+Observed limitations:
+
+- The 64x8 icon cell goes through the u2net salient-object matte on a strip-like image, so the mask
+  is almost fully transparent (alpha 0..2). Ingest accepts it (it is not fully opaque) and validate
+  only checks RGBA8 geometry; this is a fixture artifact, not a valid icon. A real atlas cell must be
+  generated at its native square size with a real silhouette.
+- The three strips come out fully opaque (they are `hud-strip`, `requires_alpha=false`), which is
+  correct for this family.
+
 ## Important limitations
 
 - A workflow that emits an opaque PNG cannot satisfy an alpha-required icon/cursor job without a matte. The Termux Z-Image profile requests solid #FF00FF and applies deterministic border-connected flood-fill; this is not semantic segmentation and must be visually inspected for magenta fringe/holes.
