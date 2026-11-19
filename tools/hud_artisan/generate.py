@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PIXELS = 64_000_000
 MAX_PNG_BYTES = 256 * 1024 * 1024
@@ -402,10 +402,23 @@ FAMILY_DIRECTION = {
     "misc-ui": "One functional fantasy RTS interface object with deliberate silhouette, clear hierarchy and no unrelated scenery."
 }
 
+def render_dimensions(width:int,height:int,max_edge:int=1024)->tuple[int,int]:
+    """Choose a model-friendly latent canvas; native dimensions are restored after inference."""
+    if type(width) is not int or type(height) is not int or width<1 or height<1:
+        raise ValueError("render dimensions require positive integer native dimensions")
+    scale=max(1.0,max_edge/max(width,height))
+    def multiple16(value:float)->int:
+        return max(16,int(round(value/16.0))*16)
+    rw,rh=multiple16(width*scale),multiple16(height*scale)
+    if rw*rh>MAX_PIXELS:
+        raise ValueError(f"render canvas {rw}x{rh} exceeds pixel budget")
+    return rw,rh
+
 def make_job(a:dict,theme:str,seed:int)->dict:
     name,w,h=a["name"],a["w"],a["h"];kind=family(name);t=THEMES[theme];ins=a["insets"]
     states=", ".join(a.get("states") or []) or "normal/default state"
     alpha=requires_alpha(kind)
+    render_w,render_h=render_dimensions(w,h)
     asset_seed=int(sha(f"{seed}:{name}".encode("utf-8"))[:8],16)
     semantic=semantic_brief(a,kind)
     context=metadata_context(a) or "no additional semantic metadata supplied"
@@ -417,7 +430,14 @@ def make_job(a:dict,theme:str,seed:int)->dict:
         if alpha else
         "Fill panel surface; content/text field is empty and unobstructed."
     )
-    prompt=(f"Create ONE final production asset named {name}; exact canvas {w}x{h}, ratio {w/h:.5f}; "
+    alpha_key_instruction = (
+        "Render the entire external background as perfectly uniform solid chroma-key magenta #FF00FF, "
+        "edge-to-edge, with no gradients, shadows, reflections or scenery; never use this magenta in the subject. "
+        "For frames, also render the central aperture in the same solid magenta. The pipeline removes this key."
+        if alpha else ""
+    )
+    prompt=(f"Create ONE final production asset named {name}; render canvas {render_w}x{render_h}; "
+    f"final native canvas {w}x{h}, ratio {w/h:.5f}; "
     "deliver the isolated game-ready artwork, not a mockup or concept. "
     f"Family {kind}; state {states}. Semantic subject: {semantic}. Manifest context: {context}. "
     f"Family composition rules: {FAMILY_DIRECTION[kind]}. "
@@ -428,7 +448,9 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     f"Respect 9-slice safe corner insets L{ins['l']} T{ins['t']} R{ins['r']} B{ins['b']} pixels: "
     "keep focal ornament out of stretch zones, maintain continuous edges, keep central field calm and text-free. "
     "No text, numbers, logos, signature, watermark, extra objects or fake alpha. "
-    "Inspect the intended result at 100%, 50% and 25% size before considering it complete. "+aperture_instruction)
+    "Inspect the intended result at 100%, 50% and 25% size before considering it complete. "
+    "The pipeline downsamples with Lanczos to the exact native canvas after inference. "
+    +aperture_instruction+" "+alpha_key_instruction)
     negative=("text, typography, letters, digits, words, logos, watermark, signature, screenshot, mockup, "
     "multiple assets, collage, contact sheet, character, hand, landscape, photograph, blurry edges, unreadable runes, "
     "flat monochrome vector, generic repeated icon, clipped frame, cropped corners, perspective distortion, bloom, "
@@ -436,11 +458,13 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     prompt_sha256=sha(prompt.encode("utf-8"))
     negative_prompt_sha256=sha(negative.encode("utf-8"))
     spec_hash=sha(json.dumps({"prompt_sha256":prompt_sha256,"negative_prompt_sha256":negative_prompt_sha256,
-        "width":w,"height":h,"insets":ins,"requires_alpha":alpha},sort_keys=True,separators=(",",":")).encode("utf-8"))
+        "width":w,"height":h,"render_width":render_w,"render_height":render_h,
+        "insets":ins,"requires_alpha":alpha},sort_keys=True,separators=(",",":")).encode("utf-8"))
     job_id=sha(f"{name}:{w}x{h}:{seed}:{theme}:{spec_hash}".encode())[:16]
     return {"job_id":job_id,"prompt_sha256":prompt_sha256,
       "negative_prompt_sha256":negative_prompt_sha256,"asset":name,"output":a["file"],
-      "width":w,"height":h,"family":kind,"state":states,"theme":theme,"seed":asset_seed,"insets":ins,
+      "width":w,"height":h,"render_width":render_w,"render_height":render_h,
+      "family":kind,"state":states,"theme":theme,"seed":asset_seed,"insets":ins,
       "requires_alpha":alpha,"references":a.get("references",[]),
       "prompt":prompt,"negative_prompt":negative,
       "output_contract":{"format":"PNG RGBA8","color_space":"sRGB","alpha":"straight","one_asset_only":True,"no_text":True}}
