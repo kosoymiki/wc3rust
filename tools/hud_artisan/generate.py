@@ -1447,6 +1447,10 @@ def main(argv=None):
     q=s.add_parser("validate",help="verify PNGs, atlas, fonts and optional pixel quality heuristics")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
     q.add_argument("--pixels",action="store_true");q.add_argument("--strict-insets",action="store_true");q.add_argument("--engine-contract",action="store_true")
+    q=s.add_parser("qa",help="run integrated alpha, atlas, state and visual QA with offline gallery")
+    q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True)
+    q.add_argument("--out",type=Path,required=True);q.add_argument("--jobs",type=Path)
+    q.add_argument("--strict",action="store_true")
     q=s.add_parser("contact-sheet",help="build labeled visual review sheet")
     q.add_argument("--manifest",type=Path,required=True);q.add_argument("--pack",type=Path,required=True);q.add_argument("--out",type=Path,required=True)
     q.add_argument("--cols",type=int,default=5);q.add_argument("--cell",type=int,default=240)
@@ -1469,6 +1473,12 @@ def main(argv=None):
         if a.cmd=="dispatch":return dispatch(a.manifest,a.jobs,a.adapter,a.drop,a.parallel,a.resume,a.only)
         if a.cmd=="repair-plan":return repair_plan(a.manifest,a.jobs,a.qa,a.out,a.revision)
         if a.cmd=="validate":return validate(a.manifest,a.pack,a.pixels,a.strict_insets,a.engine_contract)
+        if a.cmd=="qa":
+            from production_qa import main as production_qa_main
+            qa_args=["--manifest",str(a.manifest),"--pack",str(a.pack),"--out",str(a.out)]
+            if a.jobs:qa_args.extend(["--jobs",str(a.jobs)])
+            if a.strict:qa_args.append("--strict")
+            return production_qa_main(qa_args)
         if a.cmd=="contact-sheet":return contact_sheet(a.manifest,a.pack,a.out,a.cols,a.cell)
     except (ValueError,RuntimeError,OSError) as e:
         print(f"HUD_ARTISAN_ERROR {e}",file=sys.stderr);return 2
