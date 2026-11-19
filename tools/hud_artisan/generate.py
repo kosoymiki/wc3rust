@@ -853,7 +853,7 @@ def ingest(manifest:Path,jobs_path:Path,drop:Path,out:Path,fit:str,allow_opaque:
         if stage.exists():
             shutil.rmtree(stage,ignore_errors=True)
 
-def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None)->int:
+def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None,resume:bool=False)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
     cfg=read_json(adapter_path)
     if cfg.get("schema_version")!=1:
@@ -916,13 +916,31 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         raise RuntimeError("provider dispatch requires Pillow; install tools/hud_artisan/requirements.txt")
     Image,_,_=image_modules
     drop.mkdir(parents=True,exist_ok=True)
-    # Never allow a previous successful batch's provenance to certify a later failed run.
-    for stale_relative in ("provenance.json","reports/worker-results.json"):
-        stale=safe_join_any(drop,stale_relative)
-        if stale.exists():
-            if not stale.is_file():
-                raise ValueError(f"stale dispatch report is not a regular file: {stale}")
-            stale.unlink()
+    jobs_digest=sha(jobs_path.read_bytes())
+    adapter_digest=sha(adapter_path.read_bytes())
+    worker_report=safe_join_any(drop,"reports/worker-results.json")
+    resume_rows={}
+    if resume and worker_report.is_file():
+        try:
+            previous=read_json(worker_report)
+            if (previous.get("jobs_sha256")==jobs_digest
+                    and previous.get("adapter_config_sha256")==adapter_digest
+                    and isinstance(previous.get("results"),list)):
+                resume_rows={row.get("job_id"):row for row in previous["results"] if isinstance(row,dict)}
+            else:
+                print("HUD_ARTISAN_RESUME_RESET reason=job-or-adapter-fingerprint-mismatch")
+        except Exception as exc:
+            print(f"HUD_ARTISAN_RESUME_RESET reason=invalid-prior-report detail={exc}")
+    # Provenance certifies only a fully successful current batch; checkpoints are separate.
+    stale_provenance=safe_join_any(drop,"provenance.json")
+    if stale_provenance.exists():
+        if not stale_provenance.is_file():
+            raise ValueError(f"stale provenance is not a regular file: {stale_provenance}")
+        stale_provenance.unlink()
+    if not resume and worker_report.exists():
+        if not worker_report.is_file():
+            raise ValueError(f"stale dispatch report is not a regular file: {worker_report}")
+        worker_report.unlink()
     logs=safe_join_any(drop,"reports/worker")
     logs.mkdir(parents=True,exist_ok=True)
     work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
