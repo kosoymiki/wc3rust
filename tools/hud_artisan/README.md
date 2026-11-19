@@ -38,7 +38,7 @@ python3 tools/hud_artisan/generate.py plan \
 The checked-in final manifest is normalized with explicit source_asset links for all 20 command-button atlas cells, so the planner produces 91 unique asset jobs and then assembles the 2048×2048 atlas. The 92 PNG assets and five font files are still in the local Termux pack and are not yet mirrored into this branch; the manifest-only CI test does not claim that the full pack is present. The plan is deterministic for a fixed manifest, theme and seed. Every prompt describes the semantic
 object (not merely the filename), target dimensions, visual family, UI state, palette, materials,
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
-its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar. For OpenCode 2 role separation and session prompts, see OPENCODE_WORKFLOW.md. For accepted visual references and master asset briefs, see REFERENCE_BOARD.md. For the external donor survey, research basis and licensing cautions, see RESEARCH_DONORS.md.
+its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar. For OpenCode 2 role separation and session prompts, see OPENCODE_WORKFLOW.md. For accepted visual references and master asset briefs, see REFERENCE_BOARD.md. For the complete donor/implementation decision matrix, see DONOR_MATRIX.md; for the research narrative, see RESEARCH_DONORS.md. External inputs are tracked in reference_ledger.example.json against reference_ledger.schema.json. The ledger rejects unknown/proprietary pixel-conditioning use and records code/model/font licenses separately.
 
 ### Optional local HTTP renderer adapter
 
@@ -134,7 +134,7 @@ A changed PNG invalidates its prior review. Any score below 10 triggers a target
 ## Verified engine contract
 
 engine_profile.json and the code-level strict gate record known constraints: 768 design height;
-2414x1080 landscape and 1080x2414 portrait references; safe areas; a 4x3 command card with 64 px
+1920x1080 landscape and 1080x1920 portrait reference resolutions; 2414x1080 is a separate landscape runtime QA viewport; safe areas; a 4x3 command card with 64 px
 cells and 4 px gap; ten 44 px control groups; a 2048x2048 command-buttons atlas with 20 entries;
 five font files; 24 unique runtime asset roles; and 92 total manifest assets.
 
