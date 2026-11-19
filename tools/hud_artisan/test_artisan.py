@@ -302,6 +302,8 @@ class Tests(unittest.TestCase):
                          {"landscape":[48,80,48,48],"portrait":[24,96,24,64]})
         self.assertEqual(profile["asset_count_required"],92)
         self.assertEqual(profile["commandbuttons_atlas"]["entries"],20)
+        self.assertEqual(profile["required_font_files"],list(artisan.ENGINE_FONT_FILES))
+        self.assertEqual(profile["commandbuttons_atlas"]["cell"],[64,64])
 
     def test_engine_contract_exact_manifest(self):
         assets=[]
