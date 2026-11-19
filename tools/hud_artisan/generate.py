@@ -177,6 +177,8 @@ def validate_engine_contract(doc:dict[str,Any])->None:
         if not isinstance(entry,dict):
             raise ValueError(f"engine contract atlas entry {index} must be an object")
         ident=entry.get("id")
+        if type(entry.get("page")) is not int or entry["page"] != 0:
+            raise ValueError(f"engine contract atlas entry {index} must reference page 0")
         if not isinstance(ident,str) or not ident.strip() or ident in atlas_ids:
             raise ValueError(f"engine contract atlas entry {index} has an empty or duplicate id")
         atlas_ids.add(ident)
