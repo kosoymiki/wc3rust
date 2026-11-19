@@ -243,12 +243,12 @@ def write_review_gallery(records: list[dict], thumbnails: dict[str,str], sheets:
             ' · semi '+html.escape(str(alpha.get("alpha",{}).get("semi_transparent_ratio","?")))+
             '</p><p class="finding">'+findings_html+'</p></article>'
         )
-    sheet_html="".join('<figure><img loading="lazy" src="'+html.escape(Path(path).relative_to(out.parent).as_posix(),quote=True)+
+    sheet_html="".join('<figure><img loading="lazy" src="'+html.escape(Path(path).relative_to(out).as_posix(),quote=True)+
                        '" alt="'+html.escape(Path(path).stem,quote=True)+'"><figcaption>'+
                        html.escape(Path(path).stem)+'</figcaption></figure>' for path in sheets)
     atlas_sheet=atlas_report.get("contact_sheet")
     if atlas_sheet:
-        sheet_html+='<figure><img loading="lazy" src="'+html.escape(Path(atlas_sheet).relative_to(out.parent).as_posix(),quote=True)+
+        sheet_html+='<figure><img loading="lazy" src="'+html.escape(Path(atlas_sheet).relative_to(out).as_posix(),quote=True)+
                     '" alt="Atlas cells"><figcaption>Atlas cells</figcaption></figure>'
     document='''<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
