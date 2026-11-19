@@ -38,6 +38,7 @@ def inspect_runtime(config_path: Path) -> dict:
     workflow_path = Path(workflow_value).expanduser()
     if not workflow_path.is_absolute():
         workflow_path = (config_path.resolve().parent / workflow_path).resolve()
+    workflow_digest = adapter.verify_workflow_sha256(workflow_path, cfg.get("workflow_sha256"))
     workflow = adapter.read_json(workflow_path)
     workflow_format = cfg.get("workflow_format", "api")
     is_ui = isinstance(workflow.get("nodes"), list)
@@ -139,7 +140,7 @@ def inspect_runtime(config_path: Path) -> dict:
         "workflow": {
             "path": str(workflow_path),
             "format": detected_format,
-            "sha256": sha_file(workflow_path),
+            "sha256": workflow_digest,
             "api_node_count": len(prompt),
             "save_image_node": output_id,
             "mapped_inputs": mapping_report,
