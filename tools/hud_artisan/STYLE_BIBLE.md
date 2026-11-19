@@ -2,6 +2,9 @@
 
 ## Design intent
 
+Use REFERENCE_BOARD.md for the accepted visual reference set and original master-asset briefs. All named games/tools are direction-only references; no retail pixels or protected designs may be copied.
+
+
 Classic + Modern means an original fantasy real-time-strategy interface with the weight and tactility
 of late-90s/early-2000s strategy UI, rendered with current material discipline, clean edge handling,
 high-DPI consistency and legible mobile-scale hierarchy. It does not mean tracing or reproducing any
