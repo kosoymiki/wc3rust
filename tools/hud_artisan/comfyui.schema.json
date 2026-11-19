@@ -22,6 +22,11 @@
       "type": "string",
       "minLength": 1
     },
+    "workflow_sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$",
+      "description": "Optional SHA-256 pin for the exact local workflow JSON file."
+    },
     "node_inputs": {
       "type": "object",
       "additionalProperties": false,
