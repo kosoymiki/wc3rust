@@ -16,6 +16,8 @@ class Tests(unittest.TestCase):
         pairs=[
             ("adapter.schema.json","adapter.example.json"),
             ("comfyui.schema.json","comfyui.example.json"),
+            ("comfyui.schema.json","comfyui.termux.example.json"),
+            ("adapter.schema.json","adapter.termux.example.json"),
             ("job.schema.json",None),
             ("provenance.schema.json",None),
             ("plan.schema.json",None),
