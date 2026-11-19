@@ -65,6 +65,33 @@ python3 tools/hud_artisan/blp_harness.py roundtrip \
 
 The harness does not bundle or claim to implement a BLP codec. The exact flags above are placeholders: use the syntax supported by the installed converter. BLP validation and PNG round-trip quality are separate from proving that Warcraft III accepts a complete texture/atlas/FDF package in-game.
 
+### QA-driven selective repair
+
+Create a new full-batch plan from a production QA report. Only flagged assets receive a new deterministic seed/job ID; all untouched jobs retain their exact IDs, prompts and seeds.
+
+~~~sh
+python tools/hud_artisan/generate.py repair-plan \
+  --manifest MANIFEST \
+  --jobs ORIGINAL_JOBS_JSON \
+  --qa build/hud-artisan/production-qa/production-qa.json \
+  --out build/hud-artisan/repair-r1 \
+  --revision qa-r1
+~~~
+
+The output contains a full `jobs.json` plus `repair-queue.json`. Dispatch only the selected candidates:
+
+~~~sh
+python tools/hud_artisan/generate.py dispatch \
+  --manifest MANIFEST \
+  --jobs build/hud-artisan/repair-r1/jobs.json \
+  --adapter ADAPTER \
+  --drop DROP \
+  --only button_border_normal \
+  --resume
+~~~
+
+Repeat `--only ASSET_OR_JOB_ID` for multiple candidates. A partial dispatch requires an existing full-batch `provenance.json` and verifies every untouched output hash, dimensions, prompt binding, seed, adapter fingerprint and runtime before it starts. It then merges the new records with verified untouched records. If any untouched artifact has changed, or prior provenance is missing, partial rendering is refused. A failed repair never emits full-batch provenance.
+
 ### Renderer provenance lock
 
 When an adapter config declares `workflow_file`, dispatch verifies the workflow SHA-256 before starting workers. Successful provenance records the workflow filename/hash/format, model-loader selections, sampler nodes, configured node map/output node, optional custom-node lock metadata, and hashes of explicitly listed `model_files`. To hash large model files, list their local paths in `model_files`; do not store credentials or environment secrets in the runtime metadata.
