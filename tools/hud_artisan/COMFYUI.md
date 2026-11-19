@@ -110,6 +110,42 @@ Observed limitations:
 - The three strips come out fully opaque (they are `hud-strip`, `requires_alpha=false`), which is
   correct for this family.
 
+### Runtime identity and selective repair (verified 2026-11-19)
+
+The fixture adapter declares the workflow it drives, so dispatch records a real runtime
+identity instead of an empty object:
+
+```json
+"workflow_file": "../comfyui_api_workflow_sd15.json",
+"workflow_sha256": "981ab1e569739d22251ff8977b4476f009dc83e9d0be3220b9e7356f26ae0181"
+```
+
+`provenance.json.runtime` then contains `workflow_file`, `workflow_sha256`,
+`workflow_format`, `model_nodes` and `sampler_nodes`. An adapter config without
+`workflow_file` yields `runtime: {}` and makes the selective gate vacuous — always declare
+the workflow identity in the adapter config, not only in the renderer config it references.
+
+Selective re-render (full batch provenance required):
+
+```sh
+python3 tools/hud_artisan/generate.py dispatch --manifest $B/manifest.json --jobs $B/jobs/jobs.json \
+  --adapter $B/adapter.json --drop $B/drop --only build_progress_normal_64x8
+# HUD_ARTISAN_JOB succeeded id=6a9a45611e88a919 output=build/build_progress_normal_64x8.png
+# rc=0; the other three outputs keep their mtimes; provenance still lists 4 jobs
+```
+
+Tamper guard (negative): copy the drop, append a byte to an untouched PNG, then request a
+selective repair of a *different* asset. The run is refused before rendering:
+
+```
+HUD_ARTISAN_ERROR selective repair requires valid full-batch provenance:
+  untouched job output hash cannot be verified: build_progress_warning_64x8   (rc=2)
+```
+
+`production_qa.py` on the rebuilt pack reports `{"state_families": 0, "flagged_assets": 0,
+"atlas_findings": 0, "read_errors": 0, "pass": true}` with Pillow 12.3 (the deprecated
+`Image.getdata()` path uses `get_flattened_data()` with an `AttributeError` fallback).
+
 ## Important limitations
 
 - A workflow that emits an opaque PNG cannot satisfy an alpha-required icon/cursor job without a matte. The Termux Z-Image profile requests solid #FF00FF and applies deterministic border-connected flood-fill; this is not semantic segmentation and must be visually inspected for magenta fringe/holes.
