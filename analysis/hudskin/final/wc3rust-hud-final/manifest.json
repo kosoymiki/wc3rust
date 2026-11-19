@@ -1,0 +1,1927 @@
+{
+  "schema_version": 1,
+  "project": "Herofolends-RS HUD Redraw",
+  "reference_resolution": {
+    "landscape": [
+      1920,
+      1080
+    ],
+    "portrait": [
+      1080,
+      1920
+    ]
+  },
+  "design_height": 768,
+  "scale": {
+    "formula": "min(vw,vh)/1080 * (768/screen_h)",
+    "ui_scale_clamp": [
+      0.4,
+      1.15
+    ],
+    "final_clamp": [
+      0.62,
+      2
+    ]
+  },
+  "safe_area_1080p": {
+    "landscape": [
+      48,
+      80,
+      48,
+      48
+    ],
+    "portrait": [
+      24,
+      96,
+      24,
+      64
+    ]
+  },
+  "command_card": {
+    "columns": 4,
+    "rows": 3,
+    "cell": [
+      64,
+      64
+    ],
+    "gap": 4,
+    "order": "row-major"
+  },
+  "control_groups": {
+    "count": 10,
+    "cell": [
+      44,
+      44
+    ]
+  },
+  "atlas": {
+    "commandbuttons": {
+      "file": "atlas/commandbuttons_atlas_2048x2048.png",
+      "size": [
+        2048,
+        2048
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "columns": 32,
+      "rows": 32,
+      "padding": 0,
+      "rotation": false,
+      "entries": [
+        {
+          "id": "command_01",
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_01_64"
+        },
+        {
+          "id": "command_02",
+          "x": 64,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_02_64"
+        },
+        {
+          "id": "command_03",
+          "x": 128,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_03_64"
+        },
+        {
+          "id": "command_04",
+          "x": 192,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_04_64"
+        },
+        {
+          "id": "command_05",
+          "x": 256,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_05_64"
+        },
+        {
+          "id": "command_06",
+          "x": 320,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_06_64"
+        },
+        {
+          "id": "command_07",
+          "x": 384,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_07_64"
+        },
+        {
+          "id": "command_08",
+          "x": 448,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_08_64"
+        },
+        {
+          "id": "command_09",
+          "x": 512,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_09_64"
+        },
+        {
+          "id": "command_10",
+          "x": 576,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_10_64"
+        },
+        {
+          "id": "command_11",
+          "x": 640,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_11_64"
+        },
+        {
+          "id": "command_12",
+          "x": 704,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_12_64"
+        },
+        {
+          "id": "command_13",
+          "x": 768,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_13_64"
+        },
+        {
+          "id": "command_14",
+          "x": 832,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_14_64"
+        },
+        {
+          "id": "command_15",
+          "x": 896,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_15_64"
+        },
+        {
+          "id": "command_16",
+          "x": 960,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_16_64"
+        },
+        {
+          "id": "command_17",
+          "x": 1024,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_17_64"
+        },
+        {
+          "id": "command_18",
+          "x": 1088,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_18_64"
+        },
+        {
+          "id": "command_19",
+          "x": 1152,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_19_64"
+        },
+        {
+          "id": "command_20",
+          "x": 1216,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "page": 0,
+          "source_asset": "command_icon_20_64"
+        }
+      ]
+    }
+  },
+  "assets": [
+    {
+      "name": "commandbuttons_atlas_2048x2048",
+      "file": "atlas/commandbuttons_atlas_2048x2048.png",
+      "w": 2048,
+      "h": 2048,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "atlas"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "build_progress_critical_64x8",
+      "file": "build/build_progress_critical_64x8.png",
+      "w": 64,
+      "h": 8,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "critical"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "build_progress_normal_64x8",
+      "file": "build/build_progress_normal_64x8.png",
+      "w": 64,
+      "h": 8,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "build_progress_warning_64x8",
+      "file": "build/build_progress_warning_64x8.png",
+      "w": 64,
+      "h": 8,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "warning"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_autocast_64",
+      "file": "commandcard/button_border_autocast_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "autocast"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_cooldown_64",
+      "file": "commandcard/button_border_cooldown_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "cooldown"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_disabled_64",
+      "file": "commandcard/button_border_disabled_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "disabled"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_empty_64",
+      "file": "commandcard/button_border_empty_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "empty"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_normal_64",
+      "file": "commandcard/button_border_normal_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_border_pressed_64",
+      "file": "commandcard/button_border_pressed_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "pressed"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "button_glow_64",
+      "file": "commandcard/button_glow_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "glow"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "cooldown_radial_64",
+      "file": "commandcard/cooldown_radial_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 12,
+        "t": 12,
+        "r": 12,
+        "b": 12
+      },
+      "states": [
+        "radial"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "console_left_cap_normal_256x288",
+      "file": "console/console_left_cap_normal_256x288.png",
+      "w": 256,
+      "h": 288,
+      "insets": {
+        "l": 32,
+        "t": 48,
+        "r": 32,
+        "b": 48
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "console_left_mid_normal_256x288",
+      "file": "console/console_left_mid_normal_256x288.png",
+      "w": 256,
+      "h": 288,
+      "insets": {
+        "l": 32,
+        "t": 48,
+        "r": 32,
+        "b": 48
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "console_right_cap_normal_256x288",
+      "file": "console/console_right_cap_normal_256x288.png",
+      "w": 256,
+      "h": 288,
+      "insets": {
+        "l": 32,
+        "t": 48,
+        "r": 32,
+        "b": 48
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "console_right_mid_normal_256x288",
+      "file": "console/console_right_mid_normal_256x288.png",
+      "w": 256,
+      "h": 288,
+      "insets": {
+        "l": 32,
+        "t": 48,
+        "r": 32,
+        "b": 48
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "control_group_button_active_44",
+      "file": "controlgroups/control_group_button_active_44.png",
+      "w": 44,
+      "h": 44,
+      "insets": {
+        "l": 8,
+        "t": 8,
+        "r": 8,
+        "b": 8
+      },
+      "states": [
+        "active"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "control_group_button_inactive_44",
+      "file": "controlgroups/control_group_button_inactive_44.png",
+      "w": 44,
+      "h": 44,
+      "insets": {
+        "l": 8,
+        "t": 8,
+        "r": 8,
+        "b": 8
+      },
+      "states": [
+        "inactive"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "cursor_attack_normal_48",
+      "file": "cursor/cursor_attack_normal_48.png",
+      "w": 48,
+      "h": 48,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "cursor_move_normal_48",
+      "file": "cursor/cursor_move_normal_48.png",
+      "w": 48,
+      "h": 48,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "cursor_target_normal_48",
+      "file": "cursor/cursor_target_normal_48.png",
+      "w": 48,
+      "h": 48,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "order_marker_normal_32",
+      "file": "cursor/order_marker_normal_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "rally_point_normal_32",
+      "file": "cursor/rally_point_normal_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_enemy_frame0_96",
+      "file": "cursor/selection_circle_enemy_frame0_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame0"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_enemy_frame1_96",
+      "file": "cursor/selection_circle_enemy_frame1_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame1"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_enemy_frame2_96",
+      "file": "cursor/selection_circle_enemy_frame2_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame2"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_enemy_frame3_96",
+      "file": "cursor/selection_circle_enemy_frame3_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame3"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_hero_frame0_96",
+      "file": "cursor/selection_circle_hero_frame0_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame0"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_hero_frame1_96",
+      "file": "cursor/selection_circle_hero_frame1_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame1"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_hero_frame2_96",
+      "file": "cursor/selection_circle_hero_frame2_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame2"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_hero_frame3_96",
+      "file": "cursor/selection_circle_hero_frame3_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame3"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_unit_frame0_96",
+      "file": "cursor/selection_circle_unit_frame0_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame0"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_unit_frame1_96",
+      "file": "cursor/selection_circle_unit_frame1_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame1"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_unit_frame2_96",
+      "file": "cursor/selection_circle_unit_frame2_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame2"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_circle_unit_frame3_96",
+      "file": "cursor/selection_circle_unit_frame3_96.png",
+      "w": 96,
+      "h": 96,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "frame3"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "command_icon_01_64",
+      "file": "icons/command_icon_01_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "01"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_02_64",
+      "file": "icons/command_icon_02_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "02"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_03_64",
+      "file": "icons/command_icon_03_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "03"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_04_64",
+      "file": "icons/command_icon_04_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "04"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_05_64",
+      "file": "icons/command_icon_05_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "05"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_06_64",
+      "file": "icons/command_icon_06_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "06"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_07_64",
+      "file": "icons/command_icon_07_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "07"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_08_64",
+      "file": "icons/command_icon_08_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "08"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_09_64",
+      "file": "icons/command_icon_09_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "09"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_10_64",
+      "file": "icons/command_icon_10_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "10"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_11_64",
+      "file": "icons/command_icon_11_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "11"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_12_64",
+      "file": "icons/command_icon_12_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "12"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_13_64",
+      "file": "icons/command_icon_13_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "13"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_14_64",
+      "file": "icons/command_icon_14_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "14"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_15_64",
+      "file": "icons/command_icon_15_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "15"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_16_64",
+      "file": "icons/command_icon_16_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "16"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_17_64",
+      "file": "icons/command_icon_17_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "17"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_18_64",
+      "file": "icons/command_icon_18_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "18"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_19_64",
+      "file": "icons/command_icon_19_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "19"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "command_icon_20_64",
+      "file": "icons/command_icon_20_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "20"
+      ],
+      "atlas": "commandbuttons",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_armor_64",
+      "file": "icons/icon_armor_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "armor"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_food_64",
+      "file": "icons/icon_food_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "food"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_gold_64",
+      "file": "icons/icon_gold_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "gold"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_hammer_64",
+      "file": "icons/icon_hammer_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "hammer"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_lumber_64",
+      "file": "icons/icon_lumber_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "lumber"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_magic_64",
+      "file": "icons/icon_magic_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "magic"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_shield_64",
+      "file": "icons/icon_shield_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "shield"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "icon_sword_64",
+      "file": "icons/icon_sword_64.png",
+      "w": 64,
+      "h": 64,
+      "insets": {
+        "l": 0,
+        "t": 0,
+        "r": 0,
+        "b": 0
+      },
+      "states": [
+        "sword"
+      ],
+      "atlas": "standalone",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": true
+    },
+    {
+      "name": "loading_frame_normal_1024x512",
+      "file": "menus/loading_frame_normal_1024x512.png",
+      "w": 1024,
+      "h": 512,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "menu_button_disabled_256x64",
+      "file": "menus/menu_button_disabled_256x64.png",
+      "w": 256,
+      "h": 64,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "disabled"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "menu_button_hover_256x64",
+      "file": "menus/menu_button_hover_256x64.png",
+      "w": 256,
+      "h": 64,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "hover"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "menu_button_normal_256x64",
+      "file": "menus/menu_button_normal_256x64.png",
+      "w": 256,
+      "h": 64,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "menu_button_pressed_256x64",
+      "file": "menus/menu_button_pressed_256x64.png",
+      "w": 256,
+      "h": 64,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "pressed"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "menu_panel_normal_512x384",
+      "file": "menus/menu_panel_normal_512x384.png",
+      "w": 512,
+      "h": 384,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "score_panel_normal_1024x512",
+      "file": "menus/score_panel_normal_1024x512.png",
+      "w": 1024,
+      "h": 512,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "minimap_frame_alert_216",
+      "file": "minimap/minimap_frame_alert_216.png",
+      "w": 216,
+      "h": 216,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "alert"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "minimap_frame_normal_216",
+      "file": "minimap/minimap_frame_normal_216.png",
+      "w": 216,
+      "h": 216,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "minimap_header_normal_216x20",
+      "file": "minimap/minimap_header_normal_216x20.png",
+      "w": 216,
+      "h": 20,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "portrait_frame_enemy_128",
+      "file": "portrait/portrait_frame_enemy_128.png",
+      "w": 128,
+      "h": 128,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "enemy"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "portrait_frame_hero_128",
+      "file": "portrait/portrait_frame_hero_128.png",
+      "w": 128,
+      "h": 128,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "hero"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "portrait_frame_normal_128",
+      "file": "portrait/portrait_frame_normal_128.png",
+      "w": 128,
+      "h": 128,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_food_normal_32",
+      "file": "resources/icon_food_normal_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_food_warn_32",
+      "file": "resources/icon_food_warn_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "warn"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_gold_normal_32",
+      "file": "resources/icon_gold_normal_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_gold_warn_32",
+      "file": "resources/icon_gold_warn_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "warn"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_lumber_normal_32",
+      "file": "resources/icon_lumber_normal_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "icon_lumber_warn_32",
+      "file": "resources/icon_lumber_warn_32.png",
+      "w": 32,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "warn"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "resource_pill_critical_236x32",
+      "file": "resources/resource_pill_critical_236x32.png",
+      "w": 236,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "critical"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "resource_pill_normal_236x32",
+      "file": "resources/resource_pill_normal_236x32.png",
+      "w": 236,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "resource_pill_warn_236x32",
+      "file": "resources/resource_pill_warn_236x32.png",
+      "w": 236,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "warn"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "upkeep_strip_roc_720x14",
+      "file": "resources/upkeep_strip_roc_720x14.png",
+      "w": 720,
+      "h": 14,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "roc"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "upkeep_strip_tft_720x14",
+      "file": "resources/upkeep_strip_tft_720x14.png",
+      "w": 720,
+      "h": 14,
+      "insets": {
+        "l": 16,
+        "t": 8,
+        "r": 16,
+        "b": 8
+      },
+      "states": [
+        "tft"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "selection_panel_normal_240x180",
+      "file": "selection/selection_panel_normal_240x180.png",
+      "w": 240,
+      "h": 180,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "tooltip_arrow_down_24x12",
+      "file": "tooltip/tooltip_arrow_down_24x12.png",
+      "w": 24,
+      "h": 12,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "down"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "tooltip_arrow_up_24x12",
+      "file": "tooltip/tooltip_arrow_up_24x12.png",
+      "w": 24,
+      "h": 12,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "up"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "tooltip_panel_normal_384x256",
+      "file": "tooltip/tooltip_panel_normal_384x256.png",
+      "w": 384,
+      "h": 256,
+      "insets": {
+        "l": 24,
+        "t": 24,
+        "r": 24,
+        "b": 24
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    },
+    {
+      "name": "topbar_plate_normal_720x32",
+      "file": "topbar/topbar_plate_normal_720x32.png",
+      "w": 720,
+      "h": 32,
+      "insets": {
+        "l": 16,
+        "t": 0,
+        "r": 16,
+        "b": 0
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": "ui_frames",
+      "format": "PNG RGBA8 sRGB straight-alpha",
+      "mips": false
+    }
+  ],
+  "font_files": [
+    "primary_serif_cyrillic.ttf",
+    "primary_serif_bold_cyrillic.ttf",
+    "actionbar_sans_cyrillic.ttf",
+    "actionbar_sans_bold_cyrillic.ttf",
+    "numeric_tabular.ttf"
+  ],
+  "notes": [
+    "All art in this package is newly generated/created for this project; no Blizzard game textures are redistributed.",
+    "The original generated concept art is used only as source for selected newly cropped HUD panel/icon artwork.",
+    "Runtime BLP1 conversion is not included; PNG RGBA is the canonical export.",
+    "HUD Artisan normalization (2026-11-19): each commandbuttons atlas cell explicitly references its existing command_icon_XX_64 source asset. The source Termux checkout was not modified."
+  ]
+}
