@@ -2113,17 +2113,17 @@ fn log_missing_glyph(character: char) {
 
 /// Process-wide HUD face cache, keyed by the canonical pack root. A failed
 /// load is deliberately not cached so repaired packs can be retried.
-pub fn pack_fonts(root: &std::path::Path) -> Option<&'static HudFonts> {
+pub fn pack_fonts(root: &std::path::Path) -> Option<std::sync::Arc<HudFonts>> {
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
-    static FONTS: OnceLock<Mutex<HashMap<std::path::PathBuf, &'static HudFonts>>> =
+    static FONTS: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<HudFonts>>>> =
         OnceLock::new();
     let root = root.canonicalize().ok()?;
     let cache = FONTS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().ok()?;
     if let Some(fonts) = cache.get(&root) {
-        return Some(*fonts);
+        return Some(Arc::clone(fonts));
     }
 
     let fonts = HudFonts::load_from_root(&root)?;
@@ -2141,8 +2141,8 @@ pub fn pack_fonts(root: &std::path::Path) -> Option<&'static HudFonts> {
         MIN_TEXT_PX,
         root.display()
     );
-    let fonts = Box::leak(Box::new(fonts));
-    cache.insert(root, fonts);
+    let fonts = Arc::new(fonts);
+    cache.insert(root, Arc::clone(&fonts));
     Some(fonts)
 }
 
