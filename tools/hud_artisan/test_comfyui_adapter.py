@@ -5,6 +5,23 @@ import comfyui_adapter as adapter
 
 
 class ComfyAdapterTests(unittest.TestCase):
+    @mock.patch.object(adapter, "http_json")
+    def test_wait_for_output_polls_history_without_post_body(self, http_json):
+        http_json.return_value = {
+            "prompt-1": {
+                "status": {"status_str": "success", "completed": True},
+                "outputs": {"9": {"images": [{"filename": "result.png", "type": "output"}]}},
+            }
+        }
+        adapter.wait_for_output("http://127.0.0.1:8188", "prompt-1", "9", 5, 5, 0.2)
+        # Regression: the timeout must be the timeout argument, not a POST payload,
+        # otherwise GET /history/<id> becomes a POST and ComfyUI answers 405.
+        args = http_json.call_args.args
+        self.assertEqual(args[0], "http://127.0.0.1:8188")
+        self.assertEqual(args[1], "/history/prompt-1")
+        self.assertIsNone(args[2], "history poll must not send a POST body")
+        self.assertEqual(args[3], 5)
+
     def test_loopback_http_and_remote_https_policy(self):
         self.assertEqual(adapter.validate_server_url("http://127.0.0.1:8188"), "http://127.0.0.1:8188")
         self.assertEqual(adapter.validate_server_url("https://comfy.example:8188"), "https://comfy.example:8188")

@@ -174,7 +174,7 @@ def wait_for_output(base: str, prompt_id: str, output_node_id: str,
                     timeout: int, max_wait: int, interval: float) -> dict:
     deadline = time.monotonic() + max_wait
     while time.monotonic() < deadline:
-        history = http_json(base, "/history/" + parse.quote(prompt_id, safe=""), timeout)
+        history = http_json(base, "/history/" + parse.quote(prompt_id, safe=""), None, timeout)
         record = history.get(prompt_id)
         if record is not None and not isinstance(record, dict):
             raise ComfyError("ComfyUI history record has an invalid shape")
