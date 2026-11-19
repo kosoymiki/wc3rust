@@ -106,6 +106,37 @@ class Tests(unittest.TestCase):
     def test_traversal_rejected(self):
         for x in ("../x.png","/tmp/x.png",""): 
             with self.assertRaises(ValueError):artisan.safe_rel(x)
+    def test_plan_rejects_symlinked_output_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            panel={"name":"panel","file":"panel.png","w":8,"h":8,
+                   "insets":{"l":0,"t":0,"r":0,"b":0}}
+            atlas={"name":"atlas","file":"atlas.png","w":8,"h":8,
+                   "insets":{"l":0,"t":0,"r":0,"b":0}}
+            doc={"design_height":768,"reference_resolution":{},"safe_area_1080p":{},
+                 "command_card":{},"control_groups":{},
+                 "atlas":{"commandbuttons":{"file":"atlas.png","entries":[
+                     {"id":"cell","x":0,"y":0,"w":4,"h":4}]}},
+                 "assets":[panel,atlas],"font_files":["a.ttf","b.ttf","c.ttf","d.ttf","e.ttf"]}
+            manifest=root/"manifest.json";manifest.write_text(json.dumps(doc))
+            real_dir=root/"real-plan";real_dir.mkdir()
+            linked_dir=root/"linked-plan"
+            try:
+                linked_dir.symlink_to(real_dir,target_is_directory=True)
+            except (OSError,NotImplementedError):
+                self.skipTest("directory symlink creation unavailable")
+            with self.assertRaisesRegex(ValueError,"must not be a symlink"):
+                artisan.plan(manifest,linked_dir,"classic-modern",1,False)
+            out=root/"plan";out.mkdir()
+            target=root/"protected.json";target.write_text("do-not-overwrite")
+            try:
+                (out/"jobs.json").symlink_to(target)
+            except (OSError,NotImplementedError):
+                self.skipTest("file symlink creation unavailable")
+            with self.assertRaisesRegex(ValueError,"must not be symlinks"):
+                artisan.plan(manifest,out,"classic-modern",1,False)
+            self.assertEqual(target.read_text(),"do-not-overwrite")
+
     def test_manifest_insets_reject_strings_and_booleans(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);manifest=root/"manifest.json"
