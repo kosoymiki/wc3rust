@@ -38,7 +38,7 @@ python3 tools/hud_artisan/generate.py plan \
 The plan is deterministic for a fixed manifest, theme and seed. Every prompt describes the semantic
 object (not merely the filename), target dimensions, visual family, UI state, palette, materials,
 safe nine-slice insets, alpha requirements and negative prompt. Every job carries a prompt SHA-256;
-its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar.
+its stable job ID is derived from that hash. Every asset also receives its own deterministic 32-bit seed, derived from the requested batch seed and asset name, and stored explicitly in the job and provenance. Read STYLE_BIBLE.md for the shared art-direction grammar. For OpenCode 2 role separation and session prompts, see OPENCODE_WORKFLOW.md. For the external donor survey, research basis and licensing cautions, see RESEARCH_DONORS.md.
 
 ### Run the built-in ComfyUI adapter
 
