@@ -281,6 +281,18 @@ class U2NetMatteModeTests(unittest.TestCase):
     def test_u2net_is_an_accepted_alpha_strategy(self):
         self.assertIn("u2net", adapter.ALPHA_STRATEGIES)
 
+    def test_matte_strategy_rejects_near_invisible_prediction(self):
+        fake = types.ModuleType("alpha_matte")
+        def fake_matte(image, model=None):
+            result=image.convert("RGBA")
+            result.putalpha(27)
+            return result
+        fake.matte_rgba=fake_matte
+        with mock.patch.dict(sys.modules,{"alpha_matte":fake}):
+            image=Image.new("RGB",(64,64),(10,20,30))
+            with self.assertRaisesRegex(adapter.ComfyError,"insufficient foreground"):
+                adapter.alpha_matte_strategy(image,{})
+
     def test_matte_strategy_delegates_to_alpha_matte_module(self):
         calls = {}
 
