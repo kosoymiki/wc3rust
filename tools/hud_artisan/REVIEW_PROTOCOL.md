@@ -30,8 +30,9 @@ Every asset receives integer scores from 1 to 10 for all ten criteria:
 
 1. Create full contact sheets grouped by family and state; also inspect each image at 100%, 50% and 25%.
 2. Review assets individually, then review the entire set for consistency and sibling uniqueness.
-3. Write each review entry with reviewer_id, exact image_sha256, scores, blockers, improvements, verdict, confidence and a concrete rationale.
-4. If anything is below 10, return only the rejected job IDs plus exact defect descriptions to the artist agent. Regenerate/retouch those jobs and repeat both reviews against the new image hashes.
+3. Preserve each original model response as a separate immutable UTF-8 file beside reviews.json. In reviewers[], record the actual provider, exact model identifier, distinct session_id, exact review_prompt and its SHA-256, raw_response_file and raw_response_sha256. Do not invent model/session identifiers or rewrite the original response.
+4. Write each per-asset review entry with reviewer_id, exact image_sha256, scores, blockers, improvements, verdict, confidence and a concrete rationale.
+5. If anything is below 10, return only the rejected job IDs plus exact defect descriptions to the artist agent. Regenerate/retouch those jobs and repeat both reviews against the new image hashes.
 5. Never reuse reviews after a single PNG byte changes.
 6. After all assets pass, run runtime pack checks, Rust loader tests, screenshot review on landscape and portrait, and human sign-off.
 
