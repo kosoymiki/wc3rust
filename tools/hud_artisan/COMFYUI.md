@@ -53,10 +53,13 @@ through onnxruntime (`cfg.matte_model` or `U2NET_MODEL`, default
 `~/src/comfyui-termux/models/u2net.onnx`) and uses the predicted mask as alpha. The matte runs on
 the render canvas; the existing premultiplied-alpha Lanczos step then restores the native size.
 
-Install the optional backend with `python -m pip install -r tools/hud_artisan/requirements-alpha-matte.txt`
-(the base requirements already include NumPy). A relative `matte_model` path is resolved from the
-ComfyUI config directory; otherwise `U2NET_MODEL` or the documented default is used. The read-only
-doctor checks the model file and both runtime dependencies before dispatch.
+On platforms with ONNX Runtime wheels, install the optional backend with
+`python -m pip install -r tools/hud_artisan/requirements-alpha-matte.txt` (the base requirements
+already include NumPy). Android/Termux may not have a compatible PyPI wheel; use a locally built or
+otherwise compatible ONNX Runtime package rather than assuming pip installation will work. A
+relative `matte_model` path is resolved from the ComfyUI config directory; otherwise
+`U2NET_MODEL` or the documented default is used. The read-only doctor checks the model file and
+both runtime dependencies before dispatch.
 
 Measured on Termux (2026-11-19): model load 0.31 s, 320x320 inference ~1.1 s. A painterly SD1.5
 render matted well (alpha 0..230, 68.9% transparent). A flat vector-like apple icon matted poorly
