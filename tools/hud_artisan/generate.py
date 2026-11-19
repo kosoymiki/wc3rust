@@ -919,9 +919,10 @@ def runtime_provenance(cfg:dict[str,Any],adapter_path:Path)->dict[str,Any]:
             raise ValueError("workflow_file must be a non-empty path")
         workflow=Path(workflow_value).expanduser()
         if not workflow.is_absolute():
-            workflow=(adapter_path.resolve().parent/workflow).resolve()
+            workflow=adapter_path.resolve().parent/workflow
         if workflow.is_symlink() or not workflow.is_file():
             raise ValueError(f"workflow_file must be a regular non-symlink file: {workflow}")
+        workflow=workflow.resolve()
         workflow_hash=sha_file(workflow)
         expected=cfg.get("workflow_sha256")
         if expected is not None and expected!=workflow_hash:
@@ -963,9 +964,10 @@ def runtime_provenance(cfg:dict[str,Any],adapter_path:Path)->dict[str,Any]:
         for value in model_files:
             path=Path(value).expanduser()
             if not path.is_absolute():
-                path=(adapter_path.resolve().parent/path).resolve()
+                path=adapter_path.resolve().parent/path
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f"model file must be regular and non-symlink: {path}")
+            path=path.resolve()
             model_records.append({"file":path.name,"sha256":sha_file(path),"bytes":path.stat().st_size})
         runtime["model_files"]=model_records
     return runtime
@@ -973,6 +975,8 @@ def runtime_provenance(cfg:dict[str,Any],adapter_path:Path)->dict[str,Any]:
 def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,parallel_override:int|None,resume:bool=False)->int:
     payload,manifest_doc=verify_plan(manifest_path,jobs_path)
     cfg=read_json(adapter_path)
+    # Verify the workflow lock before creating workers or submitting inference.
+    runtime=runtime_provenance(cfg,adapter_path)
     if cfg.get("schema_version")!=1:
         raise ValueError("unsupported adapter config schema_version (expected 1)")
     if "name" in cfg and (not isinstance(cfg["name"],str) or not cfg["name"].strip()):
@@ -1249,7 +1253,6 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
                     "output_sha256":row["sha256"]})
             provenance_path=safe_join_any(drop,"provenance.json")
-            runtime=runtime_provenance(cfg,adapter_path)
             atomic_write_text(provenance_path,json.dumps({"schema_version":1,"adapter":cfg.get("name",provider),
                 "jobs_sha256":jobs_digest,"adapter_config_sha256":adapter_digest,
                 "runtime":runtime,"jobs":records},ensure_ascii=False,indent=2)+"\n")
