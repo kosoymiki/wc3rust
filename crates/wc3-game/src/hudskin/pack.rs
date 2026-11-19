@@ -120,6 +120,7 @@ pub enum PackError {
     Missing { file: String },
     Size { file: String, manifest: [u32; 2], actual: [u32; 2] },
     Texture { file: String, error: String },
+    Font { error: String },
 }
 
 impl std::fmt::Display for PackError {
@@ -138,6 +139,7 @@ impl std::fmt::Display for PackError {
                 manifest[0], manifest[1], actual[0], actual[1]
             ),
             Self::Texture { file, error } => write!(f, "HUD_PACK texture={file} error={error}"),
+            Self::Font { error } => write!(f, "HUD_PACK font_error={error}"),
         }
     }
 }
@@ -439,6 +441,8 @@ impl HudPack {
             font_files.push(font.to_string());
         }
 
+        validate_runtime_font_files(&font_files)?;
+
         let declarations = value["assets"]
             .as_array()
             .ok_or_else(|| PackError::Manifest("assets is not an array".to_string()))?;
@@ -663,17 +667,16 @@ impl HudPack {
         // their glyph atlases as textures, and bind them so one HUD batch can
         // carry serif (names/tooltips), sans (actions) and mono (numbers).
         let mut font_textures = [0usize; 4];
-        if let Some(fonts) = crate::hud::pack_fonts(root) {
-            let base = texture_base + loaded_textures.len();
-            loaded_textures.push(fonts.primary.atlas.clone());
-            loaded_textures.push(fonts.serif.atlas.clone());
-            loaded_textures.push(fonts.sans.atlas.clone());
-            loaded_textures.push(fonts.numeric.atlas.clone());
-            font_textures = [base, base + 1, base + 2, base + 3];
-            fonts.bind(font_textures);
-        } else {
-            crate::dev_log!("HUD_PACK fonts=missing root={}", root.display());
-        }
+        let fonts = crate::hud::pack_fonts(root).ok_or_else(|| PackError::Font {
+            error: format!("required pack fonts failed to load or verify under {}", root.display()),
+        })?;
+        let base = texture_base + loaded_textures.len();
+        loaded_textures.push(fonts.primary.atlas.clone());
+        loaded_textures.push(fonts.serif.atlas.clone());
+        loaded_textures.push(fonts.sans.atlas.clone());
+        loaded_textures.push(fonts.numeric.atlas.clone());
+        font_textures = [base, base + 1, base + 2, base + 3];
+        fonts.bind(font_textures);
 
         textures.extend(loaded_textures);
         Ok(Self {
@@ -1185,6 +1188,20 @@ pub fn log_insets_ignored(asset: &HudAsset) {
 // JSON helpers (serde_json is already a dependency; no derive feature needed)
 // ---------------------------------------------------------------------------
 
+fn validate_runtime_font_files(font_files: &[String]) -> Result<(), PackError> {
+    const REQUIRED: [&str; 3] = [
+        "primary_serif_cyrillic.ttf",
+        "actionbar_sans_cyrillic.ttf",
+        "numeric_tabular.ttf",
+    ];
+    for required in REQUIRED {
+        if !font_files.iter().any(|file| file.eq_ignore_ascii_case(required)) {
+            return Err(PackError::Manifest(format!("font_files is missing required runtime face {required}")));
+        }
+    }
+    Ok(())
+}
+
 fn asset_states(declaration: &serde_json::Value, name: &str) -> Result<Vec<String>, PackError> {
     match declaration.get("states") {
         None => Ok(Vec::new()),
@@ -1580,6 +1597,21 @@ mod tests {
             serde_json::json!({"id":"same","x":4,"y":0,"w":4,"h":4}),
         ];
         assert!(validate_atlas_entries(&duplicate,16,8).unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn runtime_font_manifest_requires_all_bound_faces() {
+        let valid=vec![
+            "primary_serif_cyrillic.ttf".to_string(),
+            "primary_serif_bold_cyrillic.ttf".to_string(),
+            "actionbar_sans_cyrillic.ttf".to_string(),
+            "actionbar_sans_bold_cyrillic.ttf".to_string(),
+            "numeric_tabular.ttf".to_string(),
+        ];
+        assert!(validate_runtime_font_files(&valid).is_ok());
+        assert!(validate_runtime_font_files(&valid[..2]).is_err());
+        let missing_numeric=valid.iter().filter(|name| *name!="numeric_tabular.ttf").cloned().collect::<Vec<_>>();
+        assert!(validate_runtime_font_files(&missing_numeric).is_err());
     }
 
     #[test]
