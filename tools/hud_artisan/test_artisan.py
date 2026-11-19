@@ -344,10 +344,10 @@ class Tests(unittest.TestCase):
             self.assertEqual(artisan.png_info(output),(8,8,8,6))
             from unittest import mock
             comfy.download_image=real_download_image
-            with mock.patch.object(comfy,"open_http",return_value=io.BytesIO(b"image-bytes")) as open_local:
+            with mock.patch.object(comfy,"open_http",return_value=io.BytesIO(image_bytes)) as open_local:
                 downloaded=comfy.download_image("http://127.0.0.1:8188",
                     {"filename":"frame.png","subfolder":"","type":"output"},5)
-            self.assertEqual(downloaded,b"image-bytes")
+            self.assertEqual(downloaded,image_bytes)
             open_local.assert_called_once()
     def test_duplicate_name_path_guard(self):
         with tempfile.TemporaryDirectory() as d:
