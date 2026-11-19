@@ -58,7 +58,7 @@ Task:
 3. Generate one asset per job through the explicitly selected renderer. The renderer must write the exact path and dimensions; no contact sheets or multi-asset canvases as deliverables.
 4. Run dispatch/ingest/validate and create contact sheets.
 5. Give the exact final PNGs to both independent vision-capable reviewers.
-6. Store each original model response outside the machine gate as immutable evidence. Produce the structured reviews.json only from those actual responses; do not invent or rewrite their judgments.
+6. Store each original model response as a separate immutable UTF-8 file beside reviews.json. In reviewers[], record the real provider/model, unique OpenCode session ID, exact review prompt and SHA-256, raw response filename and SHA-256. Produce structured per-asset scores only from those actual responses; do not invent or rewrite judgments. The gate rejects duplicate session IDs and modified evidence files.
 7. Run review_gate.py. A machine PASS validates the evidence contract and exact image hashes; it does not prove artistic quality or reviewer independence.
 8. Obtain human art-direction approval before shipping.
 
@@ -70,7 +70,7 @@ Do not put API tokens, passwords, private model URLs or account identifiers in m
 
 ## What the current gate can and cannot prove
 
-The gate can verify deterministic plan coverage, exact file hashes, schema validity, reviewer-role coverage, score completeness and rejection rules. It cannot cryptographically prove that two sessions were independent, that the named model actually saw the image, or that a 10/10 score is truthful. Those claims require auditable raw evidence and human oversight. Distinct model names alone are not proof of independence.
+The gate can verify deterministic plan coverage, exact final-image hashes, reviewer prompt hashes, raw-response file hashes, distinct recorded session IDs/model identifiers, reviewer-role coverage, score completeness and rejection rules. It still cannot cryptographically prove that two sessions were independent, that the named model actually saw the image, or that a 10/10 score is truthful. Those claims require auditable raw evidence and human oversight. Distinct model names alone are not proof of independence.
 
 ## Model selection rule
 
