@@ -257,40 +257,39 @@ def ui_workflow_to_api(workflow: dict, object_info: dict) -> dict:
         input_order = schema.get("input_order", {})
         if not isinstance(input_order, dict):
             raise ComfyError(f"ComfyUI /object_info has no input_order for {class_type}")
-        ordered_names = []
-        for group in ("required", "optional"):
-            values = input_order.get(group, [])
-            if not isinstance(values, list):
-                raise ComfyError(f"ComfyUI input_order.{group} is malformed for {class_type}")
-            ordered_names.extend(name for name in values if isinstance(name, str))
+        widget_values = node.get("widgets_values", [])
+        if widget_values is None:
+            widget_values = []
+        if not isinstance(widget_values, list):
+            raise ComfyError(f"UI workflow node {node_id} widgets_values must be an array")
+
         def is_widget_input(name):
             spec = (schema.get("input", {}).get("required", {}).get(name)
                     or schema.get("input", {}).get("optional", {}).get(name))
             if not isinstance(spec, list) or not spec:
                 return False
             first = spec[0]
-            if isinstance(first, list):
-                return True
-            return len(spec) > 1 and isinstance(spec[1], dict)
+            return isinstance(first, list) or (len(spec) > 1 and isinstance(spec[1], dict))
 
-        widget_names = [name for name in ordered_names
-                        if name not in socket_names and is_widget_input(name)]
-        widget_values = node.get("widgets_values", [])
-        if widget_values is None:
-            widget_values = []
-        if not isinstance(widget_values, list):
-            raise ComfyError(f"UI workflow node {node_id} widgets_values must be an array")
         index = 0
-        for name in widget_names:
-            if index >= len(widget_values):
-                raise ComfyError(f"UI workflow node {node_id} is missing widget value for {name}")
-            api_inputs[name] = widget_values[index]
-            index += 1
-            spec = (schema.get("input", {}).get("required", {}).get(name)
-                    or schema.get("input", {}).get("optional", {}).get(name))
-            options = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
-            if options.get("control_after_generate"):
+        for group in ("required", "optional"):
+            names = input_order.get(group, [])
+            if not isinstance(names, list):
+                raise ComfyError(f"ComfyUI input_order.{group} is malformed for {class_type}")
+            for name in names:
+                if not isinstance(name, str) or name in socket_names or not is_widget_input(name):
+                    continue
+                if index >= len(widget_values):
+                    if group == "optional":
+                        continue
+                    raise ComfyError(f"UI workflow node {node_id} is missing widget value for {name}")
+                api_inputs[name] = widget_values[index]
                 index += 1
+                spec = (schema.get("input", {}).get("required", {}).get(name)
+                        or schema.get("input", {}).get("optional", {}).get(name))
+                options = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+                if options.get("control_after_generate"):
+                    index += 1
         if index != len(widget_values):
             raise ComfyError(
                 f"UI workflow node {node_id} has {len(widget_values) - index} unmapped widget value(s); "
