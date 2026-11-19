@@ -34,7 +34,7 @@ The adapter:
 - decodes the image, checks dimensions and transparency requirements, then atomically writes RGBA8 PNG;
 - never silently resizes or stretches an output.
 
-The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility.
+The adapter is optional and replaceable. It does not own art direction, manifests, provenance, atlas assembly, visual review or engine compatibility. Add the workflow/config/checkpoint files to dependency_files (paths are relative to adapter.json unless absolute); their SHA-256 values are included in the resume fingerprint.
 
 ## Important limitations
 
