@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "manifest_sha256": {
       "type": "string",
@@ -30,9 +30,15 @@
         "additionalProperties": false,
         "required": [
           "reviewer_id",
+          "provider",
           "model",
           "role",
-          "independent"
+          "independent",
+          "session_id",
+          "review_prompt",
+          "review_prompt_sha256",
+          "raw_response_file",
+          "raw_response_sha256"
         ],
         "properties": {
           "reviewer_id": {
@@ -51,6 +57,30 @@
           },
           "independent": {
             "const": true
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 8
+          },
+          "review_prompt": {
+            "type": "string",
+            "minLength": 80
+          },
+          "review_prompt_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "raw_response_file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raw_response_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           }
         }
       },
