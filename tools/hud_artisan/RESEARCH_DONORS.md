@@ -1,6 +1,6 @@
 # HUD Artisan — donor and research review
 
-Research snapshot: 2026-11-19. This is a targeted engineering survey, not a claim that every GitHub repository or forum has been exhaustively indexed. Repositories are references/donor candidates; no third-party implementation is copied by this document.
+Research snapshot: 2026-11-19. This is a curated engineering survey, not a claim that every GitHub repository or forum has been exhaustively indexed. Repositories are references/donor candidates; no third-party implementation is copied by this document. The actionable donor/implementation matrix is in DONOR_MATRIX.md. The machine-readable source/license ledger contract is reference_ledger.schema.json with a conservative example in reference_ledger.example.json.
 
 ## Architecture decisions
 
@@ -30,12 +30,30 @@ Research snapshot: 2026-11-19. This is a targeted engineering survey, not a clai
 
 - [hongyuanc/loom](https://github.com/hongyuanc/loom) — MIT (as stated by its README). Valuable for strategy selection, deterministic local rendering, package-level eval reports, alpha/palette/bounding-box consistency checks, provenance and provider-pixel accounting. Its promoted pixel-native path uses curated indexed templates for a supported slime archetype; it is not a general painterly HUD renderer. Borrow evaluation/package architecture, not the pixel-art renderer as our visual solution.
 
+### Additional focused donors
+
+- [Hexeption/FastPack](https://github.com/Hexeption/FastPack) — MIT (GitHub repository metadata). Rust atlas packer with MaxRects, trim modes, extrusion, nine-patch metadata, alias detection and alpha-bleed reduction. Strong benchmark candidate; do not replace the manifest's fixed atlas coordinates without pixel-exact compatibility tests.
+- [urraka/texpack](https://github.com/urraka/texpack) — MIT (GitHub repository metadata). Small MaxRects CLI packer; useful fallback and algorithm comparison, but confirm output metadata and determinism before integration.
+- [mapbox/potpack](https://github.com/mapbox/potpack) — compact static near-square rectangle packer. Useful algorithm reference; verify exact package license and remember it does not provide the full WC3 metadata contract.
+- [aras-p/smol-atlas](https://github.com/aras-p/smol-atlas) — MIT or Unlicense per upstream README. Small dynamic C++ atlas allocator; algorithm reference only, not a direct fit for deterministic offline packaging.
+- [WarRaft/blp-rs](https://github.com/WarRaft/blp-rs) — Rust BLP library/CLI for Blizzard texture formats. High-priority WC3 integration candidate; verify the exact repository LICENSE and test BLP1 against the target Warcraft III version before depending on it.
+- [wow-blp crate documentation](https://docs.rs/wow-blp/latest/wow_blp/) — parser/encoder documentation for BLP0/1/2 and compression/mipmap variants. Independent technical cross-check; inspect crate metadata and exact license before adding it.
+- [ComfyUI IPAdapter Plus](https://github.com/cubiq/ComfyUI_IPAdapter_plus) — reference conditioning node implementation. Optional local capability for style/composition/subject references; check node license and each model/CLIP-vision weight license independently.
+- [ComfyUI core](https://github.com/comfy-org/ComfyUI) — local node-graph execution, local HTTP API, offline operation. Core and paid cloud are separate; optional partner/API nodes can be disabled. Model files and custom nodes remain separate dependencies.
+- [cuteyuchen/game-art-pipeline](https://github.com/cuteyuchen/game-art-pipeline) — reusable agent skill describing profile → generation → deterministic QA → engine integration. License must be checked before code reuse; workflow reference only for now.
+
 ## Community workflow evidence (anecdotal, not peer-reviewed)
 
 - [r/aigamedev: consistent 2D game assets by drawing onto a game screenshot, then isolating](https://www.reddit.com/r/aigamedev/comments/1xavthu/the_ai_trick_for_consistent_2d_game_assets/) — suggests conditioning on the actual project composition can improve placement/style coherence, followed by isolation and cleanup. For wc3rust, use only our own HUD screenshot or a neutral layout board as a composition guide; isolate each asset and validate it independently. Do not reuse retail game screenshots or bake the entire HUD into one generated texture.
 - [r/comfyui: difficulties with genuine pixel-art consistency and fixed palettes](https://www.reddit.com/r/comfyui/comments/1wny6zq/true_pixel_art_game_asset_workflows_palettes/) — useful caution that "pixel-art-looking" output is not necessarily palette-limited, grid-consistent or engine-ready. Our accepted direction is HD Classic + Modern, not pixel art; therefore pixel snapping/dithering must not be applied globally.
 - [r/comfyui: batch replacement using Florence/SAM segmentation](https://www.reddit.com/r/comfyui/comments/1xw3zo6/how_to_batchreplace_a_2d_game_character_across/) — the discussion describes text localization plus SAM-style masks for isolating a subject while preserving untouched props. Relevant only if we later need screenshot decomposition or asset extraction; it is not the default route for original HUD assets.
 - [r/comfyui: local reference-conditioned animation workflow](https://www.reddit.com/r/comfyui/comments/1sve5id/one_image_in_2d_animated_and_customizable/) — useful architecture pattern: separate base identity, motion, alpha extraction and customization layers. It targets animation and large local GPU hardware, so do not copy its resource assumptions into the Termux/HD-HUD path.
+
+## Warcraft III runtime and texture references
+
+- [OpenWarcraft3 FDF reference](https://corepunch.github.io/open-realm/games/warcraft-3/file-formats/fdf/): FDF describes frame hierarchy, dimensions, anchors, textures, fonts and children. Treat as a format reference and validate behavior against the actual target client.
+- [WarRaft/blp-rs](https://github.com/WarRaft/blp-rs) and [wow-blp docs](https://docs.rs/wow-blp/latest/wow_blp/): useful BLP format implementation references. BLP1 compatibility and alpha/mipmap round-trip must be tested on the selected WC3 version; do not infer WC3 behavior from WoW-only BLP2 documentation.
+- [ComfyUI official README](https://github.com/comfy-org/ComfyUI): local core supports offline execution and local API workflows; paid Comfy Cloud and optional partner API nodes are distinct. Our default pipeline remains local and does not require cloud access.
 
 ## Research papers and technical basis
 
