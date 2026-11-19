@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HUD Artisan reference and donor provenance ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project",
+    "references"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "source_url",
+          "license",
+          "license_evidence_url",
+          "allowed_use",
+          "conditioning_allowed",
+          "commercial_use",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+          },
+          "kind": {
+            "enum": [
+              "code",
+              "model",
+              "lora",
+              "controlnet",
+              "vae",
+              "vision_encoder",
+              "reference_image",
+              "font",
+              "paper",
+              "documentation",
+              "workflow"
+            ]
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1
+          },
+          "license_evidence_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "allowed_use": {
+            "enum": [
+              "code_reuse",
+              "algorithm_reference",
+              "textual_reference",
+              "pixel_conditioning",
+              "runtime_dependency",
+              "excluded"
+            ]
+          },
+          "conditioning_allowed": {
+            "type": "boolean"
+          },
+          "commercial_use": {
+            "enum": [
+              "allowed",
+              "restricted",
+              "prohibited",
+              "unknown",
+              "not_applicable"
+            ]
+          },
+          "redistribution": {
+            "enum": [
+              "allowed",
+              "restricted",
+              "prohibited",
+              "unknown",
+              "not_applicable"
+            ]
+          },
+          "upstream_notice_required": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "references": {
+            "contains": {
+              "properties": {
+                "license": {
+                  "const": "UNKNOWN"
+                }
+              },
+              "required": [
+                "license"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "description": "Unknown licenses must never be approved for pixel conditioning."
+      }
+    }
+  ]
+}
