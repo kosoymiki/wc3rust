@@ -107,6 +107,30 @@ python3 tools/hud_artisan/generate.py contact-sheet \
   --out build/hud-artisan/contact-sheet.png
 ~~~
 
+Run the independent read-only alpha/chroma-key diagnostic after ingestion:
+
+~~~sh
+python3 tools/hud_artisan/alpha_qa.py \
+  --root build/hud-artisan/pack \
+  --out build/hud-artisan/alpha-report.json \
+  --max-key-ratio 0.01
+
+# Optional strict gate for an all-alpha asset subset/drop:
+python3 tools/hud_artisan/alpha_qa.py \
+  --root build/hud-artisan/drop \
+  --out build/hud-artisan/drop-alpha-report.json \
+  --require-alpha --strict
+~~~
+
+The alpha report records each PNG's SHA-256, dimensions, alpha histogram ratios,
+visible bounding box, transparent-border ratio and opaque pixels close to the configured
+chroma key. It is read-only and does not repair artwork. The chroma-key metric is a warning
+heuristic: legitimate magenta artwork can be flagged, and a low score does not prove a
+clean matte. Use `--require-alpha` only on a subset whose contract requires transparency;
+do not apply it indiscriminately to opaque panels or atlas textures. A fully framed asset
+with an intentionally transparent centre may be reported as a transparent island; review
+that finding rather than treating it as an automatic rejection.
+
 The plan file is mandatory. It binds each job ID to its exact prompt hash and the complete source
 manifest hash. Ingestion checks the exact plan SHA-256, complete job set, provider, model, generation
 timestamp, license declaration, per-asset seed, positive/negative prompt SHA-256 and generated PNG
