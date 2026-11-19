@@ -54,6 +54,17 @@ class ProductionQATests(unittest.TestCase):
         self.assertIn("button_normal", [x["asset"] for x in report["regeneration_candidates"]])
         self.assertIn("empty_icon", [x["asset"] for x in report["regeneration_candidates"]])
 
+    def test_nine_slice_stretch_zone_metrics(self):
+        image = Image.new("RGBA", (64, 64), (20, 30, 40, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((8, 0, 55, 7), fill=(60, 70, 80, 255))
+        path = self.pack/"panel.png"
+        image.save(path)
+        metrics = qa.nine_slice_metrics(path, {"l":8,"t":8,"r":8,"b":8})
+        self.assertTrue(metrics["sliceable"])
+        self.assertIn("top_stretch", metrics["stretch_zones"])
+        self.assertIsNotNone(metrics["stretch_zones"]["top_stretch"]["mean_neighbor_gradient"])
+
     def test_symlink_asset_rejected_as_read_error(self):
         target = self.pack/"target.png"
         Image.new("RGBA", (8,8), (1,2,3,255)).save(target)
