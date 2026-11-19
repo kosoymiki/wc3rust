@@ -248,8 +248,10 @@ def write_review_gallery(records: list[dict], thumbnails: dict[str,str], sheets:
                        html.escape(Path(path).stem)+'</figcaption></figure>' for path in sheets)
     atlas_sheet=atlas_report.get("contact_sheet")
     if atlas_sheet:
-        sheet_html+='<figure><img loading="lazy" src="'+html.escape(Path(atlas_sheet).relative_to(out).as_posix(),quote=True)+
-                    '" alt="Atlas cells"><figcaption>Atlas cells</figcaption></figure>'
+        sheet_html+=(
+            '<figure><img loading="lazy" src="'+html.escape(Path(atlas_sheet).relative_to(out).as_posix(),quote=True)+
+            '" alt="Atlas cells"><figcaption>Atlas cells</figcaption></figure>'
+        )
     document='''<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HUD Artisan — Visual QA</title>
