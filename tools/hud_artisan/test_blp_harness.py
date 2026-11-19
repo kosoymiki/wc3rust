@@ -54,6 +54,17 @@ class BLPHarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(blp.BLPError,"dimensions differ"):
             blp.compare_png(a,b)
 
+    def test_raw_rgba_decoder_output_wraps_to_png(self):
+        raw=self.root/"image.rgba";png=self.root/"image.png"
+        raw.write_bytes(bytes((1,2,3,255))*16)
+        blp.raw_rgba_to_png(raw,png,4,4)
+        with Image.open(png) as im:
+            self.assertEqual(im.size,(4,4))
+            self.assertEqual(im.getpixel((0,0)),(1,2,3,255))
+        raw.write_bytes(b"short")
+        with self.assertRaisesRegex(blp.BLPError,"exactly"):
+            blp.raw_rgba_to_png(raw,png,4,4)
+
 
 if __name__ == "__main__":
     unittest.main()
