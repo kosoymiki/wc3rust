@@ -425,10 +425,12 @@ def make_job(a:dict,theme:str,seed:int)->dict:
     semantic=semantic_brief(a,kind)
     context=metadata_context(a) or "no additional semantic metadata supplied"
     aperture_instruction = (
-        "The complete central aperture must be genuinely transparent (alpha zero), not painted black, "
-        "blurred, checkerboarded or filled with fake scenery. Keep every border ornament outside the aperture."
+        "Keep the complete central aperture empty of artwork and scenery. Render it as the same flat solid "
+        "chroma-key magenta matte as the exterior; the local postprocessor creates true alpha transparency. "
+        "Keep every border ornament outside this aperture."
         if kind in ("portrait-frame","minimap-frame") else
-        "Transparent background beyond the isolated silhouette, clean straight alpha."
+        "Keep one isolated silhouette with no cast shadow or scenery beyond its contour; the flat magenta matte "
+        "is removed by the local postprocessor to create true straight alpha."
         if alpha else
         "Fill panel surface; content/text field is empty and unobstructed."
     )
