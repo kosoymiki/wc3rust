@@ -1120,6 +1120,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 raise ValueError(f"--only selector {selector!r} matched {len(matches)} jobs; expected exactly one")
         selected_jobs=[next(job for job in all_jobs if selector in (job["job_id"],job.get("asset")))
                        for selector in only]
+        if len({job["job_id"] for job in selected_jobs})!=len(selected_jobs):
+            raise ValueError("--only selectors resolve to the same job more than once")
     cwd_value=cfg.get("working_directory",".")
     if not isinstance(cwd_value,str) or not cwd_value.strip():
         raise ValueError("adapter.working_directory must be a non-empty string")
