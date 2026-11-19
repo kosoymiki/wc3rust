@@ -581,7 +581,7 @@ Run:
 
 Theme={theme}; seed={seed}; source manifest SHA-256={sha(manifest.read_bytes())}
 """
-    (out/"AGENT_BRIEF.md").write_text(brief,encoding="utf-8")
+    atomic_write_text(out/"AGENT_BRIEF.md",brief)
     print(f"HUD_ARTISAN_PLAN_OK jobs={len(jobs)} atlas_cells={len(atlas_plan['cells'])} out={out}");return 0
 
 def png_info(path:Path)->tuple[int,int,int,int]:
@@ -711,7 +711,7 @@ def validate(manifest:Path,pack:Path,pixels:bool,strict_insets:bool,engine_contr
       "failures":fail,"warnings":warn,"assets":records}
     report_path=safe_join_any(pack,"reports/validation.json")
     report_path.parent.mkdir(parents=True,exist_ok=True)
-    report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+    atomic_write_text(report_path,json.dumps(report,ensure_ascii=False,indent=2)+"\n")
     for x in warn: print("HUD_ARTISAN_WARN "+x)
     for x in fail: print("HUD_ARTISAN_FAIL "+x)
     print(f"HUD_ARTISAN_VALIDATE {'PASS' if not fail else 'FAIL'} assets={len(records)}/{len(doc['assets'])} warnings={len(warn)} failures={len(fail)}")
@@ -1101,7 +1101,7 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             except Exception as exc:
                 error=str(exc);history.append(f"attempt={attempt+1} error={error}")
         log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
-        log_path.write_text("\n\n".join(history),encoding="utf-8")
+        atomic_write_text(log_path,"\n\n".join(history))
         return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
                 "generated_at":generated_at,"error":error,"sha256":sha_file(out) if status=="succeeded" else None}
     def checkpoint_report(rows):
