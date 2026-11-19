@@ -156,9 +156,16 @@ def main(argv=None) -> int:
             a.report.parent.mkdir(parents=True, exist_ok=True)
             if a.report.is_symlink():
                 raise BLPError("report path must not be a symlink")
-            temp = a.report.with_name("." + a.report.name + ".tmp")
-            temp.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            os.replace(temp, a.report)
+            fd, temp_name = tempfile.mkstemp(prefix="." + a.report.name + ".", suffix=".tmp", dir=a.report.parent)
+            temp = Path(temp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(json.dumps(result, indent=2, ensure_ascii=False) + "\\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, a.report)
+            finally:
+                temp.unlink(missing_ok=True)
         print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
         return 0
     except (OSError, BLPError, ValueError, subprocess.TimeoutExpired) as exc:
