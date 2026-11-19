@@ -9,6 +9,31 @@ import comfyui_adapter as adapter
 
 
 class ComfyAdapterTests(unittest.TestCase):
+    def test_comfyui_schema_accepts_u2net_model_configuration(self):
+        import json
+        from pathlib import Path
+        from jsonschema import Draft202012Validator
+
+        schema=json.loads((Path(__file__).with_name("comfyui.schema.json")).read_text(encoding="utf-8"))
+        config={
+            "schema_version":1,
+            "workflow_file":"workflow.json",
+            "node_inputs":{
+                "positive_prompt":{"node_id":"1","input":"text"},
+                "negative_prompt":{"node_id":"2","input":"text"},
+                "width":{"node_id":"3","input":"width"},
+                "height":{"node_id":"3","input":"height"},
+                "seed":{"node_id":"4","input":"seed"},
+            },
+            "output_node_id":"9",
+            "alpha_strategy":"u2net",
+            "matte_model":"models/u2net.onnx",
+        }
+        validator=Draft202012Validator(schema)
+        self.assertEqual(list(validator.iter_errors(config)),[])
+        config["alpha_strategy"]="invalid"
+        self.assertTrue(list(validator.iter_errors(config)))
+
     def test_loopback_http_and_remote_https_policy(self):
         self.assertEqual(adapter.validate_server_url("http://127.0.0.1:8188"), "http://127.0.0.1:8188")
         self.assertEqual(adapter.validate_server_url("https://comfy.example:8188"), "https://comfy.example:8188")
