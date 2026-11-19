@@ -133,6 +133,14 @@ class ReviewGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "distinct IDs, model identifiers, roles and session IDs"):
                 review_gate.evaluate(manifest, jobs, pack, reviews)
 
+    def test_review_prompt_hash_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, jobs, pack, reviews, _, doc, *_ = self.fixture(Path(directory))
+            doc["reviewers"][0]["review_prompt"] += " Tampered."
+            reviews.write_text(json.dumps(doc))
+            with self.assertRaisesRegex(ValueError, "review prompt hash mismatch"):
+                review_gate.evaluate(manifest, jobs, pack, reviews)
+
     def test_raw_response_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, jobs, pack, reviews, _, _, _, raw_art, _ = self.fixture(Path(directory))
@@ -143,10 +151,12 @@ class ReviewGateTests(unittest.TestCase):
     def test_raw_response_path_traversal_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, jobs, pack, reviews, _, doc, *_ = self.fixture(Path(directory))
-            doc["reviewers"][0]["raw_response_file"] = "../outside.md"
-            reviews.write_text(json.dumps(doc))
-            with self.assertRaisesRegex(ValueError, "unsafe reviewer evidence path"):
-                review_gate.evaluate(manifest, jobs, pack, reviews)
+            for unsafe in ("../outside.md", "C:/outside.md"):
+                doc["reviewers"][0]["raw_response_file"] = unsafe
+                reviews.write_text(json.dumps(doc))
+                with self.subTest(path=unsafe):
+                    with self.assertRaisesRegex(ValueError, "unsafe reviewer evidence path"):
+                        review_gate.evaluate(manifest, jobs, pack, reviews)
 
     def test_omitted_asset_review_rejects(self):
         with tempfile.TemporaryDirectory() as directory:
