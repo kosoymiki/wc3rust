@@ -265,7 +265,7 @@ def main(argv=None) -> int:
         if not isinstance(output_node, dict) or output_node.get("class_type") != "SaveImage":
             raise ComfyError(f"configured output node {output_node_id!r} must exist with class_type='SaveImage'")
         if not isinstance(output_node.get("inputs"), dict) or "images" not in output_node["inputs"]:
-            raise ComfyError("configured SaveImage node must have an images input")
+            raise ComfyError(f"configured SaveImage node must have an images input; node={output_node!r}")
 
         client_id = str(uuid.uuid4())
         submitted = http_json(base, "/prompt", {"prompt": workflow, "client_id": client_id}, timeout)
