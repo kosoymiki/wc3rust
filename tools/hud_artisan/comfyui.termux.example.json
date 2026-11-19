@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "server": "http://127.0.0.1:8188",
+  "workflow_file": "~/src/comfyui-termux/default_workflow.json",
+  "workflow_format": "ui",
+  "node_inputs": {
+    "positive_prompt": {
+      "node_id": "67",
+      "input": "text"
+    },
+    "negative_prompt": {
+      "node_id": "71",
+      "input": "text"
+    },
+    "width": {
+      "node_id": "68",
+      "input": "width"
+    },
+    "height": {
+      "node_id": "68",
+      "input": "height"
+    },
+    "seed": {
+      "node_id": "70",
+      "input": "seed"
+    }
+  },
+  "output_node_id": "9",
+  "request_timeout_seconds": 60,
+  "max_wait_seconds": 3600,
+  "poll_interval_seconds": 1,
+  "alpha_strategy": "chroma_key",
+  "chroma_key_color": [
+    255,
+    0,
+    255
+  ],
+  "chroma_key_tolerance": 48
+}
