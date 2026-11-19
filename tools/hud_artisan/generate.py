@@ -1001,7 +1001,11 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         row=resume_rows.get(job["job_id"])
         if not isinstance(row,dict) or row.get("status")!="succeeded":
             return None
-        if row.get("output")!=job["output"] or not isinstance(row.get("generated_at"),str):
+        if (row.get("output")!=job["output"] or not isinstance(row.get("generated_at"),str)
+                or row.get("prompt_sha256")!=job["prompt_sha256"]
+                or row.get("negative_prompt_sha256")!=job["negative_prompt_sha256"]
+                or row.get("seed")!=job["seed"]
+                or row.get("width")!=job["width"] or row.get("height")!=job["height"]):
             return None
         digest=row.get("sha256")
         if not isinstance(digest,str) or not re.fullmatch(r"[a-f0-9]{64}",digest):
@@ -1022,6 +1026,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         except Exception:
             return None
         return {"job_id":job["job_id"],"asset":job.get("asset"),"output":job["output"],
+                "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
+                "seed":job["seed"],"width":job["width"],"height":job["height"],
                 "status":"succeeded","generated_at":row["generated_at"],"error":None,"sha256":digest}
     def run_one(job):
         jid=job["job_id"];out=safe_join(drop,job["output"]);out.parent.mkdir(parents=True,exist_ok=True)
@@ -1102,7 +1108,9 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                 error=str(exc);history.append(f"attempt={attempt+1} error={error}")
         log_path=safe_join_any(drop,Path("reports/worker")/(jid+".log"))
         atomic_write_text(log_path,"\n\n".join(history))
-        return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],"status":status,
+        return {"job_id":jid,"asset":job.get("asset"),"output":job["output"],
+                "prompt_sha256":job["prompt_sha256"],"negative_prompt_sha256":job["negative_prompt_sha256"],
+                "seed":job["seed"],"width":job["width"],"height":job["height"],"status":status,
                 "generated_at":generated_at,"error":error,"sha256":sha_file(out) if status=="succeeded" else None}
     def checkpoint_report(rows):
         ordered=sorted(rows,key=lambda row:row["job_id"])
@@ -1121,8 +1129,10 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     row=future.result()
                 except Exception as exc:
                     row={"job_id":job.get("job_id","<unknown>"),"asset":job.get("asset"),
-                         "output":job.get("output"),"status":"failed","generated_at":None,
-                         "error":f"worker setup/runtime exception: {exc}","sha256":None}
+                         "output":job.get("output"),"prompt_sha256":job.get("prompt_sha256"),
+                         "negative_prompt_sha256":job.get("negative_prompt_sha256"),"seed":job.get("seed"),
+                         "width":job.get("width"),"height":job.get("height"),"status":"failed",
+                         "generated_at":None,"error":f"worker setup/runtime exception: {exc}","sha256":None}
                 results.append(row)
                 # Persist each completed job immediately so an interrupted batch can resume.
                 atomic_write_text(worker_report,json.dumps(checkpoint_report(results),ensure_ascii=False,indent=2)+"\n")
