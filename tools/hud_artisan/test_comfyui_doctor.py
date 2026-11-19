@@ -84,6 +84,29 @@ class ComfyDoctorTests(unittest.TestCase):
             self.assertEqual(report["status"], "FAIL")
             self.assertTrue(any("mapped input" in item for item in report["errors"]))
 
+    def test_dynamic_model_sentinel_and_active_queue_are_warnings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path, object_info = self.fixture(Path(directory))
+            workflow_path = Path(directory) / "workflow.json"
+            workflow = json.loads(workflow_path.read_text())
+            workflow["63"] = {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}}
+            workflow_path.write_text(json.dumps(workflow))
+            object_info["VAELoader"] = {"input": {"required": {"vae_name": [["pixel_space"]]}}}
+            def fake_http(base, endpoint, payload=None, timeout=60):
+                if endpoint == "/system_stats":
+                    return {"system": {"comfyui_version": "0.46.0"}, "devices": []}
+                if endpoint == "/queue":
+                    return {"queue_running": [["active-prompt"]], "queue_pending": []}
+                if endpoint == "/object_info":
+                    return object_info
+                raise AssertionError(endpoint)
+            with mock.patch.object(doctor.adapter, "http_json", side_effect=fake_http):
+                report = doctor.inspect_runtime(config_path)
+            self.assertEqual(report["status"], "PASS")
+            self.assertEqual(report["queue"]["running"], 1)
+            self.assertTrue(any("no concrete model enumeration" in item for item in report["warnings"]))
+            self.assertTrue(any("queue is active" in item for item in report["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
