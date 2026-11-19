@@ -282,6 +282,9 @@ fn validate_atlas_grid(
     }
     for entry in entries {
         let id = string(entry, &["id"])?;
+        if integer(entry, &["page"])? != 0 {
+            return Err(PackError::Manifest(format!("atlas cell {id} must reference page 0")));
+        }
         let x = integer(entry, &["x"])?;
         let y = integer(entry, &["y"])?;
         let w = integer(entry, &["w"])?;
@@ -632,6 +635,14 @@ impl HudPack {
         let atlas_file = string(atlas, &["file"])?;
         let atlas_asset = assets.iter().find(|asset| asset.file == atlas_file)
             .ok_or_else(|| PackError::Manifest(format!("commandbuttons atlas file is not a declared asset: {atlas_file}")))?;
+        match atlas.get("rotation") {
+            Some(value) if value.as_bool() == Some(false) => {}
+            _ => return Err(PackError::Manifest("atlas.commandbuttons.rotation must be false".to_string())),
+        }
+        match atlas.get("padding") {
+            Some(value) if value.as_i64() == Some(0) => {}
+            _ => return Err(PackError::Manifest("atlas.commandbuttons.padding must be integer zero".to_string())),
+        }
         let declared_atlas_size = pair_u32(atlas, &["size"])?;
         if declared_atlas_size != [atlas_asset.w, atlas_asset.h] {
             return Err(PackError::Manifest(format!(
@@ -1191,7 +1202,9 @@ pub fn log_insets_ignored(asset: &HudAsset) {
 fn validate_runtime_font_files(font_files: &[String]) -> Result<(), PackError> {
     const REQUIRED: [&str; 3] = [
         "primary_serif_cyrillic.ttf",
+        "primary_serif_bold_cyrillic.ttf",
         "actionbar_sans_cyrillic.ttf",
+        "actionbar_sans_bold_cyrillic.ttf",
         "numeric_tabular.ttf",
     ];
     for required in REQUIRED {
@@ -1581,8 +1594,8 @@ mod tests {
     #[test]
     fn atlas_validator_rejects_bounds_overlap_and_duplicate_ids() {
         let valid=vec![
-            serde_json::json!({"id":"one","x":0,"y":0,"w":8,"h":8}),
-            serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"one","page":0,"x":0,"y":0,"w":8,"h":8}),
+            serde_json::json!({"id":"two","page":0,"x":8,"y":0,"w":8,"h":8}),
         ];
         assert!(validate_atlas_entries(&valid,16,8).is_ok());
         let overlap=vec![
@@ -1609,9 +1622,10 @@ mod tests {
             "numeric_tabular.ttf".to_string(),
         ];
         assert!(validate_runtime_font_files(&valid).is_ok());
-        assert!(validate_runtime_font_files(&valid[..2]).is_err());
-        let missing_numeric=valid.iter().filter(|name| *name!="numeric_tabular.ttf").cloned().collect::<Vec<_>>();
-        assert!(validate_runtime_font_files(&missing_numeric).is_err());
+        for required in &valid {
+            let incomplete=valid.iter().filter(|name| *name!=required).cloned().collect::<Vec<_>>();
+            assert!(validate_runtime_font_files(&incomplete).is_err(),"accepted missing {required}");
+        }
     }
 
     #[test]
@@ -1642,13 +1656,15 @@ mod tests {
             serde_json::json!({"id":"two","x":8,"y":0,"w":8,"h":8}),
         ];
         assert!(validate_atlas_grid(&valid,16,8,2,1,[8,8]).is_ok());
-        let misaligned=vec![serde_json::json!({"id":"bad","x":4,"y":0,"w":8,"h":8})];
+        let misaligned=vec![serde_json::json!({"id":"bad","page":0,"x":4,"y":0,"w":8,"h":8})];
         assert!(validate_atlas_grid(&misaligned,16,8,2,1,[8,8]).is_err());
-        let wrong_size=vec![serde_json::json!({"id":"bad","x":0,"y":0,"w":16,"h":8})];
+        let wrong_size=vec![serde_json::json!({"id":"bad","page":0,"x":0,"y":0,"w":16,"h":8})];
         assert!(validate_atlas_grid(&wrong_size,16,8,2,1,[8,8]).is_err());
-        let outside=vec![serde_json::json!({"id":"bad","x":16,"y":0,"w":8,"h":8})];
+        let outside=vec![serde_json::json!({"id":"bad","page":0,"x":16,"y":0,"w":8,"h":8})];
         assert!(validate_atlas_grid(&outside,24,8,2,1,[8,8]).is_err());
         assert!(validate_atlas_grid(&valid,16,8,1,1,[8,8]).is_err());
+        let wrong_page=vec![serde_json::json!({"id":"bad","page":1,"x":0,"y":0,"w":8,"h":8})];
+        assert!(validate_atlas_grid(&wrong_page,16,8,2,1,[8,8]).is_err());
     }
 
     #[test]
