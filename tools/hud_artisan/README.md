@@ -17,6 +17,49 @@ python3 -m unittest discover -s tools/hud_artisan -p 'test_*.py' -v
 
 ## End-to-end pipeline
 
+### Batch visual QA, state consistency and BLP compatibility
+
+Run the production QA after ingest/validation. It creates three contact sheets (dark, light and checkerboard transparency backgrounds); every asset is shown at native, 50% and 25% size. It also groups explicit UI state suffixes (normal/pressed/disabled/autocast/active/inactive/hover/selected) and measures silhouette IoU plus visible-image difference.
+
+~~~sh
+python3 tools/hud_artisan/production_qa.py \
+  --manifest analysis/hudskin/final/wc3rust-hud-final/manifest.json \
+  --pack build/hud-artisan/pack \
+  --jobs build/hud-artisan/jobs/jobs.json \
+  --out build/hud-artisan/production-qa
+~~~
+
+Outputs:
+- `production-qa.json`: per-asset hashes, state-pair metrics, read errors and regeneration candidates.
+- `contact-sheets/contact-dark.png`, `contact-light.png`, `contact-checker.png`: visual review surfaces.
+- Candidate regeneration entries include the exact compiled job where available. They are deliberately marked non-dispatchable: the current dispatch/import provenance contract requires a complete batch, and silently dispatching a partial batch would produce an incomplete pack. Review the candidate and use a new full manifest/plan or the forthcoming provenance-aware partial-batch workflow.
+
+The state metrics are triage heuristics, not an artistic verdict. A pressed state may legitimately alter its silhouette, and two states can differ in color while retaining the same shape. Adjust thresholds only after inspecting the contact sheets.
+
+### BLP1/BLP2 codec harness
+
+`blp_harness.py inspect --input file.blp` validates BLP1/BLP2 headers, dimensions and mipmap bounds. The round-trip command invokes a locally installed encoder and decoder through explicit argv arrays (no shell), validates the BLP header, and measures RGBA RMSE, PSNR and alpha-silhouette IoU:
+
+~~~sh
+python3 tools/hud_artisan/blp_harness.py roundtrip \
+  --input build/hud-artisan/pack/icons/example.png \
+  --work build/hud-artisan/blp-roundtrip \
+  --encode-arg /path/to/local-blp-encoder \
+  --encode-arg --input --encode-arg {input} \
+  --encode-arg --output --encode-arg {output} \
+  --decode-arg /path/to/local-blp-decoder \
+  --decode-arg --input --decode-arg {input} \
+  --decode-arg --output --decode-arg {output} \
+  --report build/hud-artisan/blp-roundtrip/report.json
+~~~
+
+The harness does not bundle or claim to implement a BLP codec. The exact flags above are placeholders: use the syntax supported by the installed converter. BLP validation and PNG round-trip quality are separate from proving that Warcraft III accepts a complete texture/atlas/FDF package in-game.
+
+### Renderer provenance lock
+
+When an adapter config declares `workflow_file`, dispatch verifies the workflow SHA-256 before starting workers. Successful provenance records the workflow filename/hash/format, model-loader selections, sampler nodes, configured node map/output node, optional custom-node lock metadata, and hashes of explicitly listed `model_files`. To hash large model files, list their local paths in `model_files`; do not store credentials or environment secrets in the runtime metadata.
+
+
 First write the verified engine contract reference. It is explicitly not an invented asset manifest.
 
 ~~~sh
