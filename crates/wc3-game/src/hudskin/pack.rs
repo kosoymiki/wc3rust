@@ -433,42 +433,9 @@ impl HudPack {
                 number(insets, &["r"])?,
                 number(insets, &["b"])?,
             ];
-            let states = match declaration.get("states") {
-                None => Vec::new(),
-                Some(serde_json::Value::Array(list)) => {
-                    let mut parsed = Vec::with_capacity(list.len());
-                    let mut seen = std::collections::HashSet::with_capacity(list.len());
-                    for item in list {
-                        let state = item.as_str().ok_or_else(|| PackError::Manifest(
-                            format!("{name}: every states entry must be a string")
-                        ))?;
-                        if state.trim().is_empty() || !seen.insert(state.to_string()) {
-                            return Err(PackError::Manifest(format!("{name}: empty or duplicate state {state:?}")));
-                        }
-                        parsed.push(state.to_string());
-                    }
-                    parsed
-                }
-                Some(_) => return Err(PackError::Manifest(format!("{name}: states must be an array"))),
-            };
-            let atlas = match declaration.get("atlas") {
-                None => "standalone".to_string(),
-                Some(value) => {
-                    let category = value.as_str().ok_or_else(|| PackError::Manifest(
-                        format!("{name}: atlas must be a string")
-                    ))?;
-                    if category.trim().is_empty() {
-                        return Err(PackError::Manifest(format!("{name}: atlas must not be empty")));
-                    }
-                    category.to_string()
-                }
-            };
-            let mips = match declaration.get("mips") {
-                None => false,
-                Some(value) => value.as_bool().ok_or_else(|| PackError::Manifest(
-                    format!("{name}: mips must be a boolean")
-                ))?,
-            };
+            let states = asset_states(declaration, &name)?;
+            let atlas = asset_atlas(declaration, &name)?;
+            let mips = asset_mips(declaration, &name)?;
 
             if w == 0 || h == 0 || (w as u64) * (h as u64) > 64_000_000 {
                 return Err(PackError::Manifest(format!("{name}: invalid or excessive dimensions {w}x{h}")));
@@ -1173,6 +1140,51 @@ pub fn log_insets_ignored(asset: &HudAsset) {
 // JSON helpers (serde_json is already a dependency; no derive feature needed)
 // ---------------------------------------------------------------------------
 
+fn asset_states(declaration: &serde_json::Value, name: &str) -> Result<Vec<String>, PackError> {
+    match declaration.get("states") {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::Array(list)) => {
+            let mut parsed = Vec::with_capacity(list.len());
+            let mut seen = std::collections::HashSet::with_capacity(list.len());
+            for item in list {
+                let state = item.as_str().ok_or_else(|| PackError::Manifest(
+                    format!("{name}: every states entry must be a string")
+                ))?;
+                if state.trim().is_empty() || !seen.insert(state.to_string()) {
+                    return Err(PackError::Manifest(format!("{name}: empty or duplicate state {state:?}")));
+                }
+                parsed.push(state.to_string());
+            }
+            Ok(parsed)
+        }
+        Some(_) => Err(PackError::Manifest(format!("{name}: states must be an array"))),
+    }
+}
+
+fn asset_atlas(declaration: &serde_json::Value, name: &str) -> Result<String, PackError> {
+    match declaration.get("atlas") {
+        None => Ok("standalone".to_string()),
+        Some(value) => {
+            let category = value.as_str().ok_or_else(|| PackError::Manifest(
+                format!("{name}: atlas must be a string")
+            ))?;
+            if category.trim().is_empty() {
+                return Err(PackError::Manifest(format!("{name}: atlas must not be empty")));
+            }
+            Ok(category.to_string())
+        }
+    }
+}
+
+fn asset_mips(declaration: &serde_json::Value, name: &str) -> Result<bool, PackError> {
+    match declaration.get("mips") {
+        None => Ok(false),
+        Some(value) => value.as_bool().ok_or_else(|| PackError::Manifest(
+            format!("{name}: mips must be a boolean")
+        )),
+    }
+}
+
 fn walk<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
     let mut current = value;
     for key in path {
@@ -1523,6 +1535,27 @@ mod tests {
             serde_json::json!({"id":"same","x":4,"y":0,"w":4,"h":4}),
         ];
         assert!(validate_atlas_entries(&duplicate,16,8).unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn asset_metadata_rejects_wrong_types_empty_and_duplicate_states() {
+        let valid=serde_json::json!({"states":["normal","pressed"],"atlas":"ui_frames","mips":true});
+        assert_eq!(asset_states(&valid,"button").unwrap(),vec!["normal","pressed"]);
+        assert_eq!(asset_atlas(&valid,"button").unwrap(),"ui_frames");
+        assert!(asset_mips(&valid,"button").unwrap());
+        assert_eq!(asset_atlas(&serde_json::json!({}),"icon").unwrap(),"standalone");
+        assert!(!asset_mips(&serde_json::json!({}),"icon").unwrap());
+        for invalid in [
+            serde_json::json!({"states":"normal"}),
+            serde_json::json!({"states":["normal",7]}),
+            serde_json::json!({"states":["normal","normal"]}),
+            serde_json::json!({"states":[""]}),
+        ] {
+            assert!(asset_states(&invalid,"asset").is_err());
+        }
+        assert!(asset_atlas(&serde_json::json!({"atlas":7}),"asset").is_err());
+        assert!(asset_atlas(&serde_json::json!({"atlas":" "}),"asset").is_err());
+        assert!(asset_mips(&serde_json::json!({"mips":"true"}),"asset").is_err());
     }
 
     #[test]
