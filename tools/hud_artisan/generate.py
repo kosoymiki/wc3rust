@@ -1212,7 +1212,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                     raise ValueError("not all untouched jobs could be carried forward")
             except Exception as exc:
                 raise ValueError(f"selective repair requires valid full-batch provenance: {exc}") from exc
-        stale_provenance.unlink()
+        # A selective repair may fail after replacing its selected output. Keep the
+        # previous full-batch receipt until the replacement receipt is atomically
+        # committed: the next retry can still verify every untouched artifact and
+        # reselect the failed job. Full dispatches invalidate old evidence up front.
+        if not only:
+            stale_provenance.unlink()
     if only and len(selected_jobs)<len(all_jobs) and len(preserved_records)!=len(all_jobs)-len(selected_jobs):
         raise ValueError("partial repair cannot proceed without verified provenance for every untouched job")
     if not resume and worker_report.exists():
