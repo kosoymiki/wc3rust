@@ -82,6 +82,91 @@ class ComfyAdapterTests(unittest.TestCase):
                 with self.assertRaises(adapter.ComfyError):
                     adapter.download_image("http://127.0.0.1:8188", metadata, 1)
 
+    def test_saved_canvas_workflow_converts_to_api_prompt(self):
+        workflow = {
+            "nodes": [
+                {"id": 67, "type": "CLIPTextEncode", "mode": 0,
+                 "inputs": [{"name": "clip", "link": 1}], "widgets_values": ["asset prompt"]},
+                {"id": 69, "type": "ModelSamplingAuraFlow", "mode": 0,
+                 "inputs": [{"name": "model", "link": 2}], "widgets_values": [3]},
+                {"id": 70, "type": "KSampler", "mode": 0,
+                 "inputs": [{"name": "model", "link": 3}, {"name": "positive", "link": 4},
+                            {"name": "negative", "link": 5}, {"name": "latent_image", "link": 6}],
+                 "widgets_values": [42, "fixed", 8, 1, "res_multistep", "simple", 1]},
+                {"id": 9, "type": "SaveImage", "mode": 0,
+                 "inputs": [{"name": "images", "link": 7}], "widgets_values": ["ComfyUI"]},
+            ],
+            "links": [
+                [1, 62, 0, 67, 0, "CLIP"], [2, 66, 0, 69, 0, "MODEL"],
+                [3, 69, 0, 70, 0, "MODEL"], [4, 67, 0, 70, 1, "CONDITIONING"],
+                [5, 71, 0, 70, 2, "CONDITIONING"], [6, 68, 0, 70, 3, "LATENT"],
+                [7, 65, 0, 9, 0, "IMAGE"],
+            ],
+        }
+        object_info = {
+            "CLIPTextEncode": {
+                "input_order": {"required": ["text", "clip"]},
+                "input": {"required": {"text": ["STRING", {"multiline": True}], "clip": ["CLIP", {"tooltip": "clip"}]}},
+            },
+            "ModelSamplingAuraFlow": {
+                "input_order": {"required": ["model", "shift"], "optional": ["sampling"]},
+                "input": {"required": {"model": ["MODEL", {"tooltip": "model"}],
+                                       "shift": ["FLOAT", {"default": 1.73}]},
+                          "optional": {"sampling": ["SAMPLING"]}},
+            },
+            "KSampler": {
+                "input_order": {"required": ["model", "seed", "steps", "cfg", "sampler_name",
+                                             "scheduler", "positive", "negative", "latent_image", "denoise"]},
+                "input": {"required": {
+                    "model": ["MODEL", {}], "seed": ["INT", {"control_after_generate": True}],
+                    "steps": ["INT", {}], "cfg": ["FLOAT", {}],
+                    "sampler_name": [["euler", "res_multistep"], {}], "scheduler": [["simple"], {}],
+                    "positive": ["CONDITIONING", {}], "negative": ["CONDITIONING", {}],
+                    "latent_image": ["LATENT", {}], "denoise": ["FLOAT", {}],
+                }},
+            },
+            "SaveImage": {
+                "input_order": {"required": ["images", "filename_prefix"]},
+                "input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}},
+            },
+        }
+        api = adapter.ui_workflow_to_api(workflow, object_info)
+        self.assertEqual(api["67"]["inputs"]["text"], "asset prompt")
+        self.assertEqual(api["69"]["inputs"], {"model": ["66", 0], "shift": 3})
+        self.assertEqual(api["70"]["inputs"]["seed"], 42)
+        self.assertEqual(api["70"]["inputs"]["steps"], 8)
+        self.assertEqual(api["70"]["inputs"]["sampler_name"], "res_multistep")
+        self.assertEqual(api["70"]["inputs"]["denoise"], 1)
+        self.assertNotIn("sampling", api["69"]["inputs"])
+        self.assertEqual(api["9"]["inputs"]["filename_prefix"], "ComfyUI")
+
+    def test_canvas_converter_rejects_unmapped_widget_values(self):
+        workflow = {"nodes": [{"id": 1, "type": "SaveImage", "mode": 0,
+                               "inputs": [{"name": "images", "link": None}],
+                               "widgets_values": ["prefix", "unexpected"]}], "links": []}
+        info = {"SaveImage": {"input_order": {"required": ["images", "filename_prefix"]},
+                              "input": {"required": {"images": ["IMAGE", {}],
+                                                     "filename_prefix": ["STRING", {}]}}}}
+        with self.assertRaisesRegex(adapter.ComfyError, "unmapped widget"):
+            adapter.ui_workflow_to_api(workflow, info)
+
+    def test_chroma_key_removes_only_border_connected_background(self):
+        from PIL import Image, ImageDraw
+        image = Image.new("RGBA", (32, 32), (255, 0, 255, 255))
+        ImageDraw.Draw(image).rectangle((8, 8, 23, 23), fill=(30, 150, 60, 255))
+        image.putpixel((15, 15), (255, 0, 255, 255))
+        result = adapter.chroma_key_background(image, (255, 0, 255), 8)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        self.assertEqual(result.getpixel((10, 10))[3], 255)
+        self.assertEqual(result.getpixel((15, 15))[3], 255)
+
+    def test_frame_aperture_is_cut_out(self):
+        from PIL import Image
+        image = Image.new("RGBA", (100, 100), (120, 80, 30, 255))
+        result = adapter.enforce_frame_aperture(image)
+        self.assertEqual(result.getpixel((50, 50))[3], 0)
+        self.assertEqual(result.getpixel((10, 10))[3], 255)
+
 
 if __name__ == "__main__":
     unittest.main()
