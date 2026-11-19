@@ -9,7 +9,7 @@ import argparse, hashlib, json, math, os, re, tempfile
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageStat
 
 BG = {
     "dark": (22, 22, 25),
@@ -75,6 +75,40 @@ def state_key(name: str) -> tuple[str, str | None]:
     token = found[-1]
     tokens.remove(token)
     return "_".join(tokens), token
+
+
+def nine_slice_metrics(path: Path, insets: dict[str, Any]) -> dict[str, Any]:
+    with Image.open(path) as source:
+        im = source.convert("RGB")
+        width, height = im.size
+    left, top, right, bottom = (int(round(float(insets[k]))) for k in ("l", "t", "r", "b"))
+    if min(left, top, right, bottom) < 0 or left + right >= width or top + bottom >= height:
+        return {"sliceable": False}
+    zones = {
+        "top_stretch": (left, 0, width-right, top),
+        "bottom_stretch": (left, height-bottom, width-right, height),
+        "left_stretch": (0, top, left, height-bottom),
+        "right_stretch": (width-right, top, width, height-bottom),
+    }
+    metrics = {}
+    for name, box in zones.items():
+        x0, y0, x1, y1 = box
+        if x1-x0 < 2 or y1-y0 < 2:
+            metrics[name] = {"width": max(0,x1-x0), "height": max(0,y1-y0),
+                             "mean_neighbor_gradient": None, "rgb_variance": None}
+            continue
+        region = im.crop(box)
+        horizontal = ImageChops.difference(region.crop((1,0,region.width,region.height)),
+                                           region.crop((0,0,region.width-1,region.height)))
+        vertical = ImageChops.difference(region.crop((0,1,region.width,region.height)),
+                                         region.crop((0,0,region.width,region.height-1)))
+        hmean = sum(ImageStat.Stat(horizontal).mean) / 3
+        vmean = sum(ImageStat.Stat(vertical).mean) / 3
+        variance = sum(ImageStat.Stat(region).var) / 3
+        metrics[name] = {"width": region.width, "height": region.height,
+                         "mean_neighbor_gradient": round((hmean+vmean)/2,4),
+                         "rgb_variance": round(variance,4)}
+    return {"sliceable": True, "insets": [left,top,right,bottom], "stretch_zones": metrics}
 
 
 def image_metrics(path: Path) -> dict[str, Any]:
@@ -175,8 +209,10 @@ def run(manifest_path: Path, pack: Path, out: Path, jobs_path: Path | None,
             path = safe_file(pack, asset["file"])
             if not path.is_file():
                 raise ValueError("file missing")
-            records.append({"name": asset["name"], "file": asset["file"],
-                            **image_metrics(path)})
+            record={"name": asset["name"], "file": asset["file"], **image_metrics(path)}
+            if isinstance(asset.get("insets"),dict):
+                record["nine_slice"]=nine_slice_metrics(path,asset["insets"])
+            records.append(record)
         except Exception as exc:
             errors.append({"asset": asset.get("name"), "error": str(exc)})
     by_name = {a["name"]: a for a in assets}
