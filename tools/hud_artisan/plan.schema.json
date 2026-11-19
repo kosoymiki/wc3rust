@@ -128,6 +128,36 @@
           }
         }
       }
+    },
+    "repair_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "job_overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seed"
+        ],
+        "properties": {
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        }
+      }
     }
+  },
+  "dependentRequired": {
+    "job_overrides": [
+      "repair_revision"
+    ],
+    "repair_revision": [
+      "job_overrides"
+    ]
   }
 }
