@@ -2845,7 +2845,7 @@ impl MenuPart {
 ///
 /// Every field is optional: a screen still renders (flat chrome) on a data set
 /// without the art, and the art is never substituted silently.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct MenuSkin {
     /// Panel background (9-slice), pack `menu_panel_normal_512x384`.
     pub panel: Option<MenuPart>,
@@ -2861,7 +2861,7 @@ pub struct MenuSkin {
     /// Message banner above the panel (pack plate).
     pub banner: Option<MenuPart>,
     /// Pack fonts (`primary_serif_cyrillic.ttf` first): the title face.
-    pub fonts: Option<std::sync::Arc<crate::hud::HudFonts>>,
+    pub fonts: Option<&'static crate::hud::HudFonts>,
 }
 
 /// One glue screen. `buttons` are the main-page entries; `tabs` are the
@@ -6703,7 +6703,7 @@ fn stone_hash(cx: u32, cy: u32) -> u32 {
 /// textures by `HudPack::load`. `Font` coverage is the whole fix for clipped
 /// Cyrillic labels: no shaping stack, `ab_glyph` already lays out these fixed
 /// runs.
-fn pack_fonts(pack: &HudPack) -> Option<std::sync::Arc<crate::hud::HudFonts>> {
+fn pack_fonts(pack: &HudPack) -> Option<&'static crate::hud::HudFonts> {
     crate::hud::pack_fonts(&pack.root)
 }
 
