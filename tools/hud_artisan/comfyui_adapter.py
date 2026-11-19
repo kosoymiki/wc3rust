@@ -299,8 +299,14 @@ def main(argv=None) -> int:
                         transparent = sum(histogram[:9]) / max(1, aperture.width * aperture.height)
                         if transparent < 0.97:
                             raise ComfyError(f"frame aperture transparency is {transparent:.3f}; expected >=0.970")
-                    elif alpha.getextrema() == (255, 255):
-                        raise ComfyError("this job requires transparency; workflow output is fully opaque")
+                    else:
+                        alpha_histogram = alpha.histogram()
+                        near_transparent = sum(alpha_histogram[:9]) / max(1, rgba.width * rgba.height)
+                        if near_transparent < 0.005:
+                            raise ComfyError(
+                                f"this job requires a clean transparent silhouette; only {near_transparent:.3%} "
+                                "of pixels have near-zero alpha (minimum 0.5%)"
+                            )
                 with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".png.tmp", delete=False) as temporary:
                     temporary_path = Path(temporary.name)
                 try:
