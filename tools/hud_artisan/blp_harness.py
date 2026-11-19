@@ -160,7 +160,7 @@ def main(argv=None) -> int:
             temp = Path(temp_name)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(json.dumps(result, indent=2, ensure_ascii=False) + "\\n")
+                    stream.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temp, a.report)
