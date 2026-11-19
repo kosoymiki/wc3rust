@@ -261,7 +261,18 @@ def ui_workflow_to_api(workflow: dict, object_info: dict) -> dict:
             if not isinstance(values, list):
                 raise ComfyError(f"ComfyUI input_order.{group} is malformed for {class_type}")
             ordered_names.extend(name for name in values if isinstance(name, str))
-        widget_names = [name for name in ordered_names if name not in socket_names]
+        def is_widget_input(name):
+            spec = (schema.get("input", {}).get("required", {}).get(name)
+                    or schema.get("input", {}).get("optional", {}).get(name))
+            if not isinstance(spec, list) or not spec:
+                return False
+            first = spec[0]
+            if isinstance(first, list):
+                return True
+            return len(spec) > 1 and isinstance(spec[1], dict)
+
+        widget_names = [name for name in ordered_names
+                        if name not in socket_names and is_widget_input(name)]
         widget_values = node.get("widgets_values", [])
         if widget_values is None:
             widget_values = []
