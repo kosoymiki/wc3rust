@@ -65,17 +65,20 @@ THEMES = {
 def sha(data:bytes)->str: return hashlib.sha256(data).hexdigest()
 def slug(s:str)->str: return re.sub(r"[^a-z0-9_-]+","-",s.lower()).strip("-") or "asset"
 def safe_rel(value:str)->Path:
-    if not isinstance(value,str) or not value or "\\" in value:
+    if not isinstance(value,str) or not value or "\\" in value or "\\x00" in value:
         raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     p=Path(value)
-    if p.is_absolute() or ".." in p.parts or p.suffix.lower()!=".png":
+    if not p.parts or p.is_absolute() or any(part in ("", ".", "..") for part in p.parts) or p.suffix.lower()!=".png":
         raise ValueError(f"unsafe/non-PNG asset path: {value!r}")
     return p
 
 def safe_join_any(root:Path,relative:str|Path)->Path:
+    if root.is_symlink():
+        raise ValueError(f"root directory must not be a symlink: {root}")
     base=root.resolve()
     rel=Path(relative)
-    if not str(relative) or rel.is_absolute() or "\\" in str(relative) or ".." in rel.parts:
+    if (not str(relative) or "\\x00" in str(relative) or not rel.parts or rel.is_absolute()
+            or "\\" in str(relative) or any(part in ("", ".", "..") for part in rel.parts)):
         raise ValueError(f"unsafe relative path: {relative!r}")
     # Reject every symlink component, including aliases that resolve inside root.
     cursor=base
@@ -153,7 +156,10 @@ def load_manifest(path:Path,engine_contract:bool=False)->dict[str,Any]:
         if type(w)!=int or type(h)!=int or w<1 or h<1 or w*h>MAX_PIXELS: raise ValueError(f"{name}: invalid dimensions {w}x{h}")
         ins=a["insets"]
         if not isinstance(ins,dict) or any(k not in ins for k in ("l","t","r","b")): raise ValueError(f"{name}: insets need l,t,r,b")
-        vals=[float(ins[k]) for k in ("l","t","r","b")]
+        raw_values=[ins[k] for k in ("l","t","r","b")]
+        if any(type(value) not in (int,float) for value in raw_values):
+            raise ValueError(f"{name}: insets values must be numbers, not strings or booleans")
+        vals=[float(value) for value in raw_values]
         if any(not math.isfinite(v) or v<0 for v in vals): raise ValueError(f"{name}: insets must be finite and non-negative")
         states=a.get("states",[])
         if not isinstance(states,list) or any(not isinstance(state,str) for state in states):
