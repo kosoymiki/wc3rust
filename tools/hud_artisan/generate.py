@@ -884,6 +884,13 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
         raise RuntimeError("provider dispatch requires Pillow; install tools/hud_artisan/requirements.txt")
     Image,_,_=image_modules
     drop.mkdir(parents=True,exist_ok=True)
+    # Never allow a previous successful batch's provenance to certify a later failed run.
+    for stale_relative in ("provenance.json","reports/worker-results.json"):
+        stale=safe_join_any(drop,stale_relative)
+        if stale.exists():
+            if not stale.is_file():
+                raise ValueError(f"stale dispatch report is not a regular file: {stale}")
+            stale.unlink()
     logs=safe_join_any(drop,"reports/worker")
     logs.mkdir(parents=True,exist_ok=True)
     work=Path(tempfile.mkdtemp(prefix="hud-artisan-"))
@@ -920,10 +927,12 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
                             try: os.killpg(process.pid,signal.SIGTERM)
                             except ProcessLookupError: pass
                             try: process.wait(timeout=3)
-                            except subprocess.TimeoutExpired:
-                                try: os.killpg(process.pid,signal.SIGKILL)
-                                except ProcessLookupError: pass
-                                process.wait()
+                            except subprocess.TimeoutExpired: pass
+                            # The parent may exit while a child ignores SIGTERM; kill any
+                            # remaining member of the isolated process group unconditionally.
+                            try: os.killpg(process.pid,signal.SIGKILL)
+                            except ProcessLookupError: pass
+                            process.wait()
                         else:
                             process.kill();process.wait()
                     stdout_file.flush();stderr_file.flush()
