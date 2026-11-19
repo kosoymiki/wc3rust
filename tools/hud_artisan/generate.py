@@ -624,7 +624,7 @@ def repair_plan(manifest:Path,jobs_path:Path,qa_path:Path,out:Path,revision:str)
     if requested.is_symlink() or (requested.exists() and not requested.is_dir()):
         raise ValueError("repair plan output must be a regular directory")
     requested.mkdir(parents=True,exist_ok=True);target=requested.resolve()/"jobs.json"
-    atomic_write_text(target,json.dumps(payload,ensure_ascii=False,indent=2)+"\\n")
+    atomic_write_text(target,json.dumps(payload,ensure_ascii=False,indent=2)+"\n")
     atomic_write_text(requested.resolve()/"repair-queue.json",json.dumps({
         "schema_version":1,"tool":"HUD Artisan repair queue","revision":revision,
         "source_manifest_sha256":payload["source_manifest_sha256"],
@@ -1212,6 +1212,8 @@ def dispatch(manifest_path:Path,jobs_path:Path,adapter_path:Path,drop:Path,paral
             except Exception as exc:
                 raise ValueError(f"selective repair requires valid full-batch provenance: {exc}") from exc
         stale_provenance.unlink()
+    if only and len(selected_jobs)<len(all_jobs) and len(preserved_records)!=len(all_jobs)-len(selected_jobs):
+        raise ValueError("partial repair cannot proceed without verified provenance for every untouched job")
     if not resume and worker_report.exists():
         if not worker_report.is_file():
             raise ValueError(f"stale dispatch report is not a regular file: {worker_report}")
