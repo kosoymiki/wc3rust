@@ -402,6 +402,30 @@ class Tests(unittest.TestCase):
                 adapter_script.write_text(adapter_script.read_text()+"\n# renderer revision changed\n")
                 self.assertEqual(artisan.dispatch(manifest,jobs,adapter,drop,2,resume=True),0)
                 self.assertEqual(len(counter.read_text()),first_call_count+1+payload["job_count"])
+                # QA-driven repair changes only the selected job seed/id and carries forward
+                # untouched provenance only after verifying the original PNG hash.
+                qa_report=root/"production-qa.json"
+                qa_report.write_text(json.dumps({
+                    "tool":"HUD Artisan production QA","schema_version":1,
+                    "manifest_sha256":artisan.sha(manifest.read_bytes()),
+                    "regeneration_candidates":[{"asset":"panel","reason":"fixture QA finding"}]
+                }))
+                repair_dir=root/"repair-plan"
+                self.assertEqual(artisan.repair_plan(manifest,jobs,qa_report,repair_dir,"test-repair-r1"),0)
+                repair_jobs=repair_dir/"jobs.json"
+                repaired_plan,_=artisan.verify_plan(manifest,repair_jobs)
+                original_panel=next(x for x in payload["jobs"] if x["asset"]=="panel")
+                repaired_panel=next(x for x in repaired_plan["jobs"] if x["asset"]=="panel")
+                self.assertNotEqual(repaired_panel["job_id"],original_panel["job_id"])
+                self.assertNotEqual(repaired_panel["seed"],original_panel["seed"])
+                before_repair_calls=len(counter.read_text())
+                self.assertEqual(artisan.dispatch(manifest,repair_jobs,adapter,drop,1,only=["panel"]),0)
+                self.assertEqual(len(counter.read_text()),before_repair_calls+1,
+                                 "selective repair must render only the chosen asset")
+                repaired_prov=json.loads((drop/"provenance.json").read_text())
+                self.assertEqual({x["job_id"] for x in repaired_prov["jobs"]},
+                                 {x["job_id"] for x in repaired_plan["jobs"]})
+                jobs=repair_jobs
             finally:
                 os.environ.pop("HUD_ARTISAN_TEST_SECRET",None)
             self.assertTrue((drop/"provenance.json").is_file())
