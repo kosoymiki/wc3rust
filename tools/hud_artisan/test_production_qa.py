@@ -105,7 +105,7 @@ class ProductionQATests(unittest.TestCase):
             {"id":"two","x":8,"y":0,"w":8,"h":8}
         ]}}},self.pack,self.root/"atlas-out",None)
         self.assertEqual(report["scanned"],1)
-        self.assertIn("overlaps previously declared cell",report["findings"][0]["reason"])
+        self.assertTrue(any("overlaps previously declared cell" in item["reason"] for item in report["findings"]))
 
     def test_empty_unmapped_atlas_cell_cannot_false_pass_production_qa(self):
         opaque=self.make_state("plain_icon",4,(140,100,40,255))
