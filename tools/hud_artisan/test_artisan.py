@@ -344,6 +344,9 @@ class Tests(unittest.TestCase):
         doc["font_files"].pop()
         with self.assertRaisesRegex(ValueError,"five named HUD font"):
             artisan.validate_engine_contract(doc)
+        doc["font_files"]=list(artisan.ENGINE_FONT_FILES[:-1])+[{}]
+        with self.assertRaisesRegex(ValueError,"five named HUD font"):
+            artisan.validate_engine_contract(doc)
     def test_font_path_traversal_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             m=Path(d)/"m.json"
