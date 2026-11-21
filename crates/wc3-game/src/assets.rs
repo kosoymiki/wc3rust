@@ -6,7 +6,7 @@
 //! procedural map so the game still runs, and reports `source=fallback`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use glam::{Vec2, Vec3};
@@ -755,6 +755,11 @@ pub struct ModelAsset {    pub kind: UnitKind,
     /// the back along +X, so the game applies a 180° offset.
     pub yaw_offset: f32,
     pub fallback: bool,
+    /// `fallback == true` and this entry belongs to *no* def: the one generic
+    /// box [`Assets::model_index_for_def`] answers with for an id the object
+    /// database does not carry (WC3-GAME-002). Per-def placeholders keep their
+    /// own `model_by_def` index and are never reachable through this flag.
+    pub generic: bool,
 }
 
 impl ModelAsset {
@@ -1027,6 +1032,28 @@ fn map_model_scope(map: Option<&MapBundle>) -> ModelScope {
             races.push(slot.race);
         }
     }
+    // No usable seat record (RoC `war3map.w3i` v18 carries none, and a
+    // campaign-shaped map places no hall of its own): `Game::spawn_scenario`
+    // then synthesizes a melee opening (`setup_melee_1v1`) with the **menu's**
+    // races, one hall + five workers per side. That race is only known at
+    // runtime, so every race's opening kit has to stay resident — otherwise
+    // the first enemy hall is a placeholder cube on the device
+    // (`GAME_MODEL_SKIP def=htow reason=not-reachable`, 12:50).
+    if races.is_empty() {
+        // `H2_MODEL_SCOPE=legacy` reproduces the pre-fix scope in the same
+        // binary, so the before/after frames share camera, map and seed.
+        let legacy = std::env::var("H2_MODEL_SCOPE")
+            .map(|value| value.eq_ignore_ascii_case("legacy"))
+            .unwrap_or(false);
+        if !legacy {
+            races.extend([
+                wc3_sim::data::Race::Orc,
+                wc3_sim::data::Race::Human,
+                wc3_sim::data::Race::Undead,
+                wc3_sim::data::Race::NightElf,
+            ]);
+        }
+    }
     // Campaign maps own units through their script: `CreateUnit(p, 'hfoo', …)`
     // in the `CreateUnitsForPlayer` functions. Literal ids join the scope.
     if let Some(script) = bundle.script.as_ref() {
@@ -1125,14 +1152,28 @@ fn add_seat_tech(ids: &mut BTreeSet<String>, races: &[wc3_sim::data::Race]) {
 /// resolve — the caller then keeps the full roster. Bounded per call site: the
 /// id has to appear inside the argument list, not somewhere later in the file.
 fn script_created_ids(script: &str) -> (BTreeSet<String>, usize, usize) {
-    const CREATORS: [&str; 3] = ["createunit", "createnunits", "blzcreateunit"];
+    /// `(identifier prefix, exact)`; `CreateUnitAtLoc*`, `CreateNUnitsAtLoc*`
+    /// and `BlzCreateUnit*` are natives with suffixed names, `CreateUnit` is
+    /// exact so the user function `CreateUnitsForPlayer0` cannot match.
+    ///
+    /// `CreateUnitAtLoc` is the native Blizzard.j itself uses for scripted
+    /// placements (`CreateUnitAtLocSaveLast` shares the prefix). Missing it made
+    /// Prologue01 report `mode=map` while `htow`/`hpea` — created through that
+    /// native — stayed out of the scope and rendered as the fallback cube
+    /// (`GAME_MODEL_SKIP def=htow reason=not-reachable`, device 12:50).
+    const CREATORS: [(&str, bool); 4] = [
+        ("createunit", true),
+        ("createunitatloc", false),
+        ("createnunitsatloc", false),
+        ("blzcreateunit", false),
+    ];
     let lower = script.to_ascii_lowercase();
     let bytes = script.as_bytes();
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
     let mut literals = 0usize;
     let mut counted: Vec<usize> = Vec::new();
-    for creator in CREATORS {
+    for (creator, exact) in CREATORS {
         let mut from = 0usize;
         while let Some(hit) = lower[from..].find(creator) {
             let at = from + hit;
@@ -1147,6 +1188,20 @@ fn script_created_ids(script: &str) -> (BTreeSet<String>, usize, usize) {
             let mut end = at + creator.len();
             while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
+            }
+            // The identifier must be the native itself: `call
+            // CreateUnitsForPlayer0()` matches the `createunit` prefix but
+            // creates nothing, and counting it made every campaign chapter
+            // report "4 variable ids" and fall back to the full 822-model
+            // roster (Orc01: +17 s load, 349 MB of textures).
+            let identifier = &lower[at..end];
+            let matched = if exact {
+                identifier == creator
+            } else {
+                identifier.starts_with(creator)
+            };
+            if !matched {
+                continue;
             }
             let mut open = end;
             while open < bytes.len() && bytes[open].is_ascii_whitespace() {
@@ -1177,10 +1232,31 @@ fn script_created_ids(script: &str) -> (BTreeSet<String>, usize, usize) {
     (ids, calls, literals)
 }
 
+/// Model paths the shipped tables author as a deliberate "no model" sentinel.
+///
+/// `DestructableData` gives the LOS blocker `nzin`
+/// `Doodads\Terrain\LOSBlocker\InvalidFileOnPurpose.mdx`: the doodad is an
+/// invisible wall, so the path is data, not an install gap. Parsing it and
+/// logging `model_failed=` for it made a correct install look broken (Orc01).
+fn is_authored_empty_model(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase().replace('/', "\\");
+    lower.contains("invalidfileonpurpose")
+        || lower == "none.mdx"
+        || lower.ends_with("\\none.mdx")
+}
+
 /// Deduplicated `GAME_MODEL_SKIP` log: one line per def id, however many frames
 /// ask for the placeholder.
 #[derive(Default)]
 struct ModelSkipLog {
+    seen: HashSet<String>,
+    lines: Vec<String>,
+}
+
+/// Deduplicated `GAME_MODEL_RESOLVE` log: one line per def id, whichever path
+/// produced its MDX (load-time scope, resident draw or on-demand `ensure_model`).
+#[derive(Default)]
+struct ModelResolveLog {
     seen: HashSet<String>,
     lines: Vec<String>,
 }
@@ -1201,6 +1277,11 @@ pub struct MenuTextures {
 }
 
 pub struct Assets {
+    /// Archive the install was opened from (`None` for the built-in scenario).
+    /// The game needs it to load another map from the menu: the previous code
+    /// scraped a `mpq=` debug line that is actually emitted as `GAME_DATA`, so
+    /// every campaign chapter died with `GAME_LOAD no-install`.
+    pub mpq_path: Option<PathBuf>,
     /// Main-menu art (pack `menus/*`); see [`MenuTextures`].
     pub menu_textures: MenuTextures,
     pub models: Vec<ModelAsset>,
@@ -1224,6 +1305,11 @@ pub struct Assets {
     pub pathing: Option<wc3_formats::wpm::PathingMap>,
     /// Roster def id -> index in `models` (per-definition MDX, not the 4 kinds).
     pub model_by_def: HashMap<String, usize>,
+    /// Index of the one generic placeholder box, which belongs to no def.
+    /// [`Assets::model_index_for_def`] answers it for ids the object database
+    /// does not carry, so an unknown def never wears another def's box
+    /// geometry (WC3-GAME-002).
+    pub generic_model: usize,
     /// Which definitions this load resolved, and why (`GAME_MODEL_SCOPE`).
     pub model_scope: ModelScope,
     /// Definition rows in the object database that carry a model file (814 on
@@ -1231,6 +1317,8 @@ pub struct Assets {
     pub model_roster: usize,
     /// `GAME_MODEL_SKIP` lines, one per skipped def id (deduplicated).
     model_skip: Mutex<ModelSkipLog>,
+    /// `GAME_MODEL_RESOLVE` lines, one per def id that owns a real MDX.
+    model_resolve: Mutex<ModelResolveLog>,
     /// Texture path -> index in `textures`, reused by [`Assets::ensure_model`].
     tex_cache: HashMap<String, usize>,
     /// `sloc` markers in the map's `war3mapUnits.doo` (>=2 means a real melee map).
@@ -1494,7 +1582,9 @@ impl wc3_data::source::Source for StormSource {
     }
 
     fn exists(&self, path: &str) -> bool {
-        self.fs.info(path).is_some()
+        // `StormFs::info` only looks at archives; a loose extracted install is
+        // a source too, and a data reader that asks `exists` must see it.
+        self.fs.exists(path)
     }
 
     fn describe(&self) -> String {
@@ -1623,6 +1713,36 @@ fn open_asset_db(path: &Path, debug: &mut Vec<String>) -> Option<AssetDb> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // A loose extracted install (`analysis/war3_full3`, a devbox dump) is a
+    // first-class source. It carries the same file layout as the archives, so
+    // every reader (UI theme, icons, models, object data) resolves through one
+    // `StormFs` loose root instead of a parallel code path. This is what makes
+    // a headless run able to prove the shipped BLP icon path when the operator
+    // has the extracted game but no archive at hand.
+    if path.is_dir() {
+        let mut fs = StormFs::new();
+        match fs.add_loose_dir("loose-install", path) {
+            Ok(indexed) if indexed > 0 => {
+                let mut sources: Vec<Box<dyn AssetSource>> = Vec::new();
+                if let Some(redraw) = hud_redraw_source(path, debug) {
+                    sources.push(redraw);
+                }
+                sources.push(Box::new(StormSource::new(fs, "loose-install")));
+                match AssetDb::open_sources(sources, "loose-install+hud-redraw") {
+                    Ok(db) => {
+                        debug.push(format!(
+                            "loose_install={} files={indexed}",
+                            path.display()
+                        ));
+                        return Some(db);
+                    }
+                    Err(err) => debug.push(format!("loose_install_db_failed={err}")),
+                }
+            }
+            Ok(_) => debug.push("loose_install_empty".into()),
+            Err(err) => debug.push(format!("loose_install_open_failed={err}")),
+        }
+    }
     match StormFs::open_wc3_install(root) {
         Ok(fs) if !fs.layers().is_empty() => {
             let has_file = fs
@@ -1699,16 +1819,24 @@ fn open_object_database(
     debug: &mut Vec<String>,
 ) -> Option<GameDatabase> {
     let root = path.parent().unwrap_or_else(|| Path::new("."));
-    let fs = match StormFs::open_wc3_install(root) {
-        Ok(fs) if !fs.layers().is_empty() => fs,
-        Ok(_) => return None,
-        Err(error) => {
-            debug.push(format!("objects_storm_failed={error}"));
-            return None;
-        }
+    // Same source rule as `open_asset_db`: a loose extracted install reads the
+    // shipped SLK/text tables through `wc3_data::source::DirSource`, an archive
+    // install through `StormSource`. One typed `GameDatabase` either way.
+    let source: Box<dyn wc3_data::source::Source> = if path.is_dir() {
+        debug.push(format!("objects_loose_install={}", path.display()));
+        Box::new(wc3_data::source::DirSource::new(path))
+    } else {
+        let fs = match StormFs::open_wc3_install(root) {
+            Ok(fs) if !fs.layers().is_empty() => fs,
+            Ok(_) => return None,
+            Err(error) => {
+                debug.push(format!("objects_storm_failed={error}"));
+                return None;
+            }
+        };
+        Box::new(StormSource::new(fs, "objects"))
     };
-    let source = StormSource::new(fs, "objects");
-    let mut database = match GameDatabase::load(&source) {
+    let mut database = match GameDatabase::load(source.as_ref()) {
         Ok(database) => database,
         Err(error) => {
             debug.push(format!("objects_failed={error}"));
@@ -1812,6 +1940,8 @@ impl Assets {
         let mut debug = Vec::new();
         let mut textures = vec![TextureImage::white()];
         let mut tex_cache: HashMap<String, usize> = HashMap::new();
+        // Model textures the install does not carry: logged once per path.
+        let mut tex_missing: HashSet<String> = HashSet::new();
         let mut db = mpq_path
             .and_then(|path| open_asset_db(path, &mut debug))
             .map(SharedAssetDb::new);
@@ -1861,7 +1991,7 @@ impl Assets {
             let mut asset = match &mut db {
                 Some(db) => match db.model(MODEL_PATHS[index]) {
                     Ok(model) => {
-                        let tex_map = load_model_textures(db, &mut textures, &mut tex_cache, &model);
+                        let tex_map = load_model_textures(db, &mut textures, &mut tex_cache, &model, &mut tex_missing, &mut debug);
                         let meshes = build_meshes(&model, &tex_map);
                         let sequences = model.sequences.clone();
                         let idle = sequences
@@ -1923,6 +2053,7 @@ impl Assets {
                             scale,
                             yaw_offset: yaw_offset_for(kind),
                             fallback: false,
+                            generic: false,
                         }
                     }
                     Err(error) => {
@@ -1960,6 +2091,12 @@ impl Assets {
                     let id = view.id_str();
                     let Some(path) = view.model_file() else { continue; };
                     model_roster += 1;
+                    if is_authored_empty_model(&path) {
+                        // Authored "no art" sentinel: the def is invisible by
+                        // design, so this is neither a parse nor a missing file.
+                        debug.push(format!("model_empty={path} id={id}"));
+                        continue;
+                    }
                     if !scope.wants(&id) {
                         continue;
                     }
@@ -1970,7 +2107,7 @@ impl Assets {
                         debug.push(format!("model_failed={path} id={id}"));
                         continue;
                     };
-                    let tex_map = load_model_textures(db, &mut textures, &mut tex_cache, &model);
+                    let tex_map = load_model_textures(db, &mut textures, &mut tex_cache, &model, &mut tex_missing, &mut debug);
                     let meshes = build_meshes(&model, &tex_map);
                     if meshes.is_empty() {
                         debug.push(format!("model_meshless={path} id={id}"));
@@ -2003,17 +2140,21 @@ impl Assets {
                     if view.model_file().is_none() || model_by_def.contains_key(&id) {
                         continue;
                     }
+                    if view.model_file().is_some_and(|path| is_authored_empty_model(&path)) {
+                        // A sentinel def keeps no model: a placeholder box for
+                        // an invisible LOS blocker would be a new visual bug.
+                        continue;
+                    }
                     let index = models.len();
                     models.push(placeholder_model(wc3_sim::data::def_of(&id)));
                     model_by_def.insert(id, index);
                     placeholders += 1;
                 }
                 // A def that is not in the object database at all (a map-only
-                // id) still needs a bounded draw: keep one generic box so
-                // `model_index_for_def` never falls back to a real unit's MDX.
-                if !models.iter().any(|model| model.fallback) {
-                    models.push(placeholder_model(None));
-                }
+                // id) still needs a bounded draw. The generic box is appended
+                // once, after this block, and recorded in `generic_model`; it
+                // is never reachable as "the first placeholder", which is sized
+                // for a different def (WC3-GAME-002).
                 debug.push(format!(
                     "def_models={loaded} placeholders={placeholders} roster={model_roster}"
                 ));
@@ -2176,7 +2317,14 @@ impl Assets {
         let mut hud_skin_dialog = None;
         let mut pack_loaded = false;
         let mut menu_textures = MenuTextures::default();
-        if let Some(root) = crate::hudskin::pack::find_installed() {
+        // The pack next to the install that owns the open archive wins (the
+        // device package id is `org.herofolends.p0`; a renamed package still
+        // binds its own pack), then the search list.
+        let pack_root = mpq_path
+            .and_then(Path::parent)
+            .and_then(crate::hudskin::pack::find_installed_near)
+            .or_else(crate::hudskin::pack::find_installed);
+        if let Some(root) = pack_root {
             match crate::hudskin::pack::HudPack::load(&root, &mut textures) {
                 Ok(pack) => {
                     // Menu art lives in the same pack; grab it before the skin
@@ -2192,12 +2340,18 @@ impl Assets {
                     match crate::hudskin::Skin::from_pack(&pack) {
                     Some(skin) => {
                         debug.push(format!(
-                            "HUD_PACK root={} assets={} roles={} fonts={} atlas_cells={} scale1080={:.4}",
+                            "HUD_PACK root={} assets={} roles={} fonts={} atlas_cells={} hash={} hashed_bytes={} scale1080={:.4}",
                             root.display(),
                             pack.assets.len(),
                             crate::hudskin::ROLES.len(),
                             pack.font_files.len(),
                             pack.cell_count(),
+                            if pack.hash_files > 0 {
+                                format!("{}", pack.hash_files)
+                            } else {
+                                "unverified".to_string()
+                            },
+                            pack.hashed_bytes,
                             pack.scale_for(glam::Vec2::new(1920.0, 1080.0), false),
                         ));
                         hud_skin_dialog = Some(skin.clone());
@@ -2261,7 +2415,21 @@ impl Assets {
             "fallback".to_string()
         };
 
+        // One generic box for every id the object database does not carry
+        // (map-only rawcodes, a def whose MDX failed): a neutral, def-less
+        // stand-in. Recorded explicitly so the lookup cannot return a def
+        // placeholder sized for another unit (WC3-GAME-002).
+        let generic_model = match models.iter().position(|model| model.generic) {
+            Some(index) => index,
+            None => {
+                let index = models.len();
+                models.push(placeholder_model(None));
+                index
+            }
+        };
+
         let mut assets = Self {
+            mpq_path: mpq_path.map(Path::to_path_buf),
             menu_textures,
             models,
             textures,
@@ -2275,9 +2443,11 @@ impl Assets {
             terrain_tiles,
             pathing,
             model_by_def,
+            generic_model,
             model_scope: scope,
             model_roster,
             model_skip: Mutex::new(ModelSkipLog::default()),
+            model_resolve: Mutex::new(ModelResolveLog::default()),
             tex_cache,
             start_locations: map
                 .as_ref()
@@ -2495,11 +2665,18 @@ impl Assets {
         })
     }
 
-    /// Model index for a roster def id (falls back to the placeholder table).
+    /// Model index for a roster def id.
+    ///
+    /// An id the object database does not carry returns the **generic** box
+    /// (`generic_model`), never the first per-def placeholder: those are sized
+    /// from their own def (48x110 for a footman, up to 320x300 for a building),
+    /// so the old `position(|m| m.fallback)` fallback drew a summon or a
+    /// script-created unit with another unit's proportions (WC3-GAME-002).
     pub fn model_index_for_def(&self, def_id: &str) -> usize {
-        self.model_by_def.get(def_id).copied().unwrap_or_else(|| {
-            self.models.iter().position(|model| model.fallback).unwrap_or(0)
-        })
+        self.model_by_def
+            .get(def_id)
+            .copied()
+            .unwrap_or(self.generic_model)
     }
 
     /// Per-definition model.
@@ -2519,8 +2696,18 @@ impl Assets {
                 "unknown-def"
             };
             self.note_model_skip(def_id, reason);
+        } else {
+            // First time the draw path asks for this def it already owns an MDX
+            // (load-time scope or a previous on-demand parse): the device log
+            // then shows `def=<id> ok=true` instead of only the skip lines.
+            self.note_model_resolve(def_id, "ok=true source=resident");
         }
         asset
+    }
+
+    /// The archive this install was opened from.
+    pub fn mpq_path(&self) -> Option<&Path> {
+        self.mpq_path.as_deref()
     }
 
     /// Whether a def currently resolves to the placeholder instead of its MDX.
@@ -2551,6 +2738,29 @@ impl Assets {
         crate::dev_log!("{line}");
     }
 
+    /// `GAME_MODEL_RESOLVE` lines collected so far (one per def id).
+    pub fn model_resolve_log(&self) -> Vec<String> {
+        self.model_resolve
+            .lock()
+            .map(|log| log.lines.clone())
+            .unwrap_or_default()
+    }
+
+    /// Record a resolved def once: `detail` is the rest of the log line
+    /// (`ok=true source=…`, or `ok=false reason=…`).
+    fn note_model_resolve(&self, def_id: &str, detail: &str) {
+        let Ok(mut log) = self.model_resolve.lock() else {
+            return;
+        };
+        if !log.seen.insert(def_id.to_string()) {
+            return;
+        }
+        let line = format!("GAME_MODEL_RESOLVE def={def_id} {detail}");
+        log.lines.push(line.clone());
+        drop(log);
+        crate::dev_log!("{line}");
+    }
+
     /// MDX-backed **definition** models in the table: the resident subset of
     /// [`Self::model_roster`]. The four starter-kind models are excluded, so
     /// `loaded <= roster` always holds and the number compares with the
@@ -2566,8 +2776,13 @@ impl Assets {
     }
 
     /// Bounded placeholders standing in for defs this load did not resolve.
+    /// The one generic (def-less) box is not counted: it stands in for ids
+    /// that have no def at all.
     pub fn placeholder_count(&self) -> usize {
-        self.models.iter().filter(|model| model.fallback).count()
+        self.models
+            .iter()
+            .filter(|model| model.fallback && !model.generic)
+            .count()
     }
 
     /// Parse one definition's MDX on demand and append it to the model table.
@@ -2584,29 +2799,52 @@ impl Assets {
             .map(|index| !self.models[index].fallback)
             .unwrap_or(false)
         {
+            self.note_model_resolve(def_id, "ok=true source=resident");
             return true;
         }
         let Some(provider) = self.audio.as_ref().map(|audio| audio.provider().clone()) else {
+            self.note_model_resolve(def_id, "ok=false reason=no-install");
             return false;
         };
-        let Some(path) = self
-            .objects
-            .as_ref()
-            .and_then(|objects| {
-                objects
-                    .units()
-                    .find(|view| view.id_str() == def_id)
-                    .and_then(|view| view.model_file())
-            })
-        else {
-            return false;
+        // The object view only knows a def's own `file` cell; a map override
+        // (`oC03` on base `otau`) inherits the base art, so fall back to the
+        // simulation's resolved def path before giving up.
+        let from_objects = self.objects.as_ref().and_then(|objects| {
+            objects
+                .units()
+                .find(|view| view.id_str() == def_id)
+                .and_then(|view| view.model_file())
+        });
+        let path = match from_objects {
+            Some(path) => path,
+            None => match wc3_sim::data::def_of(def_id) {
+                Some(def) if def.model_present => def.model.to_string(),
+                _ => {
+                    self.note_model_resolve(def_id, "ok=false reason=no-model");
+                    return false;
+                }
+            },
         };
         let Ok(model) = provider.model(&path) else {
+            self.note_model_resolve(def_id, "ok=false reason=parse-failed");
             return false;
         };
-        let tex_map = load_model_textures(&provider, &mut self.textures, &mut self.tex_cache, &model);
+        let mut tex_missing: HashSet<String> = HashSet::new();
+        let mut tex_debug: Vec<String> = Vec::new();
+        let tex_map = load_model_textures(
+            &provider,
+            &mut self.textures,
+            &mut self.tex_cache,
+            &model,
+            &mut tex_missing,
+            &mut tex_debug,
+        );
+        // A lazy model load reports the same missing-file lines as the initial
+        // load: the caller's log must stay complete.
+        self.debug.append(&mut tex_debug);
         let meshes = build_meshes(&model, &tex_map);
         if meshes.is_empty() {
+            self.note_model_resolve(def_id, "ok=false reason=meshless");
             return false;
         }
         let asset = def_model_asset(def_id, model, meshes);
@@ -2621,6 +2859,7 @@ impl Assets {
                 self.model_by_def.insert(def_id.to_string(), index);
             }
         }
+        self.note_model_resolve(def_id, "ok=true source=on-demand");
         true
     }
 
@@ -3133,6 +3372,8 @@ fn load_model_textures(
     textures: &mut Vec<TextureImage>,
     cache: &mut HashMap<String, usize>,
     model: &MdxModel,
+    missing: &mut HashSet<String>,
+    debug: &mut Vec<String>,
 ) -> Vec<usize> {
     let mut map = Vec::with_capacity(model.textures.len());
     for texture in &model.textures {
@@ -3166,7 +3407,17 @@ fn load_model_textures(
                 cache.insert(key, index);
                 map.push(index);
             }
-            Err(_) => map.push(0),
+            Err(error) => {
+                // A model texture the install does not carry is logged once per
+                // path (bounded: the set is per load) and binds the visible
+                // white mask. It must never be a silent surface.
+                if missing.insert(key) {
+                    let line = format!("texture_failed={path} error={error}");
+                    crate::dev_log!("{line}");
+                    debug.push(line);
+                }
+                map.push(REPLACEABLE_MASK_TEXTURE);
+            }
         }
     }
     map
@@ -3174,8 +3425,12 @@ fn load_model_textures(
 
 pub(crate) fn build_meshes(model: &MdxModel, texture_map: &[usize]) -> Vec<MeshData> {
     let mut meshes = Vec::new();
+    let mut dropped_bones = 0usize;
+    let mut truncated_vertices = 0usize;
     for (geoset_id, geoset) in model.geosets.iter().enumerate() {
-        let mut mesh = build_mesh(geoset, model, texture_map);
+        let (mut mesh, dropped, truncated) = build_mesh(geoset, model, texture_map);
+        dropped_bones += dropped;
+        truncated_vertices += truncated;
         mesh.geoset_id = geoset_id as u32;
         if !mesh.indices.is_empty() && !mesh.positions.is_empty() {
             // Helper-plane rule (canonical: `wc3_anim::runtime::helper_plane`).
@@ -3183,10 +3438,30 @@ pub(crate) fn build_meshes(model: &MdxModel, texture_map: &[usize]) -> Vec<MeshD
             meshes.push(std::mem::take(&mut mesh));
         }
     }
+    // One line per model, only when the input is outside the support profile:
+    // a bone index past the palette would reach `palette[base + bone]` in the
+    // vertex shader (WC3-I-014), and >5 influences used to be dropped silently
+    // (WC3-I-015).
+    if dropped_bones > 0 {
+        crate::dev_log!(
+            "GAME_SKIN_BONE_RANGE model={} bones={} dropped_influences={}",
+            model.name,
+            model.bones.len(),
+            dropped_bones
+        );
+    }
+    if truncated_vertices > 0 {
+        crate::dev_log!(
+            "GAME_SKIN_TRUNC model={} vertices={} limit={}",
+            model.name,
+            truncated_vertices,
+            wc3_anim::MAX_INFLUENCES
+        );
+    }
     meshes
 }
 
-fn build_mesh(geoset: &Geoset, model: &MdxModel, texture_map: &[usize]) -> MeshData {
+fn build_mesh(geoset: &Geoset, model: &MdxModel, texture_map: &[usize]) -> (MeshData, usize, usize) {
     // WC3 materials are layer stacks rendered in order. Keep every layer with
     // its texture, static alpha, animated alpha and filter mode; selecting only
     // layer 0 turned the Footman's team-colour geoset into an untextured white
@@ -3234,7 +3509,14 @@ fn build_mesh(geoset: &Geoset, model: &MdxModel, texture_map: &[usize]) -> MeshD
     // vertex. The engine evaluates a matrix group whole (up to five matrices,
     // `CMatrixGroup`); the renderer keeps the full list and skins geosets with a
     // fifth influence on the CPU instead of dropping it.
-    let skin = wc3_anim::GeosetSkin::from_geoset(geoset);
+    let mut skin = wc3_anim::GeosetSkin::from_geoset(geoset);
+    // Enforce the palette contract here, once, before any GPU upload: every
+    // surviving index is < the number of slots `Animator::from_model` exposes
+    // for this model (`max(object_id)+1`, bounded), so the shader's
+    // `palette[base + bone]` cannot read outside this unit's palette. Weights
+    // are renormalised after the drop (WC3-I-014).
+    let dropped_bones = skin.drop_out_of_range_bones(wc3_anim::animator_slot_count(model));
+    let truncated_vertices = skin.truncated_vertices;
     let mut bones: Vec<Vec<BoneWeight>> = vec![Vec::new(); geoset.vertices.len()];
     for (vertex, list) in skin.influences.iter().enumerate() {
         if let Some(slot) = bones.get_mut(vertex) {
@@ -3308,21 +3590,25 @@ fn build_mesh(geoset: &Geoset, model: &MdxModel, texture_map: &[usize]) -> MeshD
             indices.extend_from_slice(&[a, b, c]);
         }
     }
-    MeshData {
-        positions: geoset.vertices.clone(),
-        normals,
-        uvs,
-        uvs2,
-        indices,
-        bones,
-        layers,
-        texture,
-        texture_paths,
-        z_up: true,
-        geoset_id: 0,
-        hide: false,
-        compact: None,
-    }
+    (
+        MeshData {
+            positions: geoset.vertices.clone(),
+            normals,
+            uvs,
+            uvs2,
+            indices,
+            bones,
+            layers,
+            texture,
+            texture_paths,
+            z_up: true,
+            geoset_id: 0,
+            hide: false,
+            compact: None,
+        },
+        dropped_bones,
+        truncated_vertices,
+    )
 }
 
 fn fallback_model(kind: UnitKind) -> ModelAsset {
@@ -3346,6 +3632,7 @@ fn fallback_model(kind: UnitKind) -> ModelAsset {
         scale: 1.0,
         yaw_offset: yaw_offset_for(kind),
         fallback: true,
+        generic: false,
     }
 }
 
@@ -3411,6 +3698,7 @@ fn def_model_asset(id: &str, model: MdxModel, meshes: Vec<MeshData>) -> ModelAss
         scale: 1.0,
         yaw_offset: yaw_offset_for(kind),
         fallback: false,
+        generic: false,
     }
 }
 
@@ -3452,6 +3740,7 @@ fn placeholder_model(def: Option<&wc3_sim::data::UnitDef>) -> ModelAsset {
         scale: 1.0,
         yaw_offset: yaw_offset_for(kind),
         fallback: true,
+        generic: def.is_none(),
     }
 }
 /// Model-space yaw correction for WC3 models authored with the back along +X.
@@ -4658,5 +4947,131 @@ mod tft_archives {
         );
         std::fs::remove_dir_all(&roc_dir).ok();
         std::fs::remove_dir_all(&tft_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod script_scope_tests {
+    use super::*;
+
+    /// `call CreateUnitsForPlayer0()` is a function *call*, not a unit
+    /// creation: counting it as one unresolved `CreateUnit` made every campaign
+    /// chapter load the full roster (ledger 504 measured +17 s / 349 MB on
+    /// Orc01 for a scope that should be map-scoped).
+    #[test]
+    fn create_units_for_player_is_not_create_unit() {
+        let script = "function CreateUnitsForPlayer0 takes nothing returns nothing\n\
+                      call CreateUnit(Player(0), 'hfoo', 0.0, 0.0, 0.0)\n\
+                      endfunction\n\
+                      function CreateAllUnits takes nothing returns nothing\n\
+                      call CreateUnitsForPlayer0()\n\
+                      call CreateNUnitsAtLoc(3, 'opeo', Player(0), udg_loc, 90.0)\n\
+                      endfunction";
+        let (ids, calls, literals) = script_created_ids(script);
+        assert_eq!(calls, 2, "CreateUnit + CreateNUnitsAtLoc");
+        assert_eq!(literals, 2, "both call sites carry a literal id");
+        assert_eq!(
+            ids.into_iter().collect::<Vec<_>>(),
+            vec!["hfoo".to_string(), "opeo".to_string()]
+        );
+    }
+
+    /// A script that creates units through variables still reports the
+    /// unresolved call (the full-roster fallback needs it).
+    #[test]
+    fn variable_ids_stay_unresolved() {
+        let script = "function A takes nothing returns nothing\n\
+                      call CreateUnit(Player(0), GetUnitTypeId(udg_unit), 0.0, 0.0, 0.0)\n\
+                      endfunction";
+        let (ids, calls, literals) = script_created_ids(script);
+        assert_eq!(calls, 1);
+        assert_eq!(literals, 0);
+        assert!(ids.is_empty());
+    }
+}
+
+/// A model texture the install does not carry must never bind a silent
+/// surface: the load logs `texture_failed=<path>` once and draws the visible
+/// white mask.
+#[cfg(test)]
+mod missing_texture_tests {
+    use super::*;
+    use wc3_data::source::Source as _;
+    use wc3_formats::mdx::{MdxModel, Texture};
+
+    fn model_with(path: &str) -> MdxModel {
+        let mut model = MdxModel::default();
+        model.textures.push(Texture {
+            replaceable_id: 0,
+            path: path.to_string(),
+            flags: 0,
+        });
+        model
+    }
+
+    #[test]
+    fn missing_model_texture_is_logged_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-509-missing-texture-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp");
+        let source = DirSource::open(&dir).expect("dir source");
+        let db = SharedAssetDb::new(
+            AssetDb::open_sources(vec![Box::new(source) as Box<dyn AssetSource>], "test")
+                .expect("asset db"),
+        );
+        let mut textures = vec![TextureImage::white()];
+        let mut cache = HashMap::new();
+        let mut missing = HashSet::new();
+        let mut debug = Vec::new();
+        let map = load_model_textures(
+            &db,
+            &mut textures,
+            &mut cache,
+            &model_with("Textures\\Missing_509.blp"),
+            &mut missing,
+            &mut debug,
+        );
+        assert_eq!(map, vec![REPLACEABLE_MASK_TEXTURE]);
+        assert_eq!(debug.len(), 1, "one explicit line per missing path");
+        assert!(
+            debug[0].starts_with("texture_failed=Textures\\Missing_509.blp"),
+            "{}",
+            debug[0]
+        );
+        // A second model asking for the same path does not flood the log.
+        let map = load_model_textures(
+            &db,
+            &mut textures,
+            &mut cache,
+            &model_with("Textures/Missing_509.blp"),
+            &mut missing,
+            &mut debug,
+        );
+        assert_eq!(map, vec![REPLACEABLE_MASK_TEXTURE]);
+        assert_eq!(debug.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `StormSource::exists` must see a loose extracted install, not only
+    /// archives: the data readers gate optional tables on it.
+    #[test]
+    fn storm_source_exists_sees_loose_roots() {
+        let dir = std::env::temp_dir().join(format!("h2-509-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Units")).expect("temp");
+        std::fs::write(dir.join("Units/UnitData.slk"), b"x").expect("file");
+        let mut fs = StormFs::new();
+        fs.add_loose_dir("install", &dir).expect("loose root");
+        let source = StormSource::new(fs, "loose");
+        // `StormSource` implements both `wc3_data::source::Source` and the
+        // database's `AssetSource`; the trait has to be named or the call is
+        // ambiguous (E0034) and the whole `--lib` test binary stops compiling.
+        assert!(wc3_data::source::Source::exists(&source, "Units\\UnitData.slk"));
+        assert!(wc3_data::source::Source::exists(&source, "units/unitdata.slk"));
+        assert!(!wc3_data::source::Source::exists(&source, "Units\\Missing_509.slk"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

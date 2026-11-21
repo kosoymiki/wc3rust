@@ -18,6 +18,7 @@ pub const ROLES: [&str; 24] = [
 ];
 
 pub mod tests_support;
+pub mod manifest;
 pub mod console;
 pub mod topbar;
 pub mod tiles;
@@ -29,7 +30,11 @@ pub mod tooltip;
 pub mod army;
 pub mod dialogs;
 pub mod pack;
+pub mod pack_build;
 pub mod soft_raster;
+
+#[cfg(test)]
+mod screens_audit;
 
 /// One loaded skin: the atlas texture index plus the pixel rect/insets of every
 /// role. `None` when the install has no atlas (the HUD then keeps the FDF art).

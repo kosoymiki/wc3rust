@@ -23,6 +23,10 @@
 
 use super::Skin;
 use crate::hud::{Rect, UiBatch};
+use crate::ui::layout::screens::{self, LABEL_LADDER};
+use crate::ui::layout::text_fit;
+use crate::ui::theme::typography::TypeRole;
+use crate::ui::theme::{metrics, Theme};
 
 /// Primary atlas role of this region (the dialog/victory panel).
 pub const ROLE: &str = "dialog_panel";
@@ -212,11 +216,38 @@ fn inset_content(rect: Rect, border: [f32; 4], pad: f32, max_frac: f32) -> Rect 
     )
 }
 
+/// Art scale that keeps a panel's nine-patch border below half of each side.
+///
+/// A plate stretched to the viewport (`dialog_panel`, `dialog_wide`) must not
+/// keep an atlas-proportional border: the compact 320x240 dialog had 66/56 px
+/// insets at scale 1.2 on a 220 px plate, so the bevel left a 58 px content box
+/// and 14 px buttons. The border may claim at most half of an axis; below that
+/// the content keeps the rest.
+fn panel_art_scale(skin: &Skin, role: &str, rect: Rect, scale: f32) -> f32 {
+    let Some(index) = Skin::role_index(role) else {
+        return scale.max(MIN_SCALE);
+    };
+    let [il, it, ir, ib] = skin.insets[index];
+    let sx = if il + ir > 0.0 {
+        rect.w * 0.5 / (il + ir)
+    } else {
+        f32::INFINITY
+    };
+    let sy = if it + ib > 0.0 {
+        rect.h * 0.5 / (it + ib)
+    } else {
+        f32::INFINITY
+    };
+    scale.max(MIN_SCALE).min(sx).min(sy).max(MIN_SCALE)
+}
+
 /// Content box of a panel: the panel rect inset by its measured border (plus
-/// the content gutter). Always strictly inside the panel.
+/// the content gutter). Always strictly inside the panel, and never thinner
+/// than half of either axis: the bevel may claim at most a quarter per side.
 pub fn panel_content(skin: &Skin, rect: Rect, kind: PanelKind, scale: f32) -> Rect {
-    let border = border(skin, kind.role(), scale);
-    inset_content(rect, border, CONTENT_PAD * scale.max(MIN_SCALE), 0.5)
+    let s = panel_art_scale(skin, kind.role(), rect, scale);
+    let border = border(skin, kind.role(), s);
+    inset_content(rect, border, CONTENT_PAD * s, 0.25)
 }
 
 /// Draw a panel of `kind` into `rect` and return its content box.
@@ -227,9 +258,9 @@ pub fn draw_panel(
     kind: PanelKind,
     scale: f32,
 ) -> Rect {
-    let s = scale.max(MIN_SCALE);
+    let s = panel_art_scale(skin, kind.role(), rect, scale);
     nine_scaled(skin, batch, kind.role(), rect, s, kind.tint());
-    panel_content(skin, rect, kind, s)
+    panel_content(skin, rect, kind, scale)
 }
 
 /// Shrink `rect` about its centre by `factor` (press feedback).
@@ -474,6 +505,29 @@ pub struct MenuLayout {
     pub content: Rect,
     pub buttons: Vec<Rect>,
     pub labels: Vec<Rect>,
+    /// Theme-token size in screen px of each label box (largest role whose
+    /// line fits the lane; the caller ellipsises a longer label with
+    /// [`ellipsise_to_fit`]).
+    pub label_px: Vec<f32>,
+    /// Drawn text per label when the caller supplied the strings
+    /// ([`draw_menu_with_labels`]); empty for the count-only API.
+    pub label_text: Vec<String>,
+    /// The drawn text was ellipsised to fit its box.
+    pub label_truncated: Vec<bool>,
+    /// Entries on every page: the menu paginates instead of shrinking lanes.
+    pub per_page: usize,
+    /// Page this layout draws (`0` based) and how many pages exist.
+    pub page: usize,
+    pub page_count: usize,
+    /// Some interactive lane exists and every lane holds the smallest token.
+    pub readable: bool,
+}
+
+impl MenuLayout {
+    /// Global index of the first entry on this page.
+    pub fn first_entry(&self) -> usize {
+        self.page.saturating_mul(self.per_page)
+    }
 }
 
 /// Result of [`draw_dialog`].
@@ -483,8 +537,19 @@ pub struct DialogLayout {
     pub content: Rect,
     pub banner: Rect,
     pub banner_text: Rect,
+    /// Theme-token size in screen px of the title cartouche.
+    pub banner_px: f32,
+    /// Drawn title when the caller supplied it, plus its ellipsis verdict.
+    pub banner_drawn: String,
+    pub banner_truncated: bool,
     pub buttons: Vec<Rect>,
     pub labels: Vec<Rect>,
+    /// Theme-token size in screen px of each button label.
+    pub label_px: Vec<f32>,
+    /// Drawn text per button when the caller supplied the strings.
+    pub label_text: Vec<String>,
+    pub label_truncated: Vec<bool>,
+    pub readable: bool,
 }
 
 /// Result of [`draw_quest_log`].
@@ -495,11 +560,133 @@ pub struct QuestLogLayout {
     pub rows: Vec<Rect>,
 }
 
+/// Type density for the design tokens on a screen-px viewport.
+///
+/// The UI layer works in dp at density 3 for the phone class
+/// (`mobile_hud::REFERENCE_HEIGHT` = 1080 px). This maps a viewport back onto
+/// that scale so `TypeRole::Heading` is 60 px at 2414x1080 and 20 px on a
+/// 360 px-wide window, exactly as the token table prescribes — and never below
+/// 0.75, so a 320x240 window keeps a readable minimum instead of a 2 px font.
+pub fn type_density(viewport: Rect) -> f32 {
+    let short = viewport.w.min(viewport.h).max(1.0);
+    (short / 360.0).clamp(0.75, 3.5)
+}
+
+/// Largest token size in screen px from `ladder` that fits `text` in `rect`.
+///
+/// When even the compact token is too tall for the box (a 41 px label box at
+/// density 3 vs a 41.25 px line), the size steps **below** the token to the
+/// exact line the box can hold (`h / 1.25`, never under 8 px) instead of
+/// declaring the label unreadable.
+pub fn fitted_px(text: &str, rect: Rect, viewport: Rect) -> f32 {
+    let theme = Theme::classic_fantasy();
+    let density = type_density(viewport);
+    let compact = theme.type_scale.style(TypeRole::Compact).px(density);
+    for role in LABEL_LADDER {
+        let px = theme.type_scale.style(role).px(density);
+        if text_fit::fit(text, px, rect.w, rect.h, false).fits_one_line {
+            if px * 1.25 <= rect.h + 0.5 {
+                return px;
+            }
+        }
+    }
+    // Sub-compact: the box is shorter or narrower than the smallest token's
+    // line. Solve the exact size both axes can hold (width via the measured
+    // advance, height via the 1.25 line box) and verify it, stepping down for
+    // rounding. A narrow cartouche therefore renders a smaller title instead of
+    // "GAME P…".
+    let line_px = (rect.h / 1.25).max(8.0);
+    let advance_at_one = text_fit::advance(text, 1.0);
+    let width_px = if advance_at_one > 0.0 {
+        (rect.w / advance_at_one).max(8.0)
+    } else {
+        f32::INFINITY
+    };
+    let mut px = compact.min(line_px).min(width_px).max(8.0);
+    for _ in 0..12 {
+        if text_fit::fit(text, px, rect.w, rect.h, false).fits_one_line {
+            break;
+        }
+        px = (px * 0.92).max(8.0);
+    }
+    px
+}
+
+/// Does `text` fit `rect` on one line at `px`?
+pub fn label_fits(text: &str, rect: Rect, px: f32) -> bool {
+    text_fit::fit(text, px, rect.w, rect.h, false).fits
+}
+
+/// Largest token size in screen px whose line box fits `rect`'s height.
+///
+/// This is the lane-driven size: a row can be 40 px tall and still ask for the
+/// 20 px token. Width is a property of the string, checked separately by
+/// [`label_fits`] (and fixed by [`ellipsise_to_fit`]).
+pub fn token_px_for_height(rect: Rect, viewport: Rect) -> f32 {
+    let theme = Theme::classic_fantasy();
+    let density = type_density(viewport);
+    let compact = theme.type_scale.style(TypeRole::Compact).px(density);
+    let mut chosen = compact;
+    for role in LABEL_LADDER {
+        let px = theme.type_scale.style(role).px(density);
+        if px * 1.25 <= rect.h + 0.5 {
+            return px;
+        }
+        chosen = px;
+    }
+    // Sub-compact: the box is shorter than the smallest token's line. Use the
+    // exact line it can hold so the text is small, not clipped.
+    (rect.h / 1.25).min(chosen).max(8.0)
+}
+
+/// Ellipsised text that fits `rect` at `px` (the caller's honest fallback when
+/// [`label_fits`] is false). Returns the input unchanged when it fits. The
+/// descent is bounded: each step drops one glyph, so even a 1x1 box terminates
+/// at the bare ellipsis instead of looping.
+pub fn ellipsise_to_fit(text: &str, rect: Rect, px: f32) -> String {
+    let fit = text_fit::fit(text, px, rect.w, rect.h, false);
+    if fit.fits {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut budget = fit.keep_chars.max(2) as usize;
+    loop {
+        let candidate = if chars.len() <= budget {
+            text.to_string()
+        } else if budget <= 1 {
+            "…".to_string()
+        } else {
+            let mut out: String = chars.iter().take(budget - 1).collect();
+            out.push('…');
+            out
+        };
+        if text_fit::fit(&candidate, px, rect.w, rect.h, false).fits_one_line || budget <= 2 {
+            return candidate;
+        }
+        budget -= 1;
+    }
+}
+
+/// Smallest lane a menu row may have: one line of the compact token plus the
+/// label inset, in screen px. Lanes below this clip the text, so the menu
+/// paginates instead.
+pub fn menu_lane_floor(viewport: Rect) -> f32 {
+    let theme = Theme::classic_fantasy();
+    let compact = theme
+        .type_scale
+        .style(TypeRole::Compact)
+        .px(type_density(viewport));
+    compact * 1.25 + 2.0 * CONTENT_PAD
+}
+
 /// Draw the main menu / skirmish setup: plate, then one full-width button per
-/// entry in the plate's lanes. `pressed` marks the held entry.
+/// entry in the plate's lanes. `pressed` marks the held entry (global index).
 ///
 /// `scale` is the panel scale from [`menu_scale`]; the plate is drawn at
-/// `atlas * scale` so the baked row guides stay undistorted.
+/// `atlas * scale` so the baked row guides stay undistorted. When the entries
+/// cannot keep [`menu_lane_floor`] the composition **paginates** (page 0 here;
+/// [`draw_menu_paged`] draws any page) instead of squeezing six labels into
+/// 6 px lanes.
 pub fn draw_menu(
     skin: &Skin,
     batch: &mut UiBatch,
@@ -508,28 +695,123 @@ pub fn draw_menu(
     entries: usize,
     pressed: Option<usize>,
 ) -> Option<MenuLayout> {
+    draw_menu_paged(skin, batch, viewport, scale, entries, pressed, 0)
+}
+
+/// [`draw_menu`] on an explicit page (see [`menu_lane_floor`]).
+pub fn draw_menu_paged(
+    skin: &Skin,
+    batch: &mut UiBatch,
+    viewport: Rect,
+    scale: f32,
+    entries: usize,
+    pressed: Option<usize>,
+    page: usize,
+) -> Option<MenuLayout> {
+    draw_menu_impl(skin, batch, viewport, scale, entries, None, pressed, page)
+}
+
+/// [`draw_menu`] with the actual entry strings: the composition picks each
+/// label's token size, ellipsises what cannot fit and returns the drawn text,
+/// so the caller cannot clip a label even if it ignores the fit verdicts.
+pub fn draw_menu_with_labels(
+    skin: &Skin,
+    batch: &mut UiBatch,
+    viewport: Rect,
+    scale: f32,
+    labels: &[&str],
+    pressed: Option<usize>,
+    page: usize,
+) -> Option<MenuLayout> {
+    draw_menu_impl(
+        skin,
+        batch,
+        viewport,
+        scale,
+        labels.len(),
+        Some(labels),
+        pressed,
+        page,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_menu_impl(
+    skin: &Skin,
+    batch: &mut UiBatch,
+    viewport: Rect,
+    scale: f32,
+    entries: usize,
+    labels: Option<&[&str]>,
+    pressed: Option<usize>,
+    page: usize,
+) -> Option<MenuLayout> {
     let s = scale.max(MIN_SCALE);
     let panel = centred_panel(skin, ROLE_MENU, viewport, s)?;
     let content = draw_panel(skin, batch, panel, PanelKind::Menu, s);
     let gap = MENU_ROW_GAP * s;
-    let lane = ((content.h - gap * entries.saturating_sub(1) as f32) / entries.max(1) as f32).max(0.0);
-    let buttons = layout_buttons(content, entries, 1, lane, gap);
-    let mut labels = Vec::with_capacity(buttons.len());
-    for (index, button) in buttons.iter().enumerate() {
-        labels.push(draw_button(
+    let floor = menu_lane_floor(viewport).max(1.0);
+    let per_page = screens::rows_that_fit(content.h, gap, floor)
+        .max(1)
+        .min(entries.max(1));
+    let page_count = if entries == 0 {
+        1
+    } else {
+        entries.div_ceil(per_page)
+    };
+    let page = page.min(page_count.saturating_sub(1));
+    let start = page.saturating_mul(per_page);
+    let visible = entries.saturating_sub(start).min(per_page);
+    let lane = if visible == 0 {
+        0.0
+    } else {
+        ((content.h - gap * visible.saturating_sub(1) as f32) / visible as f32).max(0.0)
+    };
+    let buttons = layout_buttons(content, visible, 1, lane, gap);
+    let mut out_labels = Vec::with_capacity(buttons.len());
+    let mut label_px = Vec::with_capacity(buttons.len());
+    let mut label_text = Vec::with_capacity(buttons.len());
+    let mut label_truncated = Vec::with_capacity(buttons.len());
+    let mut readable = entries == 0 || (visible > 0 && lane + 0.5 >= floor);
+    for (local, button) in buttons.iter().enumerate() {
+        let global = start + local;
+        let rect = draw_button(
             skin,
             batch,
             *button,
-            pressed == Some(index),
+            pressed == Some(global),
             true,
             s,
-        ));
+        );
+        let (px, text, truncated) = match labels {
+            Some(texts) => {
+                let px = fitted_px(texts[global], rect, viewport);
+                let drawn = ellipsise_to_fit(texts[global], rect, px);
+                let truncated = drawn != texts[global];
+                (px, drawn, truncated)
+            }
+            None => (token_px_for_height(rect, viewport), String::new(), false),
+        };
+        if px * 1.25 > rect.h + 0.5 {
+            readable = false;
+        }
+        label_px.push(px);
+        label_text.push(text);
+        label_truncated.push(truncated);
+        out_labels.push(rect);
     }
     Some(MenuLayout {
         panel,
         content,
         buttons,
-        labels,
+        labels: out_labels,
+        label_px,
+        label_text,
+        label_truncated,
+        per_page,
+        page,
+        page_count,
+        readable,
     })
 }
 
@@ -543,15 +825,72 @@ pub fn draw_dialog(
     buttons: usize,
     pressed: Option<usize>,
 ) -> Option<DialogLayout> {
+    draw_dialog_impl(skin, batch, viewport, scale, buttons, None, None, pressed)
+}
+
+/// [`draw_dialog`] with the actual title and button strings: each label gets
+/// the largest token size that fits, and anything longer is ellipsised and
+/// reported (`banner_truncated` / `label_truncated`).
+pub fn draw_dialog_with_labels(
+    skin: &Skin,
+    batch: &mut UiBatch,
+    viewport: Rect,
+    scale: f32,
+    title: &str,
+    buttons: &[&str],
+    pressed: Option<usize>,
+) -> Option<DialogLayout> {
+    draw_dialog_impl(
+        skin,
+        batch,
+        viewport,
+        scale,
+        buttons.len(),
+        Some(title),
+        Some(buttons),
+        pressed,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_dialog_impl(
+    skin: &Skin,
+    batch: &mut UiBatch,
+    viewport: Rect,
+    scale: f32,
+    buttons: usize,
+    title: Option<&str>,
+    labels: Option<&[&str]>,
+    pressed: Option<usize>,
+) -> Option<DialogLayout> {
     let s = scale.max(MIN_SCALE);
-    let panel = centred_panel(skin, ROLE_DIALOG, viewport, s)?;
+    // `dialog_panel` has a clean nine-patch centre, so the plate takes a
+    // viewport-proportional rect instead of `atlas * scale`: on a 1280x720
+    // desktop the atlas-proportional plate produced 14 px buttons, below the
+    // token line. Margins tighten on short frames so the footer stays legible.
+    let short_frame = viewport.h < 420.0;
+    let margin_x = viewport.w * if short_frame { 0.03 } else { 0.07 };
+    let margin_y = viewport.h * if short_frame { 0.04 } else { 0.11 };
+    let panel = Rect::new(
+        viewport.x + margin_x,
+        viewport.y + margin_y,
+        (viewport.w - 2.0 * margin_x).max(1.0),
+        (viewport.h - 2.0 * margin_y).max(1.0),
+    );
     let content = draw_panel(skin, batch, panel, PanelKind::Dialog, s);
 
     let aspect = role_size(skin, ROLE_BANNER)
         .map(|(w, h)| if h > 0.0 { w / h } else { 1.0 })
         .unwrap_or(1.0);
     let max_w = (content.w * 0.8).max(MIN_CELL);
-    let max_h = (content.h * BANNER_MAX_FRAC).max(MIN_CELL);
+    // A short plate keeps a wider cartouche: 28% of a 136 px content box left a
+    // 45 px title box, so "GAME PAUSED" had to be ellipsised on 320x240.
+    let banner_frac = if viewport.h < 420.0 {
+        0.38
+    } else {
+        BANNER_MAX_FRAC
+    };
+    let max_h = (content.h * banner_frac).max(MIN_CELL);
     let banner_w = max_w.min(max_h * aspect).max(MIN_CELL);
     let banner = Rect::new(
         content.x + (content.w - banner_w) * 0.5,
@@ -561,28 +900,106 @@ pub fn draw_dialog(
     );
     let banner_text = draw_banner(skin, batch, banner, s);
 
-    let columns = buttons.min(2).max(1);
-    let button_h = (BUTTON_H * s).min(content.h * 0.14).max(MIN_CELL);
-    let footer = Rect::new(content.x, content.bottom() - button_h, content.w, button_h);
-    let rects = layout_buttons(footer, buttons, columns, button_h, BUTTON_GAP * s);
-    let mut labels = Vec::with_capacity(rects.len());
+    // Columns follow the label budget: a 2-column footer only when a column's
+    // label box can host the longest button at the minimum readable size.
+    // 3 buttons on 320x240 need the full width for "QUIT TO MAIN MENU".
+    let compact_px = Theme::classic_fantasy()
+        .type_scale
+        .style(TypeRole::Compact)
+        .px(type_density(viewport));
+    let longest = labels
+        .map(|texts| texts.iter().map(|text| text.chars().count()).max().unwrap_or(0))
+        .unwrap_or(12);
+    let min_px = compact_px.min(11.0).max(8.0);
+    let needed_label_w = longest as f32 * min_px * text_fit::CONDENSED_ADVANCE_EM;
+    // The button's label box keeps ~64% of the cell (18% inset per side).
+    let needed_cell_w = needed_label_w / 0.64 + 2.0 * CONTENT_PAD;
+    let columns = if buttons <= 2 {
+        buttons
+    } else if content.w * 0.5 >= needed_cell_w {
+        2
+    } else {
+        1
+    }
+    .max(1);
+    let rows = if buttons == 0 {
+        0
+    } else {
+        buttons.div_ceil(columns)
+    };
+    let lane_floor = menu_lane_floor(viewport).max(10.0);
+    let gap = BUTTON_GAP * s;
+    // The footer hosts every row: `rows * cell + gaps`, capped so the body
+    // keeps most of the plate. (The old code allocated one row and let
+    // `layout_buttons` halve it for the second row: 3 buttons became 14 px.)
+    let footer_budget = (content.h * 0.45).max(1.0);
+    let natural_h = rows.max(1) as f32 * (BUTTON_H * s).max(lane_floor)
+        + gap * rows.saturating_sub(1) as f32;
+    let footer_h = natural_h.min(footer_budget).max(rows.max(1) as f32);
+    let cell_h = if rows == 0 {
+        0.0
+    } else {
+        ((footer_h - gap * rows.saturating_sub(1) as f32) / rows as f32).max(1.0)
+    };
+    let footer = Rect::new(content.x, content.bottom() - footer_h, content.w, footer_h);
+    let rects = layout_buttons(footer, buttons, columns, cell_h, gap);
+    let mut out_labels = Vec::with_capacity(rects.len());
+    let mut label_px = Vec::with_capacity(rects.len());
+    let mut label_text = Vec::with_capacity(rects.len());
+    let mut label_truncated = Vec::with_capacity(rects.len());
+    let mut readable = true;
     for (index, button) in rects.iter().enumerate() {
-        labels.push(draw_button(
+        let rect = draw_button(
             skin,
             batch,
             *button,
             pressed == Some(index),
             true,
             s,
-        ));
+        );
+        let (px, text, truncated) = match labels {
+            Some(texts) => {
+                let px = fitted_px(texts[index], rect, viewport);
+                let drawn = ellipsise_to_fit(texts[index], rect, px);
+                let truncated = drawn != texts[index];
+                (px, drawn, truncated)
+            }
+            None => (token_px_for_height(rect, viewport), String::new(), false),
+        };
+        if px * 1.25 > rect.h + 0.5 {
+            readable = false;
+        }
+        label_px.push(px);
+        label_text.push(text);
+        label_truncated.push(truncated);
+        out_labels.push(rect);
+    }
+    let (banner_px, banner_drawn, banner_truncated) = match title {
+        Some(title) => {
+            let px = fitted_px(title, banner_text, viewport);
+            let drawn = ellipsise_to_fit(title, banner_text, px);
+            let truncated = drawn != title;
+            (px, drawn, truncated)
+        }
+        None => (token_px_for_height(banner_text, viewport), String::new(), false),
+    };
+    if banner_px * 1.25 > banner_text.h + 0.5 {
+        readable = false;
     }
     Some(DialogLayout {
         panel,
         content,
         banner,
         banner_text,
+        banner_px,
+        banner_drawn,
+        banner_truncated,
         buttons: rects,
-        labels,
+        labels: out_labels,
+        label_px,
+        label_text,
+        label_truncated,
+        readable,
     })
 }
 
@@ -795,20 +1212,55 @@ mod tests {
         let rect = Rect::new(10.0, 20.0, 683.0, 648.0);
         for kind in PanelKind::ALL {
             let scale = 2.0_f32;
-            let b = border(&skin, kind.role(), scale);
-            let pad = CONTENT_PAD * scale;
+            let s = panel_art_scale(&skin, kind.role(), rect, scale);
+            assert!(s <= scale + 1e-6, "{kind:?}: art scale never grows");
+            let b = border(&skin, kind.role(), s);
+            let pad = CONTENT_PAD * s;
+            // Independent re-derivation of the contract: border + pad, capped
+            // at a quarter per side and at the half-minus-a-cell rule.
+            let capped = |inset: f32, axis: f32| {
+                inset
+                    .min(axis * 0.25)
+                    .min(((axis - MIN_CELL) * 0.5).max(0.0))
+                    .max(0.0)
+            };
+            let left = capped(b[0] + pad, rect.w);
+            let right = capped(b[2] + pad, rect.w);
+            let top = capped(b[1] + pad, rect.h);
+            let bottom = capped(b[3] + pad, rect.h);
             let content = panel_content(&skin, rect, kind, scale);
-            assert!((content.x - (rect.x + b[0] + pad)).abs() < 1e-3, "{kind:?} left");
-            assert!((content.y - (rect.y + b[1] + pad)).abs() < 1e-3, "{kind:?} top");
+            assert!((content.x - (rect.x + left)).abs() < 1e-3, "{kind:?} left");
+            assert!((content.y - (rect.y + top)).abs() < 1e-3, "{kind:?} top");
             assert!(
-                (content.right() - (rect.right() - b[2] - pad)).abs() < 1e-3,
+                (content.right() - (rect.right() - right)).abs() < 1e-3,
                 "{kind:?} right"
             );
             assert!(
-                (content.bottom() - (rect.bottom() - b[3] - pad)).abs() < 1e-3,
+                (content.bottom() - (rect.bottom() - bottom)).abs() < 1e-3,
                 "{kind:?} bottom"
             );
             assert!(strictly_inside(content, rect), "{kind:?}");
+            assert!(
+                content.w >= rect.w * 0.5 - 1e-3 && content.h >= rect.h * 0.5 - 1e-3,
+                "{kind:?}: content {:?} is under half the plate",
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn panel_border_never_eats_half_of_a_stretched_plate() {
+        let skin = measured_skin();
+        for kind in PanelKind::ALL {
+            for (w, h) in [(320.0_f32, 220.0_f32), (748.0, 561.0), (180.0, 140.0)] {
+                let rect = Rect::new(0.0, 0.0, w, h);
+                let content = panel_content(&skin, rect, kind, 2.0);
+                assert!(
+                    content.w >= w * 0.5 - 1e-3 && content.h >= h * 0.5 - 1e-3,
+                    "{kind:?} {w}x{h}: content {:?} is under half the plate",
+                    content
+                );
+            }
         }
     }
 
@@ -1179,26 +1631,39 @@ mod tests {
                     viewport
                 );
                 assert!(strictly_inside(menu.content, menu.panel), "content inside panel");
-                assert_eq!(menu.buttons.len(), 4);
-                assert_eq!(menu.labels.len(), 4);
+                assert_eq!(menu.buttons.len(), 4.min(menu.per_page));
+                assert_eq!(menu.labels.len(), menu.buttons.len());
                 assert!(pairwise_overlap(&menu.buttons).is_none(), "menu rows overlap");
                 for (button, label) in menu.buttons.iter().zip(menu.labels.iter()) {
                     assert!(inside(*button, menu.content), "button in content");
                     assert!(strictly_inside(*label, *button), "label in button");
                 }
-                // 6 and 8 entries still tile without overlap.
+                // 6 and 8 entries still tile without overlap; beyond the page
+                // budget they paginate (every entry reachable, none squeezed).
                 for entries in [3_usize, 6, 8] {
                     let menu = draw_menu(&skin, &mut batch, viewport, scale, entries, None)
                         .expect("menu layout");
-                    assert_eq!(menu.buttons.len(), entries);
-                    assert!(
-                        pairwise_overlap(&menu.buttons).is_none(),
-                        "{entries} entries overlap"
+                    assert_eq!(
+                        menu.buttons.len(),
+                        entries.min(menu.per_page),
+                        "{entries} entries: visible page"
                     );
-                    for button in &menu.buttons {
-                        assert!(button.bottom() <= menu.content.bottom() + 1e-3);
-                        assert!(button.h >= 1.0);
+                    let mut seen = 0usize;
+                    for page in 0..menu.page_count {
+                        let page_layout =
+                            draw_menu_paged(&skin, &mut batch, viewport, scale, entries, None, page)
+                                .expect("menu page");
+                        seen += page_layout.buttons.len();
+                        assert!(
+                            pairwise_overlap(&page_layout.buttons).is_none(),
+                            "{entries} entries page {page} overlap"
+                        );
+                        for button in &page_layout.buttons {
+                            assert!(button.bottom() <= page_layout.content.bottom() + 1e-3);
+                            assert!(button.h >= 1.0);
+                        }
                     }
+                    assert_eq!(seen, entries, "{entries} entries appear on exactly one page");
                 }
             }
         }
@@ -1302,9 +1767,227 @@ mod tests {
             assert!(strictly_inside(menu.panel, viewport));
             assert!(strictly_inside(dialog.panel, viewport));
             assert!(strictly_inside(quest.panel, viewport));
-            assert_eq!(menu.buttons.len(), 4);
+            assert_eq!(menu.buttons.len(), 4.min(menu.per_page));
+            assert!(menu.per_page * menu.page_count >= 4);
             assert_eq!(dialog.buttons.len(), 2);
             assert_eq!(quest.rows.len(), 6);
         }
+    }
+
+    /// The five viewport classes the screens must survive, as safe frames.
+    fn shipped_viewports() -> [(&'static str, Rect); 5] {
+        [
+            ("device-landscape", LANDSCAPE),
+            ("device-portrait", PORTRAIT),
+            ("desktop-720p", Rect::new(0.0, 0.0, 1280.0, 720.0)),
+            (
+                "wide-2340",
+                Rect::new(120.0, 80.0, 2340.0 - 168.0, 1080.0 - 128.0),
+            ),
+            ("compact-320x240", Rect::new(0.0, 0.0, 320.0, 240.0)),
+        ]
+    }
+
+    const MENU_LABELS: [&str; 6] = [
+        "CAMPAIGN",
+        "CUSTOM GAME",
+        "SINGLE PLAYER",
+        "LOAD GAME",
+        "OPTIONS",
+        "QUIT",
+    ];
+
+    /// Mission gate (UI layer): the skin menu survives all five viewports with
+    /// readable token-sized labels, paginating rather than clipping.
+    #[test]
+    fn hudskin_dialogs_menu_fits_five_viewports_with_token_labels() {
+        let skin = measured_skin();
+        for (name, viewport) in shipped_viewports() {
+            let scale = menu_scale(&skin, viewport);
+            let mut batch = UiBatch::default();
+            let first = draw_menu_with_labels(
+                &skin,
+                &mut batch,
+                viewport,
+                scale,
+                &MENU_LABELS,
+                Some(1),
+                0,
+            )
+            .expect("menu layout");
+            assert!(strictly_inside(first.panel, viewport), "{name}: panel");
+            assert!(first.readable, "{name}: menu is readable");
+            assert!(
+                first.buttons[0].h + 0.5 >= menu_lane_floor(viewport),
+                "{name}: lane {:.1} below the token floor {:.1}",
+                first.buttons[0].h,
+                menu_lane_floor(viewport)
+            );
+            let mut index = 0usize;
+            for page in 0..first.page_count {
+                let layout = draw_menu_with_labels(
+                    &skin,
+                    &mut batch,
+                    viewport,
+                    scale,
+                    &MENU_LABELS,
+                    Some(1),
+                    page,
+                )
+                .expect("menu page");
+                assert_eq!(layout.page, page, "{name}: page index");
+                assert!(layout.readable, "{name}: page {page} readable");
+                assert!(pairwise_overlap(&layout.buttons).is_none(), "{name}: overlap");
+                for (local, (button, label)) in
+                    layout.buttons.iter().zip(layout.labels.iter()).enumerate()
+                {
+                    let wanted = MENU_LABELS[index + local];
+                    let drawn = &layout.label_text[local];
+                    let px = layout.label_px[local];
+                    assert!(
+                        label_fits(drawn, *label, px),
+                        "{name}: page {page} drawn label {drawn:?} does not fit {label:?} at {px:.1}px"
+                    );
+                    assert!(
+                        drawn == wanted || layout.label_truncated[local],
+                        "{name}: page {page} label {wanted:?} changed without the truncation flag"
+                    );
+                    assert!(
+                        !layout.label_truncated[local],
+                        "{name}: page {page} shipped label {wanted:?} ellipsised to {drawn:?}"
+                    );
+                    assert!(inside(*button, layout.content), "{name}: button in content");
+                    assert!(
+                        px >= 8.0 && px * 1.25 <= label.h + 0.5,
+                        "{name}: label {px:.1}px does not sit in a {:.1}px box",
+                        label.h
+                    );
+                }
+                index += layout.buttons.len();
+            }
+            assert_eq!(index, MENU_LABELS.len(), "{name}: every entry reaches a page");
+        }
+    }
+
+    /// Mission gate (UI layer): dialogs keep the title cartouche and the footer
+    /// buttons inside the panel at every viewport, on token sizes.
+    #[test]
+    fn hudskin_dialogs_dialog_fits_five_viewports_with_token_labels() {
+        let skin = measured_skin();
+        for (name, viewport) in shipped_viewports() {
+            let scale = dialog_scale(&skin, viewport);
+            let mut batch = UiBatch::default();
+            let buttons = ["RESUME", "SAVE GAME", "QUIT TO MAIN MENU"];
+            let dialog = draw_dialog_with_labels(
+                &skin,
+                &mut batch,
+                viewport,
+                scale,
+                "GAME PAUSED",
+                &buttons,
+                Some(0),
+            )
+            .expect("dialog layout");
+            assert!(strictly_inside(dialog.panel, viewport), "{name}: panel");
+            assert!(
+                dialog.readable,
+                "{name}: dialog is readable: panel {:?} content {:?} banner {:?}@{:.1}px buttons {:?} labels {:?} px {:?}",
+                dialog.panel,
+                dialog.content,
+                dialog.banner_text,
+                dialog.banner_px,
+                dialog.buttons,
+                dialog.labels,
+                dialog.label_px
+            );
+            assert!(
+                label_fits(&dialog.banner_drawn, dialog.banner_text, dialog.banner_px),
+                "{name}: banner {:?} does not fit {:?} at {:.1}px",
+                dialog.banner_drawn,
+                dialog.banner_text,
+                dialog.banner_px
+            );
+            assert!(
+                !dialog.banner_truncated,
+                "{name}: shipped title ellipsised to {:?}",
+                dialog.banner_drawn
+            );
+            for index in 0..dialog.buttons.len() {
+                let button = dialog.buttons[index];
+                let label = dialog.labels[index];
+                let drawn = &dialog.label_text[index];
+                let px = dialog.label_px[index];
+                assert!(
+                    label_fits(drawn, label, px),
+                    "{name}: drawn button {drawn:?} does not fit {label:?} at {px:.1}px"
+                );
+                assert!(
+                    !dialog.label_truncated[index],
+                    "{name}: shipped button {:?} ellipsised to {drawn:?} (content {:?} buttons {:?} labels {:?} px {:?})",
+                    buttons[index],
+                    dialog.content,
+                    dialog.buttons,
+                    dialog.labels,
+                    dialog.label_px
+                );
+                assert!(inside(button, dialog.content), "{name}: button in content");
+            }
+            assert!(pairwise_overlap(&dialog.buttons).is_none(), "{name}: overlap");
+        }
+    }
+
+    /// The skin uses the shared design tokens, not its own numbers.
+    #[test]
+    fn hudskin_dialogs_use_the_design_token_floors() {
+        assert!(
+            BUTTON_H >= metrics::TOUCH_DP,
+            "authored button {BUTTON_H} shorter than the {}\u{a0}dp touch floor",
+            metrics::TOUCH_DP
+        );
+        assert_eq!(CONTENT_PAD, metrics::CONSOLE_PAD_DP, "panel pad is a token");
+        assert_eq!(BUTTON_GAP, metrics::CARD_GAP_DP, "button gap is a token");
+        assert!(
+            ROW_GAP <= metrics::ZONE_GAP_DP,
+            "row gap {ROW_GAP} exceeds the zone gap token"
+        );
+        for (name, viewport) in shipped_viewports() {
+            let floor = menu_lane_floor(viewport);
+            assert!(floor > 0.0 && floor.is_finite(), "{name}: floor {floor}");
+            let density = type_density(viewport);
+            assert!(
+                (0.75..=3.5).contains(&density),
+                "{name}: density {density} outside the token clamp"
+            );
+            // The token size a lane asks for never exceeds its own height.
+            let rect = Rect::new(0.0, 0.0, 200.0, floor);
+            let px = token_px_for_height(rect, viewport);
+            assert!(px * 1.25 <= rect.h + 0.5, "{name}: {px}px line in {floor}px");
+        }
+        // A short label fits; a long one is reported, never silently clipped.
+        let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+        let viewport = Rect::new(0.0, 0.0, 2414.0, 1080.0);
+        let px = token_px_for_height(rect, viewport);
+        assert!(label_fits("QUIT", rect, px));
+        assert!(!label_fits("AN EXTREMELY LONG MENU ENTRY LABEL", rect, px));
+        let short = ellipsise_to_fit("AN EXTREMELY LONG MENU ENTRY LABEL", rect, px);
+        assert!(short.ends_with('…'), "ellipsis marker: {short:?}");
+        assert!(label_fits(&short, rect, px), "ellipsised text fits: {short:?}");
+    }
+
+    #[test]
+    fn hudskin_dialogs_compact_menu_paginates_instead_of_clipping() {
+        let skin = measured_skin();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
+        let scale = menu_scale(&skin, viewport);
+        let mut batch = UiBatch::default();
+        let first = draw_menu(&skin, &mut batch, viewport, scale, MENU_LABELS.len(), None)
+            .expect("menu layout");
+        assert!(
+            first.page_count >= 2,
+            "six entries cannot keep the token floor on 320x240 in one page: {first:?}"
+        );
+        assert!(first.per_page >= 1);
+        assert!(first.buttons[0].h >= menu_lane_floor(viewport) - 0.5);
+        assert_eq!(first.per_page * first.page_count >= MENU_LABELS.len(), true);
     }
 }

@@ -609,6 +609,7 @@ fn main_gallery() {
                             scale: 1.0,
                             yaw_offset: 0.0,
                             fallback: false,
+                            generic: false,
                         });
                         built.push((index, path.clone(), meshes, missing, model.model.clone(), face, corpse));
                     }

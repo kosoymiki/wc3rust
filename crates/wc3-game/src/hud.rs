@@ -22,6 +22,14 @@ impl Rect {
         Self { x, y, w, h }
     }
 
+    /// `true` when the rect has no area, i.e. the layout did not compose it.
+    /// Used by the HUD QA/mock dumps (`hud_mock`, `hud_layout`) to skip
+    /// sections that are absent for the current mode instead of drawing an
+    /// empty frame.
+    pub fn is_empty(&self) -> bool {
+        self.w <= 0.0 || self.h <= 0.0
+    }
+
     pub fn contains(&self, point: glam::Vec2) -> bool {
         point.x >= self.x
             && point.y >= self.y
@@ -1628,22 +1636,48 @@ pub fn fit_text_plate(
     max_lines: usize,
 ) -> PlateText {
     let floor = (min_px.max(1.0) / 30.0).max(0.01);
-    let start = if scale.is_finite() { scale.max(floor) } else { floor };
+    // Single-line labels (tabs, rows, names) may step below the prose floor by
+    // 28% before a word is ever cut; at 24 px that is still ~17 px caps on a
+    // 3x display. Prose keeps the strict floor and ellipsizes its last row.
+    let max_lines = max_lines.max(1);
+    let hard_floor = if max_lines == 1 {
+        (floor * 0.72).max(0.40)
+    } else {
+        floor
+    };
+    let start = if scale.is_finite() {
+        scale.max(floor)
+    } else {
+        floor
+    };
     let width = inner.w.max(1.0);
     let height = inner.h.max(1.0);
-    let max_lines = max_lines.max(1);
     let mut candidate = start;
     loop {
-        let lines = font.wrap(text, candidate, width);
+        let lines = if max_lines == 1 {
+            // Never split a label mid-word: a single line either fits whole or
+            // the type steps down until it does.
+            vec![text.to_string()]
+        } else {
+            font.wrap(text, candidate, width)
+        };
         let line_h = font.line_box(candidate);
         let rows_by_height = (height / line_h.max(0.01)).floor().max(1.0) as usize;
         let allowed = max_lines.min(rows_by_height).max(1);
-        if lines.len() <= allowed || candidate <= floor + 1e-4 {
+        let too_wide = if max_lines == 1 {
+            font.measure(text, candidate) > width + 0.01
+        } else {
+            lines.len() > allowed
+        };
+        if !too_wide || candidate <= hard_floor + 1e-4 {
             let mut out = lines;
-            let clipped = out.len() > allowed;
+            let clipped = out.len() > allowed
+                || (max_lines == 1 && font.measure(text, candidate) > width + 0.01);
             if clipped {
                 out.truncate(allowed);
                 if let Some(last) = out.last_mut() {
+                    // Last resort only: the tuned labels fit at the hard floor,
+                    // so a menu/plate label is never cut in practice.
                     *last = ellipsize(font, last, candidate, width);
                 }
             }
@@ -1663,7 +1697,7 @@ pub fn fit_text_plate(
                 width: widest,
             };
         }
-        candidate = (candidate - 0.04).max(floor);
+        candidate = (candidate - 0.04).max(hard_floor);
     }
 }
 
@@ -1877,6 +1911,9 @@ impl Font {
         for path in [
             "/data/data/org.wc3rust.p0/files/War3.mpq",
             "/storage/emulated/0/Android/data/org.wc3rust.p0/files/War3.mpq",
+            // Pre-rename install: a device that still carries the old data dir
+            // must keep its fonts while the package id is migrated.
+            "/data/data/org.herofolends.p0/files/War3.mpq",
             "/storage/emulated/0/Download/War3.mpq",
             "/storage/emulated/0/Download/Warcraft III/War3.mpq",
         ] {
@@ -2205,6 +2242,8 @@ pub enum TextAlign {
 // The reusable modern mobile HUD lives in its own file but is declared here so
 // game.rs keeps importing `hud::{...}` without touching lib.rs (read-only in
 // this workstream).
+#[path = "hud/debug.rs"]
+pub mod debug;
 #[path = "mobile_hud.rs"]
 pub mod mobile_hud;
 
@@ -2319,9 +2358,19 @@ pub struct HudLayout {
 }
 
 impl HudLayout {
-    pub fn new(viewport: glam::Vec2) -> Self {
+    /// Empty compatibility view for a viewport.
+    ///
+    /// This struct carries no geometry and **no scale formula**: the one
+    /// geometry authority is `mobile_hud::MobileHudLayout` (`HudLayout::compute`
+    /// in `mobile_hud`), and `Game` copies its rects plus the live
+    /// `density_scale` into this view after every rebuild. `viewport` is kept
+    /// for call-site compatibility; `scale` stays at the neutral `1.0` until the
+    /// live layout writes it (WC3-GAME-003: the deleted
+    /// `min(x, y) / 1080` formula was a third scale authority, and a caller
+    /// could draw a console band 3.2x off with no type error).
+    pub fn new(_viewport: glam::Vec2) -> Self {
         Self {
-            scale: (viewport.x.min(viewport.y) / 1080.0).clamp(0.62, 2.0),
+            scale: 1.0,
             ..Self::default()
         }
     }

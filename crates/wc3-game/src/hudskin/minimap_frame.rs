@@ -136,7 +136,7 @@ pub fn camera_rect(slot: Rect, camera: [f32; 4]) -> Rect {
 /// insets, floored at [`BORDER_FLOOR_PX`] and capped at
 /// [`MAX_BORDER_FRACTION`] of `side` so the frame cannot outgrow the console
 /// slot the layout gives it.
-fn borders(skin: &Skin, side: f32) -> [f32; 4] {
+pub(crate) fn borders(skin: &Skin, side: f32) -> [f32; 4] {
     let Some(index) = Skin::role_index(ROLE) else {
         return [BORDER_FLOOR_PX; 4];
     };
@@ -368,9 +368,12 @@ mod tests {
     #[test]
     fn ui_minimap_square_at_2414x1080_clears_the_console_and_the_card() {
         let hud = MobileHud::new();
-        let view = HudView::new(Vec2::new(2414.0, 1080.0));
-        let layout = hud.layout(&view);
+        // The layout reserves the ornament only when the skin is mounted (the
+        // production call site always mounts it); the draw below uses the same
+        // skin, so this is the real call-site geometry, not a bare fixture.
         let skin = sample_skin();
+        let view = HudView::new(Vec2::new(2414.0, 1080.0)).hud_skin(Some(&skin));
+        let layout = hud.layout(&view);
         let mut batch = UiBatch::default();
         let origin = Vec2::new(layout.minimap.x, layout.minimap.y);
         let parts = draw(
@@ -415,9 +418,9 @@ mod tests {
     #[test]
     fn ui_minimap_square_at_1080x2414_clears_the_console_and_the_card() {
         let hud = MobileHud::new();
-        let view = HudView::new(Vec2::new(1080.0, 2414.0));
-        let layout = hud.layout(&view);
         let skin = sample_skin();
+        let view = HudView::new(Vec2::new(1080.0, 2414.0)).hud_skin(Some(&skin));
+        let layout = hud.layout(&view);
         let mut batch = UiBatch::default();
         let origin = Vec2::new(layout.minimap.x, layout.minimap.y);
         let parts = draw(

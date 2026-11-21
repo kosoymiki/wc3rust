@@ -593,7 +593,12 @@ mod tests {
     #[test]
     fn draw_reports_parts_for_the_retail_layout() {
         let hud = MobileHud::new();
-        let view = HudView::new(glam::Vec2::new(2414.0, 1080.0));
+        // 2414x1080 is a phone framebuffer, not a 2414 dp desktop: the platform
+        // reports ~3 px/dp. The fixture's old default density (1.0) produced a
+        // 2414 dp-wide layout with the wide console capped at 220 px, so the
+        // portrait box was 80 px — not the shipped phone geometry this test is
+        // named for.
+        let view = HudView::new(glam::Vec2::new(2414.0, 1080.0)).density(3.0);
         let layout = hud.layout(&view);
         let skin = sample_skin();
         let mut batch = UiBatch::default();

@@ -32,6 +32,14 @@
 #[path = "text.rs"]
 pub mod text;
 
+/// Pure UI subsystem (hud.md §6): identity, geometry, constraints, the layout
+/// solver, the design tokens and the HUD composition. Nothing here touches the
+/// GPU, the game state or the clock.
+pub mod core;
+pub mod layout;
+pub mod theme;
+pub mod widgets;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 

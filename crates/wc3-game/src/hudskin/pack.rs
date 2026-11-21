@@ -39,9 +39,10 @@ pub const PACK_ENV: &str = "WC3RUST_HUD_PACK";
 /// Directory name used by the operator's drop and the repo's analysis tree.
 pub const PACK_DIR_NAME: &str = "wc3rust-hud-final";
 
-/// One manifest asset (one PNG = one texture).
+/// One manifest asset (one PNG = one texture, or one rect of a v2 atlas page).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HudAsset {
+    /// Manifest `id` (v2) / `name` (v1).
     pub name: String,
     pub file: String,
     pub w: u32,
@@ -49,7 +50,23 @@ pub struct HudAsset {
     /// Manifest 9-slice insets, source pixels `[left, top, right, bottom]`.
     pub insets: [f32; 4],
     pub states: Vec<String>,
-    pub atlas: String,
+    /// v2 atlas page id; `None` for a standalone PNG.
+    pub atlas: Option<String>,
+    /// v1 category string (`ui_frames`, `icons`, ...); not a page.
+    pub atlas_category: Option<String>,
+    /// v2 atlas rect `[x, y, w, h]` in page pixels.
+    pub atlas_rect: Option<[u32; 4]>,
+    /// UV denominator: the page size for an atlased asset, the PNG size
+    /// otherwise. `w`/`h` always stay the authored source size.
+    pub uv_size: [f32; 2],
+    /// Manifest `kind` (`frame`, `button`, `icon`, ...).
+    pub kind: String,
+    pub alpha: bool,
+    pub colorspace: String,
+    pub scale: String,
+    /// `true` when the pack cannot render without this asset (default).
+    pub critical: bool,
+    pub sha256: Option<String>,
     /// Manifest `mips` flag: panel slices are `false` (never mipmapped).
     pub mips: bool,
     /// Index into `Assets::textures`.
@@ -57,12 +74,31 @@ pub struct HudAsset {
 }
 
 impl HudAsset {
+    /// UV denominator (page size for an atlas asset, source size otherwise).
     pub fn size(&self) -> [f32; 2] {
+        self.uv_size
+    }
+
+    /// Source size of the element in pixels.
+    pub fn source_size(&self) -> [f32; 2] {
         [self.w as f32, self.h as f32]
     }
 
+    /// Source pixel rect: the atlas rect when packed, else the whole PNG.
     pub fn rect(&self) -> [f32; 4] {
-        [0.0, 0.0, self.w as f32, self.h as f32]
+        match self.atlas_rect {
+            Some([x, y, w, h]) => [x as f32, y as f32, w as f32, h as f32],
+            None => [0.0, 0.0, self.w as f32, self.h as f32],
+        }
+    }
+
+    /// Normalised UV rect of this element inside its texture.
+    pub fn uv(&self) -> [f32; 4] {
+        let [x, y, w, h] = self.rect();
+        let [width, height] = self.size();
+        let width = width.max(1.0);
+        let height = height.max(1.0);
+        [x / width, y / height, (x + w) / width, (y + h) / height]
     }
 
     /// A 9-slice needs `l + r < w` and `t + b < h`; anything else has no
@@ -86,7 +122,7 @@ impl HudAsset {
             || name.starts_with("tooltip_arrow_")
             || name.starts_with("upkeep_strip_")
             || name.starts_with("minimap_header_")
-            || (self.atlas == "ui_frames"
+            || (self.atlas_category.as_deref() == Some("ui_frames")
                 && (self.w < 40 || self.h < 40)
                 && !name.starts_with("topbar_plate_"))
     }
@@ -109,6 +145,8 @@ pub struct AtlasCell {
     pub id: String,
     pub texture: usize,
     pub rect: [f32; 4],
+    /// Page size used as the UV denominator.
+    pub page: [f32; 2],
 }
 
 /// Loader error. `Display` starts with `HUD_PACK ` so a device log line is
@@ -117,9 +155,22 @@ pub struct AtlasCell {
 pub enum PackError {
     Io { path: String, error: String },
     Manifest(String),
+    /// A `format_version` the loader does not implement.
+    UnsupportedVersion { found: String, supported: String },
+    /// A strict §9.3/§9.4 rule failed; the pack is refused, not clamped.
+    Invalid {
+        element: String,
+        rule: String,
+        detail: String,
+    },
     Missing { file: String },
     Size { file: String, manifest: [u32; 2], actual: [u32; 2] },
     Texture { file: String, error: String },
+    Atlas { atlas: String, file: String, error: String },
+    /// The pack builder refused its own output or its input.
+    Build(String),
+    /// A file listed in `SHA256SUMS.txt` does not hash to its recorded value.
+    Hash { file: String, expected: String, actual: String },
 }
 
 impl std::fmt::Display for PackError {
@@ -127,6 +178,18 @@ impl std::fmt::Display for PackError {
         match self {
             Self::Io { path, error } => write!(f, "HUD_PACK io={path} error={error}"),
             Self::Manifest(error) => write!(f, "HUD_PACK manifest_error={error}"),
+            Self::UnsupportedVersion { found, supported } => write!(
+                f,
+                "HUD_PACK manifest_version={found} supported={supported}"
+            ),
+            Self::Invalid {
+                element,
+                rule,
+                detail,
+            } => write!(
+                f,
+                "HUD_PACK invalid element={element} rule={rule} detail={detail}"
+            ),
             Self::Missing { file } => write!(f, "HUD_PACK missing={file}"),
             Self::Size {
                 file,
@@ -138,17 +201,43 @@ impl std::fmt::Display for PackError {
                 manifest[0], manifest[1], actual[0], actual[1]
             ),
             Self::Texture { file, error } => write!(f, "HUD_PACK texture={file} error={error}"),
+            Self::Atlas { atlas, file, error } => {
+                write!(f, "HUD_PACK atlas={atlas} file={file} error={error}")
+            }
+            Self::Build(error) => write!(f, "HUD_PACK build_error={error}"),
+            Self::Hash {
+                file,
+                expected,
+                actual,
+            } => write!(f, "HUD_PACK hash={file} expected={expected} actual={actual}"),
         }
     }
 }
 
 impl std::error::Error for PackError {}
 
+/// One loaded atlas page (v2 `atlases[]`), kept for diagnostics and the
+/// `HUD_PACK_VALIDATE` line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtlasInfo {
+    pub id: String,
+    pub file: String,
+    pub w: u32,
+    pub h: u32,
+    pub padding: u32,
+    pub gutter: u32,
+    pub entries: usize,
+    pub texture: usize,
+}
+
 /// The loaded pack. Holds metadata and `Assets::textures` indices; the pixels
 /// stay in the asset texture list (a clone of the pack is cheap).
 #[derive(Clone, Debug)]
 pub struct HudPack {
     pub root: PathBuf,
+    /// Manifest format that was loaded (1 = shipped final pack, 2 = `assets/hud`).
+    pub format_version: u32,
+    pub theme: String,
     pub design_height: f32,
     pub reference_landscape: [u32; 2],
     pub reference_portrait: [u32; 2],
@@ -164,18 +253,28 @@ pub struct HudPack {
     pub atlas_columns: u32,
     pub atlas_rows: u32,
     pub atlas_cell_px: f32,
+    /// v2 atlas pages that were loaded (empty for the v1 final pack).
+    pub atlases: Vec<AtlasInfo>,
     pub assets: Vec<HudAsset>,
     by_name: HashMap<String, usize>,
     cells: HashMap<String, AtlasCell>,
+    /// Last strict validation report (errors empty on a loaded pack).
+    pub validation: super::manifest::ValidationReport,
     pub atlas_texture: Option<usize>,
     pub font_files: Vec<String>,
     /// `Assets::textures` indices of the primary / serif / sans / numeric
     /// glyph atlases (`HudFonts::bind`). Primary is the operator's Nimrod MT
     /// read from the installed archive (or the pack serif when absent).
     pub font_textures: [usize; 4],
-    /// Flat column of the topbar plate (U in 0..1), measured from the asset at
-    /// load. The bar is extended by stretching this one-pixel column, so the
-    /// authored spear/diamond ornaments are never stretched.
+    /// Files verified against `SHA256SUMS.txt` at load (0 when the pack ships
+    /// no sums file; the load log then says `hash=unverified`).
+    pub hash_files: usize,
+    /// Bytes those files occupy.
+    pub hashed_bytes: u64,
+    /// Flat column of the topbar plate as a fraction of the element (0..1),
+    /// measured from the art at load. The bar is extended by stretching this
+    /// one-pixel column, so the authored spear/diamond ornaments are never
+    /// stretched. [`HudAsset::uv`] maps it into the page.
     pub topbar_flat_u: f32,
     /// Pack-authored stone colour (average of the console mid art). Fills the
     /// console band before the section 9-slices so a transparent edge never
@@ -188,16 +287,23 @@ pub struct HudPack {
 /// Directories searched for the pack, most specific first.
 ///
 /// These are data locations (the app's private files dir, the operator's
-/// Download drop, the repo for headless proofs), never art constants.
+/// Download drop, the repo for headless proofs), never art constants. Both app
+/// ids that the device has shipped are listed because the current install id is
+/// `org.herofolends.p0` while an older build used `org.wc3rust.p0`; a renamed
+/// package still finds its pack through `WC3RUST_HUD_PACK` or the install root
+/// next to `War3.mpq` ([`find_installed_near`]).
 pub fn pack_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = std::env::var_os(PACK_ENV) {
         dirs.push(PathBuf::from(dir));
     }
-    dirs.push(PathBuf::from("/data/data/org.wc3rust.p0/files/hud_pack"));
-    dirs.push(PathBuf::from(format!(
-        "/data/data/org.wc3rust.p0/files/{PACK_DIR_NAME}"
-    )));
+    for root in install_roots() {
+        dirs.push(root.join("hud_pack"));
+        dirs.push(root.join(PACK_DIR_NAME));
+    }
+    dirs.push(PathBuf::from(
+        "/storage/emulated/0/Android/data/org.herofolends.p0/files/hud_pack",
+    ));
     dirs.push(PathBuf::from(
         "/storage/emulated/0/Android/data/org.wc3rust.p0/files/hud_pack",
     ));
@@ -216,6 +322,17 @@ pub fn pack_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Install roots that can hold `<root>/hud_pack`, most specific first.
+fn install_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(dir) = std::env::var_os("H2_WC3_INSTALL") {
+        roots.push(PathBuf::from(dir));
+    }
+    roots.push(PathBuf::from("/data/data/org.herofolends.p0/files"));
+    roots.push(PathBuf::from("/data/data/org.wc3rust.p0/files"));
+    roots
+}
+
 /// First directory that actually carries a `manifest.json`.
 pub fn find_installed() -> Option<PathBuf> {
     pack_search_dirs()
@@ -223,11 +340,361 @@ pub fn find_installed() -> Option<PathBuf> {
         .find(|dir| dir.join("manifest.json").is_file())
 }
 
+/// Pack next to a known install root (`<root>/hud_pack`, `<root>/wc3rust-hud-final`),
+/// then the global search. The install root is authoritative when the assets
+/// were opened from it, so a renamed package still binds its own pack.
+pub fn find_installed_near(install_root: &Path) -> Option<PathBuf> {
+    for dir in [install_root.join("hud_pack"), install_root.join(PACK_DIR_NAME)] {
+        if dir.join("manifest.json").is_file() {
+            return Some(dir);
+        }
+    }
+    find_installed()
+}
+
+/// One file whose bytes do not match `SHA256SUMS.txt`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackHashMismatch {
+    pub file: String,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// Outcome of the packaged-asset hash check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackReport {
+    /// Manifest asset declarations.
+    pub assets: usize,
+    /// Manifest font files.
+    pub fonts: usize,
+    /// Files listed in `SHA256SUMS.txt` and re-hashed.
+    pub files: usize,
+    /// Total bytes hashed.
+    pub hashed_bytes: u64,
+    /// `false` when the pack ships no `SHA256SUMS.txt`.
+    pub sums_present: bool,
+    /// Listed files whose bytes do not hash to the recorded value (or are gone).
+    pub mismatches: Vec<PackHashMismatch>,
+    /// Count of mismatches.
+    pub mismatched: usize,
+}
+
+/// Manifest files the HUD draws: asset PNGs, atlas sheets and font files.
+/// These are the mandatory members of `SHA256SUMS.txt`; a mismatch there is
+/// fatal. Everything else the sums list (README, docs) is reported only.
+fn declared_pack_files(manifest: &serde_json::Value) -> std::collections::HashSet<String> {
+    let mut files = std::collections::HashSet::new();
+    if let Some(assets) = manifest["assets"].as_array() {
+        for asset in assets {
+            if let Some(file) = asset["file"].as_str() {
+                files.insert(normalize_pack_file(file));
+            }
+        }
+    }
+    if let Some(atlases) = manifest["atlas"].as_object() {
+        for atlas in atlases.values() {
+            if let Some(file) = atlas["file"].as_str() {
+                files.insert(normalize_pack_file(file));
+            }
+        }
+    }
+    // v2 named pages: object map or array.
+    match &manifest["atlases"] {
+        serde_json::Value::Object(atlases) => {
+            for atlas in atlases.values() {
+                if let Some(file) = atlas["file"].as_str() {
+                    files.insert(normalize_pack_file(file));
+                }
+            }
+        }
+        serde_json::Value::Array(atlases) => {
+            for atlas in atlases {
+                if let Some(file) = atlas["file"].as_str() {
+                    files.insert(normalize_pack_file(file));
+                }
+            }
+        }
+        _ => {}
+    }
+    // v2 fonts: object map or array; only bundled files are mandatory.
+    let mut add_font = |font: &serde_json::Value| {
+        if let Some(file) = font["file"].as_str()
+            && !file.is_empty()
+        {
+            files.insert(normalize_pack_file(file));
+            files.insert(normalize_pack_file(&format!("fonts/{file}")));
+        }
+    };
+    match &manifest["fonts"] {
+        serde_json::Value::Object(fonts) => {
+            for font in fonts.values() {
+                add_font(font);
+            }
+        }
+        serde_json::Value::Array(fonts) => {
+            for font in fonts {
+                add_font(font);
+            }
+        }
+        _ => {}
+    }
+    if let Some(fonts) = manifest["font_files"].as_array() {
+        for font in fonts.iter().filter_map(|font| font.as_str()) {
+            files.insert(normalize_pack_file(&format!("fonts/{font}")));
+        }
+    }
+    files
+}
+
+/// One spelling for pack-relative paths (`\`, `./`, leading `/` all removed).
+fn normalize_pack_file(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+/// Verify every file the pack ships against `SHA256SUMS.txt`.
+///
+/// `SHA256SUMS.txt` is the packaged manifest of exact bytes: one
+/// `<sha256>  <relative path>` line per file (the standard `sha256sum` format).
+/// A pack without the file is reported (`sums_present=false`), not failed; a
+/// pack that carries it must match byte for byte, so edited or truncated art is
+/// a loud `HUD_PACK hash=` error instead of a silently different HUD.
+pub fn verify_pack(root: &Path) -> Result<PackReport, PackError> {
+    let manifest_path = root.join("manifest.json");
+    let text = std::fs::read_to_string(&manifest_path).map_err(|error| PackError::Io {
+        path: manifest_path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| PackError::Manifest(error.to_string()))?;
+    let mut report = PackReport {
+        assets: value["assets"].as_array().map(Vec::len).unwrap_or(0),
+        fonts: value["font_files"].as_array().map(Vec::len).unwrap_or(0),
+        ..PackReport::default()
+    };
+    let sums_path = root.join("SHA256SUMS.txt");
+    if !sums_path.is_file() {
+        return Ok(report);
+    }
+    let sums = std::fs::read_to_string(&sums_path).map_err(|error| PackError::Io {
+        path: sums_path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    report.sums_present = true;
+    for line in sums.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // `sha256sum` separates the digest and the name with two spaces (and a
+        // leading `*` before the name in binary mode).
+        let Some((expected, name)) = line.split_once("  ") else {
+            return Err(PackError::Manifest(format!(
+                "SHA256SUMS.txt line is not `<sha256>  <path>`: {line:?}"
+            )));
+        };
+        let name = name.trim_start_matches('*');
+        let expected = expected.trim().to_ascii_lowercase();
+        if expected.len() != 64 || !expected.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(PackError::Manifest(format!(
+                "SHA256SUMS.txt digest is not 64 hex chars: {line:?}"
+            )));
+        }
+        let path = root.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                report.mismatches.push(PackHashMismatch {
+                    file: name.to_string(),
+                    expected: expected.clone(),
+                    actual: "missing".to_string(),
+                });
+                report.mismatched += 1;
+                continue;
+            }
+        };
+        let actual = crate::map_registry::sha256_hex(&bytes);
+        report.files += 1;
+        report.hashed_bytes += bytes.len() as u64;
+        if actual != expected {
+            report.mismatches.push(PackHashMismatch {
+                file: name.to_string(),
+                expected,
+                actual,
+            });
+            report.mismatched += 1;
+        }
+    }
+    Ok(report)
+}
+
+/// Read one atlas page, verify its declared bytes and register the texture.
+fn load_atlas_page(
+    root: &Path,
+    decl: &super::manifest::AtlasDecl,
+    textures: &mut Vec<TextureImage>,
+    file_textures: &mut HashMap<String, usize>,
+) -> Result<(usize, u32, u32), PackError> {
+    if decl.w == 0 || decl.h == 0 {
+        return Err(PackError::Invalid {
+            element: decl.id.clone(),
+            rule: "atlas-size-zero".to_string(),
+            detail: format!("page {}x{}", decl.w, decl.h),
+        });
+    }
+    let path = root.join(&decl.file);
+    if !path.is_file() {
+        return Err(PackError::Missing {
+            file: decl.file.clone(),
+        });
+    }
+    let bytes = std::fs::read(&path).map_err(|error| PackError::Io {
+        path: path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    if let Some(expected) = &decl.sha256 {
+        let actual = crate::map_registry::sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(PackError::Hash {
+                file: decl.file.clone(),
+                expected: expected.clone(),
+                actual,
+            });
+        }
+    }
+    if let Some(texture) = file_textures.get(&decl.file) {
+        let (w, h) = png_dimensions(&bytes).ok_or_else(|| PackError::Atlas {
+            atlas: decl.id.clone(),
+            file: decl.file.clone(),
+            error: "not a PNG (missing IHDR)".to_string(),
+        })?;
+        if w != decl.w || h != decl.h {
+            return Err(PackError::Size {
+                file: decl.file.clone(),
+                manifest: [decl.w, decl.h],
+                actual: [w, h],
+            });
+        }
+        return Ok((*texture, w, h));
+    }
+    let image = crate::ui_atlas::decode_png(&bytes).map_err(|error| PackError::Atlas {
+        atlas: decl.id.clone(),
+        file: decl.file.clone(),
+        error: error.to_string(),
+    })?;
+    if image.width != decl.w || image.height != decl.h {
+        return Err(PackError::Size {
+            file: decl.file.clone(),
+            manifest: [decl.w, decl.h],
+            actual: [image.width, image.height],
+        });
+    }
+    let texture = textures.len();
+    textures.push(image.to_texture());
+    file_textures.insert(decl.file.clone(), texture);
+    Ok((texture, decl.w, decl.h))
+}
+
+fn atlas_entry_rect(
+    manifest: &super::manifest::Manifest,
+    page_id: &str,
+    asset_id: &str,
+) -> Option<[u32; 4]> {
+    manifest
+        .atlas(page_id)
+        .or_else(|| {
+            manifest
+                .command_atlas
+                .as_ref()
+                .filter(|atlas| atlas.id == page_id)
+        })
+        .and_then(|page| page.entries.iter().find(|entry| entry.id == asset_id))
+        .map(|entry| [entry.x, entry.y, entry.w, entry.h])
+}
+
+/// PNG IHDR width/height without decoding the image data.
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((width, height))
+}
+
+/// Lowest-variance vertical column of an element (the flat band of the topbar
+/// plate / console mid). Returns `(fraction within the element, mean colour)`.
+fn flat_column(asset: &HudAsset, texture: &TextureImage) -> Option<(f32, [f32; 3])> {
+    let [ax, ay, aw, ah] = asset.rect();
+    let (aw, ah) = (aw as u32, ah as u32);
+    if aw <= 8 || ah <= 4 {
+        return None;
+    }
+    let texture_width = texture.width;
+    let texture_height = texture.height;
+    let ax = ax as u32;
+    let ay = ay as u32;
+    let mut best = (f32::MAX, aw / 2, [0.0f32; 3]);
+    for x in (aw / 5)..(aw * 4 / 5) {
+        let mut sum = [0.0f32; 3];
+        let mut count = 0.0f32;
+        for y in 2..ah.saturating_sub(2) {
+            let px = ax + x;
+            let py = ay + y;
+            if px >= texture_width || py >= texture_height {
+                continue;
+            }
+            let index = ((py * texture_width + px) * 4) as usize;
+            let Some(pixel) = texture.rgba.get(index..index + 4) else {
+                continue;
+            };
+            sum[0] += pixel[0] as f32 / 255.0;
+            sum[1] += pixel[1] as f32 / 255.0;
+            sum[2] += pixel[2] as f32 / 255.0;
+            count += 1.0;
+        }
+        if count <= 0.0 {
+            continue;
+        }
+        let mean = [sum[0] / count, sum[1] / count, sum[2] / count];
+        let mut variance = 0.0f32;
+        for y in 2..ah.saturating_sub(2) {
+            let px = ax + x;
+            let py = ay + y;
+            if px >= texture_width || py >= texture_height {
+                continue;
+            }
+            let index = ((py * texture_width + px) * 4) as usize;
+            let Some(pixel) = texture.rgba.get(index..index + 4) else {
+                continue;
+            };
+            let luminance = 0.2126 * pixel[0] as f32 / 255.0
+                + 0.7152 * pixel[1] as f32 / 255.0
+                + 0.0722 * pixel[2] as f32 / 255.0;
+            let mean_luminance = 0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2];
+            variance += (luminance - mean_luminance) * (luminance - mean_luminance);
+        }
+        if variance < best.0 {
+            best = (variance, x, mean);
+        }
+    }
+    if !best.0.is_finite() {
+        return None;
+    }
+    Some(((best.1 as f32 + 0.5) / aw as f32, best.2))
+}
+
 impl HudPack {
-    /// Load the manifest and every PNG listed in it into `textures`.
+    /// Load a v1 or v2 manifest, validate every declaration, then read the art.
     ///
-    /// Existing textures are untouched: the pack appends and records the
-    /// returned indices.
+    /// The order is deliberate: format -> strict §9.3/§9.4 validation -> hashes
+    /// -> textures. An unsupported version, duplicate id, crossing inset set,
+    /// atlas UV outside its page, under-padded atlas entry or mipmapped
+    /// nine-slice is refused with `HUD_PACK invalid element=... rule=...`;
+    /// there is no silent clamp and the HUD never substitutes different art.
     pub fn load(root: &Path, textures: &mut Vec<TextureImage>) -> Result<Self, PackError> {
         let manifest_path = root.join("manifest.json");
         let text = std::fs::read_to_string(&manifest_path).map_err(|error| PackError::Io {
@@ -236,120 +703,203 @@ impl HudPack {
         })?;
         let value: serde_json::Value = serde_json::from_str(&text)
             .map_err(|error| PackError::Manifest(error.to_string()))?;
-
-        let design_height = number(&value, &["design_height"])?;
-        let reference = &value["reference_resolution"];
-        let reference_landscape = pair_u32(reference, &["landscape"])?;
-        let reference_portrait = pair_u32(reference, &["portrait"])?;
-        let safe = &value["safe_area_1080p"];
-        let safe_landscape = quad(safe, &["landscape"])?;
-        let safe_portrait = quad(safe, &["portrait"])?;
-
-        let card = &value["command_card"];
-        let card_columns = integer(card, &["columns"])? as usize;
-        let card_rows = integer(card, &["rows"])? as usize;
-        let card_cell = pair_u32(card, &["cell"])?[0] as f32;
-        let card_gap = number(card, &["gap"])?;
-
-        let groups = &value["control_groups"];
-        let group_count = integer(groups, &["count"])? as usize;
-        let group_cell = pair_u32(groups, &["cell"])?[0] as f32;
-
-        let atlas = &value["atlas"]["commandbuttons"];
-        let atlas_columns = integer(atlas, &["columns"])? as u32;
-        let atlas_rows = integer(atlas, &["rows"])? as u32;
-        let atlas_cell_px = pair_u32(atlas, &["cell"])?[0] as f32;
-
-        let font_files: Vec<String> = value["font_files"]
-            .as_array()
-            .map(|list| {
-                list.iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if font_files.is_empty() {
-            return Err(PackError::Manifest("font_files is empty".to_string()));
+        let manifest = super::manifest::parse(root, &value)?;
+        let validation = super::manifest::validate(&manifest);
+        crate::dev_log!("{}", validation.summary());
+        for issue in &validation.errors {
+            crate::dev_log!("HUD_PACK_VALIDATE ERROR {issue}");
         }
-        for font in &font_files {
-            let path = root.join("fonts").join(font);
-            if !path.is_file() {
+        for issue in &validation.warnings {
+            crate::dev_log!("HUD_PACK_VALIDATE WARN {issue}");
+        }
+        if let Some(first) = validation.first_error() {
+            return Err(PackError::Invalid {
+                element: first.element.clone(),
+                rule: first.rule.to_string(),
+                detail: first.detail.clone(),
+            });
+        }
+
+        // The packaged bytes are checked before any art is registered: a
+        // truncated or edited asset is a loud `HUD_PACK hash=` error, never a
+        // HUD that silently draws different pixels than the manifest describes.
+        let hashes = verify_pack(root)?;
+        if hashes.mismatched > 0 {
+            let declared = declared_pack_files(&value);
+            for mismatch in &hashes.mismatches {
+                crate::dev_log!(
+                    "HUD_PACK hash_mismatch={} expected={} actual={}",
+                    mismatch.file,
+                    mismatch.expected,
+                    mismatch.actual
+                );
+            }
+            if let Some(first) = hashes
+                .mismatches
+                .iter()
+                .find(|mismatch| declared.contains(&normalize_pack_file(&mismatch.file)))
+            {
+                return Err(PackError::Hash {
+                    file: first.file.clone(),
+                    expected: first.expected.clone(),
+                    actual: first.actual.clone(),
+                });
+            }
+        }
+        if !hashes.sums_present {
+            crate::dev_log!("HUD_PACK hash=unverified root={}", root.display());
+        }
+
+        // Bundled font files must be readable before the pack binds.
+        for file in &manifest.font_files {
+            let direct = root.join(file);
+            let nested = root.join("fonts").join(file);
+            if !direct.is_file() && !nested.is_file() {
                 return Err(PackError::Missing {
-                    file: format!("fonts/{font}"),
+                    file: format!("fonts/{file}"),
                 });
             }
         }
 
-        let declarations = value["assets"]
-            .as_array()
-            .ok_or_else(|| PackError::Manifest("assets is not an array".to_string()))?;
-        if declarations.is_empty() {
-            return Err(PackError::Manifest("assets is empty".to_string()));
+        // Every atlas page is decoded once, before the assets that reference it.
+        let mut atlases = Vec::new();
+        let mut atlas_pages: HashMap<String, (usize, u32, u32)> = HashMap::new();
+        let mut file_textures: HashMap<String, usize> = HashMap::new();
+        for decl in manifest.atlases.iter().chain(manifest.command_atlas.iter()) {
+            let (texture, page_w, page_h) =
+                load_atlas_page(root, decl, textures, &mut file_textures)?;
+            atlases.push(AtlasInfo {
+                id: decl.id.clone(),
+                file: decl.file.clone(),
+                w: page_w,
+                h: page_h,
+                padding: decl.padding,
+                gutter: decl.gutter,
+                entries: decl.entries.len(),
+                texture,
+            });
+            atlas_pages.insert(decl.id.clone(), (texture, page_w, page_h));
         }
+        let command_atlas = manifest.command_atlas.as_ref().and_then(|decl| {
+            atlas_pages
+                .get(&decl.id)
+                .map(|(texture, _, _)| (*texture, decl.id.clone()))
+        });
 
-        let mut assets = Vec::with_capacity(declarations.len());
-        let mut by_name = HashMap::with_capacity(declarations.len());
-        for declaration in declarations {
-            let name = string(declaration, &["name"])?;
-            let file = string(declaration, &["file"])?;
-            let w = integer(declaration, &["w"])? as u32;
-            let h = integer(declaration, &["h"])? as u32;
-            let insets = &declaration["insets"];
-            let insets = [
-                number(insets, &["l"])?,
-                number(insets, &["t"])?,
-                number(insets, &["r"])?,
-                number(insets, &["b"])?,
-            ];
-            let states = declaration["states"]
-                .as_array()
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|item| item.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let atlas = declaration["atlas"].as_str().unwrap_or("standalone").to_string();
-            let mips = declaration["mips"].as_bool().unwrap_or(false);
-
-            let path = root.join(&file);
+        let mut assets = Vec::with_capacity(manifest.assets.len());
+        let mut by_name = HashMap::with_capacity(manifest.assets.len());
+        for declaration in &manifest.assets {
+            let path = root.join(&declaration.file);
             if !path.is_file() {
-                return Err(PackError::Missing { file: file.clone() });
+                return Err(PackError::Missing {
+                    file: declaration.file.clone(),
+                });
             }
             let bytes = std::fs::read(&path).map_err(|error| PackError::Io {
                 path: path.display().to_string(),
                 error: error.to_string(),
             })?;
-            let image = crate::ui_atlas::decode_png(&bytes).map_err(|error| PackError::Texture {
-                file: file.clone(),
-                error: error.to_string(),
-            })?;
-            if image.width != w || image.height != h {
-                return Err(PackError::Size {
-                    file: file.clone(),
-                    manifest: [w, h],
-                    actual: [image.width, image.height],
-                });
+            if let Some(expected) = &declaration.sha256 {
+                let actual = crate::map_registry::sha256_hex(&bytes);
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(PackError::Hash {
+                        file: declaration.file.clone(),
+                        expected: expected.clone(),
+                        actual,
+                    });
+                }
             }
-            let texture = textures.len();
-            textures.push(image.to_texture());
-            by_name.insert(name.clone(), assets.len());
+
+            let (texture, uv_size, atlas_rect) = match &declaration.atlas {
+                Some(page_id) => {
+                    let Some((page_texture, page_w, page_h)) = atlas_pages.get(page_id) else {
+                        return Err(PackError::Invalid {
+                            element: declaration.id.clone(),
+                            rule: "atlas-missing".to_string(),
+                            detail: format!("atlas page {page_id:?} was not loaded"),
+                        });
+                    };
+                    let (w, h) = png_dimensions(&bytes).ok_or_else(|| PackError::Texture {
+                        file: declaration.file.clone(),
+                        error: "not a PNG (missing IHDR)".to_string(),
+                    })?;
+                    if w != declaration.w || h != declaration.h {
+                        return Err(PackError::Size {
+                            file: declaration.file.clone(),
+                            manifest: [declaration.w, declaration.h],
+                            actual: [w, h],
+                        });
+                    }
+                    // The rect is the manifest's, validated against the page.
+                    let rect = declaration
+                        .atlas_rect
+                        .or_else(|| atlas_entry_rect(&manifest, page_id, &declaration.id))
+                        .ok_or_else(|| PackError::Invalid {
+                            element: declaration.id.clone(),
+                            rule: "atlas-entry-missing".to_string(),
+                            detail: format!("no entry in atlas {page_id:?}"),
+                        })?;
+                    (
+                        *page_texture,
+                        [*page_w as f32, *page_h as f32],
+                        Some(rect),
+                    )
+                }
+                None => {
+                    let texture = if let Some(texture) = file_textures.get(&declaration.file) {
+                        *texture
+                    } else {
+                        let image =
+                            crate::ui_atlas::decode_png(&bytes).map_err(|error| PackError::Texture {
+                                file: declaration.file.clone(),
+                                error: error.to_string(),
+                            })?;
+                        if image.width != declaration.w || image.height != declaration.h {
+                            return Err(PackError::Size {
+                                file: declaration.file.clone(),
+                                manifest: [declaration.w, declaration.h],
+                                actual: [image.width, image.height],
+                            });
+                        }
+                        let texture = textures.len();
+                        textures.push(image.to_texture());
+                        file_textures.insert(declaration.file.clone(), texture);
+                        texture
+                    };
+                    (
+                        texture,
+                        [declaration.w as f32, declaration.h as f32],
+                        None,
+                    )
+                }
+            };
+
+            by_name.insert(declaration.id.clone(), assets.len());
             assets.push(HudAsset {
-                name,
-                file,
-                w,
-                h,
-                insets,
-                states,
-                atlas,
-                mips,
+                name: declaration.id.clone(),
+                file: declaration.file.clone(),
+                w: declaration.w,
+                h: declaration.h,
+                insets: declaration.insets,
+                states: declaration.states.clone(),
+                atlas: declaration.atlas.clone(),
+                atlas_category: declaration.atlas_category.clone(),
+                atlas_rect,
+                uv_size,
+                kind: declaration.kind.clone(),
+                alpha: declaration.alpha,
+                colorspace: declaration.colorspace.clone(),
+                scale: declaration.scale.clone(),
+                critical: declaration.critical,
+                sha256: declaration.sha256.clone(),
+                mips: declaration.mips,
                 texture,
             });
         }
 
         // Manifest audit: name every asset whose declared insets cannot be
-        // sliced, once, at load. These are known pack defects (11 rows in the
-        // 2026-11-16 delivery); the draw path renders them as single images.
+        // sliced, once, at load. v1's 11 known rows are drawn as single images;
+        // v2 refuses such a pack in `validate` before this point.
         for asset in &assets {
             if !asset.insets_sliceable() {
                 log_insets_ignored(asset);
@@ -357,44 +907,16 @@ impl HudPack {
         }
 
         // Measure the topbar plate's flat column (min luminance variance over
-        // the middle 60% of the width). Stretching this 1 px column extends the
-        // bar without touching the authored ornaments at ~10%/~90%.
+        // the middle 60% of the element). Stretching this 1 px column extends
+        // the bar without touching the authored ornaments at ~10%/~90%.
         let mut topbar_flat_u = 0.5;
         if let Some(asset) = assets
             .iter()
             .find(|asset| asset.name == "topbar_plate_normal_720x32")
             && let Some(texture) = textures.get(asset.texture)
-            && texture.width > 8
-            && texture.height > 4
+            && let Some((fraction, _)) = flat_column(asset, texture)
         {
-            let width = texture.width;
-            let height = texture.height;
-            let mut best = (f32::MAX, width / 2);
-            for x in (width / 5)..(width * 4 / 5) {
-                let mut mean = 0.0f32;
-                let mut count = 0.0f32;
-                for y in 2..height - 2 {
-                    let index = ((y * width + x) * 4) as usize;
-                    let lum = 0.2126 * texture.rgba[index] as f32
-                        + 0.7152 * texture.rgba[index + 1] as f32
-                        + 0.0722 * texture.rgba[index + 2] as f32;
-                    mean += lum;
-                    count += 1.0;
-                }
-                mean /= count.max(1.0);
-                let mut variance = 0.0f32;
-                for y in 2..height - 2 {
-                    let index = ((y * width + x) * 4) as usize;
-                    let lum = 0.2126 * texture.rgba[index] as f32
-                        + 0.7152 * texture.rgba[index + 1] as f32
-                        + 0.0722 * texture.rgba[index + 2] as f32;
-                    variance += (lum - mean) * (lum - mean);
-                }
-                if variance < best.0 {
-                    best = (variance, x);
-                }
-            }
-            topbar_flat_u = (best.1 as f32 + 0.5) / width as f32;
+            topbar_flat_u = fraction;
         }
         // Pack-authored base colours for the two edge-anchored bars: the
         // centre of the console mid art and the measured flat topbar column.
@@ -403,80 +925,43 @@ impl HudPack {
             .iter()
             .find(|asset| asset.name == "console_left_mid_normal_256x288")
             && let Some(texture) = textures.get(asset.texture)
-            && texture.width > 8
-            && texture.height > 8
+            && let Some((_, color)) = flat_column(asset, texture)
         {
-            let (cx, cy) = (texture.width / 2, texture.height / 2);
-            let mut sum = [0.0f32; 3];
-            let mut count = 0.0f32;
-            for y in (cy.saturating_sub(8))..(cy + 8).min(texture.height) {
-                for x in (cx.saturating_sub(8))..(cx + 8).min(texture.width) {
-                    let index = ((y * texture.width + x) * 4) as usize;
-                    sum[0] += texture.rgba[index] as f32 / 255.0;
-                    sum[1] += texture.rgba[index + 1] as f32 / 255.0;
-                    sum[2] += texture.rgba[index + 2] as f32 / 255.0;
-                    count += 1.0;
-                }
-            }
-            if count > 0.0 {
-                console_base = [sum[0] / count, sum[1] / count, sum[2] / count, 1.0];
-            }
+            console_base = [color[0], color[1], color[2], 1.0];
         }
         let mut topbar_base = [0.08f32, 0.075, 0.065, 1.0];
         if let Some(asset) = assets
             .iter()
             .find(|asset| asset.name == "topbar_plate_normal_720x32")
             && let Some(texture) = textures.get(asset.texture)
-            && texture.width > 0
-            && texture.height > 0
+            && let Some((_, color)) = flat_column(asset, texture)
         {
-            let x = ((topbar_flat_u * texture.width as f32) as u32)
-                .min(texture.width.saturating_sub(1));
-            let mut sum = [0.0f32; 3];
-            let mut count = 0.0f32;
-            for y in 0..texture.height {
-                let index = ((y * texture.width + x) * 4) as usize;
-                sum[0] += texture.rgba[index] as f32 / 255.0;
-                sum[1] += texture.rgba[index + 1] as f32 / 255.0;
-                sum[2] += texture.rgba[index + 2] as f32 / 255.0;
-                count += 1.0;
-            }
-            if count > 0.0 {
-                topbar_base = [sum[0] / count, sum[1] / count, sum[2] / count, 1.0];
-            }
+            topbar_base = [color[0], color[1], color[2], 1.0];
         }
 
-        // The commandbuttons sheet is one of the manifest assets; its cells are
-        // addressed by id (`atlas_cell`) without another texture upload.
-        let atlas_texture = atlas["file"].as_str().and_then(|file| {
-            assets
-                .iter()
-                .find(|asset| asset.file == file)
-                .map(|asset| asset.texture)
-        });
+        // Command-icon cells. v1 declares them in `atlas.commandbuttons`; a v2
+        // component pack may have no command sheet at all (empty map is valid).
         let mut cells = HashMap::new();
-        if let Some(entries) = atlas["entries"].as_array() {
-            let texture = atlas_texture.unwrap_or(0);
-            for entry in entries {
-                let id = string(entry, &["id"])?;
-                let x = number(entry, &["x"])?;
-                let y = number(entry, &["y"])?;
-                let w = number(entry, &["w"])?;
-                let h = number(entry, &["h"])?;
+        if let Some((texture, page_id)) = &command_atlas
+            && let Some(decl) = manifest.command_atlas.as_ref()
+        {
+            let (_, page_w, page_h) = atlas_pages.get(page_id).copied().unwrap_or((*texture, 0, 0));
+            for entry in &decl.entries {
                 cells.insert(
-                    id.clone(),
+                    entry.id.clone(),
                     AtlasCell {
-                        id,
-                        texture,
-                        rect: [x, y, w, h],
+                        id: entry.id.clone(),
+                        texture: *texture,
+                        rect: [
+                            entry.x as f32,
+                            entry.y as f32,
+                            entry.w as f32,
+                            entry.h as f32,
+                        ],
+                        page: [page_w as f32, page_h as f32],
                     },
                 );
             }
-        }
-        if cells.is_empty() {
-            return Err(PackError::Manifest(
-                "atlas.commandbuttons.entries is empty".to_string(),
-            ));
         }
 
         // The three authored faces: rasterise once per process, register
@@ -497,30 +982,51 @@ impl HudPack {
 
         Ok(Self {
             root: root.to_path_buf(),
-            design_height,
-            reference_landscape,
-            reference_portrait,
-            safe_landscape,
-            safe_portrait,
-            card_columns,
-            card_rows,
-            card_cell,
-            card_gap,
-            group_count,
-            group_cell,
-            atlas_columns,
-            atlas_rows,
-            atlas_cell_px,
+            format_version: manifest.format_version,
+            theme: manifest.theme.clone(),
+            design_height: manifest.design_height,
+            reference_landscape: manifest.reference_landscape,
+            reference_portrait: manifest.reference_portrait,
+            safe_landscape: manifest.safe_landscape,
+            safe_portrait: manifest.safe_portrait,
+            card_columns: manifest.card_columns,
+            card_rows: manifest.card_rows,
+            card_cell: manifest.card_cell,
+            card_gap: manifest.card_gap,
+            group_count: manifest.group_count,
+            group_cell: manifest.group_cell,
+            atlas_columns: manifest.atlas_columns,
+            atlas_rows: manifest.atlas_rows,
+            atlas_cell_px: manifest.atlas_cell_px,
+            atlases,
             assets,
             by_name,
             cells,
-            atlas_texture,
-            font_files,
+            validation,
+            atlas_texture: command_atlas.map(|(texture, _)| texture),
+            font_files: manifest.font_files,
             font_textures,
+            hash_files: hashes.files,
+            hashed_bytes: hashes.hashed_bytes,
             topbar_flat_u,
             console_base,
             topbar_base,
         })
+    }
+
+    /// Load and validate a manifest without registering any texture. Used by
+    /// the pack builder/validator so a tool and the device share one contract.
+    pub fn inspect(root: &Path) -> Result<(super::manifest::Manifest, super::manifest::ValidationReport), PackError> {
+        let manifest_path = root.join("manifest.json");
+        let text = std::fs::read_to_string(&manifest_path).map_err(|error| PackError::Io {
+            path: manifest_path.display().to_string(),
+            error: error.to_string(),
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| PackError::Manifest(error.to_string()))?;
+        let manifest = super::manifest::parse(root, &value)?;
+        let report = super::manifest::validate(&manifest);
+        Ok((manifest, report))
     }
 
     pub fn asset(&self, name: &str) -> Option<&HudAsset> {
@@ -559,14 +1065,20 @@ impl HudPack {
             .find(|file| file.contains(needle))
     }
 
-    /// Design scale for a viewport.
+    /// Pack design scale for a viewport (diagnostics only).
     ///
     /// Landscape maps the 768 design height to the screen height (2414x1080 ->
     /// 1.40625, the manifest's own example). The portrait console is a stacked
     /// column bounded by the 1080-wide reference, so it maps the reference
     /// width instead; both ideas come from `manifest.json`
     /// (`design_height`, `reference_resolution`).
-    pub fn scale_for(&self, viewport: Vec2, portrait: bool) -> f32 {
+    ///
+    /// **Not a geometry authority.** Draw geometry and hit rects use the one
+    /// live scale (`mobile_hud::MobileHudLayout::scale`, published as
+    /// `hud::HudLayout::scale`); this value only describes how pack art maps to
+    /// its authored design space and is kept crate-private so a caller cannot
+    /// draw the HUD at a scale the hit rects do not share (WC3-GAME-003).
+    pub(crate) fn scale_for(&self, viewport: Vec2, portrait: bool) -> f32 {
         let raw = if portrait {
             viewport.x / self.reference_portrait[0].max(1) as f32
         } else {
@@ -594,7 +1106,7 @@ impl HudPack {
         if rect.w <= 0.0 || rect.h <= 0.0 {
             return false;
         }
-        ui.textured_quad(asset.texture, rect, [0.0, 0.0, 1.0, 1.0], tint);
+        ui.textured_quad(asset.texture, rect, asset.uv(), tint);
         true
     }
 
@@ -625,7 +1137,8 @@ impl HudPack {
             }
             return self.stretch(ui, name, rect, tint);
         }
-        let [aw, ah] = asset.size();
+        let [aw, ah] = asset.source_size();
+        let [u0, v0, u1, v1] = asset.uv();
         let scale = if art_scale.is_finite() {
             art_scale.max(0.01)
         } else {
@@ -638,6 +1151,8 @@ impl HudPack {
         let [al, at, ar, ab] = asset.insets;
         let sx = [0.0, al / aw, (aw - ar).max(al) / aw, 1.0];
         let sy = [0.0, at / ah, (ah - ab).max(at) / ah, 1.0];
+        let map_u = |fraction: f32| u0 + fraction * (u1 - u0);
+        let map_v = |fraction: f32| v0 + fraction * (v1 - v0);
         let dx = [rect.x, rect.x + l, rect.right() - r, rect.right()];
         let dy = [rect.y, rect.y + t, rect.bottom() - b, rect.bottom()];
         for row in 0..3 {
@@ -654,7 +1169,12 @@ impl HudPack {
                 ui.textured_quad(
                     asset.texture,
                     cell,
-                    [sx[col], sy[row], sx[col + 1], sy[row + 1]],
+                    [
+                        map_u(sx[col]),
+                        map_v(sy[row]),
+                        map_u(sx[col + 1]),
+                        map_v(sy[row + 1]),
+                    ],
                     tint,
                 );
             }
@@ -683,17 +1203,18 @@ impl HudPack {
             return false;
         }
         let tiles = (rect.w / tile_w).ceil().max(1.0) as usize;
+        let [u0, v0, u1, v1] = asset.uv();
         for index in 0..tiles {
             let x = rect.x + index as f32 * tile_w;
             let width = tile_w.min(rect.right() - x);
             if width <= 0.0 {
                 break;
             }
-            let u1 = (width / tile_w).clamp(0.0, 1.0);
+            let u_fraction = (width / tile_w).clamp(0.0, 1.0);
             ui.textured_quad(
                 asset.texture,
                 Rect::new(x, rect.y, width, rect.h),
-                [0.0, 0.0, u1, 1.0],
+                [u0, v0, u0 + (u1 - u0) * u_fraction, v1],
                 tint,
             );
         }
@@ -723,11 +1244,13 @@ impl HudPack {
             return self.stretch(ui, name, rect, tint);
         }
         let aw = asset.w as f32;
+        let [u0, v0, u1, v1] = asset.uv();
+        let span = u1 - u0;
         // Left ornament.
         ui.textured_quad(
             asset.texture,
             Rect::new(rect.x, rect.y, left, rect.h),
-            [0.0, 0.0, al / aw, 1.0],
+            [u0, v0, u0 + span * (al / aw), v1],
             tint,
         );
         // Tiled middle.
@@ -746,7 +1269,12 @@ impl HudPack {
             ui.textured_quad(
                 asset.texture,
                 Rect::new(x, rect.y, width, rect.h),
-                [al / aw, 0.0, (al + middle_src * u_span) / aw, 1.0],
+                [
+                    u0 + span * (al / aw),
+                    v0,
+                    u0 + span * ((al + middle_src * u_span) / aw),
+                    v1,
+                ],
                 tint,
             );
             x += width;
@@ -755,7 +1283,7 @@ impl HudPack {
         ui.textured_quad(
             asset.texture,
             Rect::new(rect.right() - right, rect.y, right, rect.h),
-            [(aw - ar) / aw, 0.0, 1.0, 1.0],
+            [u1 - span * (ar / aw), v0, u1, v1],
             tint,
         );
         true
@@ -775,15 +1303,19 @@ impl HudPack {
         }
         let tint = [1.0; 4];
         let width = asset.w as f32;
-        // Base: one flat column stretched across the full bar.
+        let [u0, v0, u1, v1] = asset.uv();
+        let span = u1 - u0;
+        // Base: one flat column (a fraction of the element, not of the page)
+        // stretched across the full bar.
+        let step = span / width.max(1.0);
         ui.textured_quad(
             asset.texture,
             rect,
             [
-                self.topbar_flat_u,
-                0.0,
-                self.topbar_flat_u + 1.0 / width,
-                1.0,
+                u0 + self.topbar_flat_u * span,
+                v0,
+                u0 + self.topbar_flat_u * span + step,
+                v1,
             ],
             tint,
         );
@@ -792,13 +1324,13 @@ impl HudPack {
             ui.textured_quad(
                 asset.texture,
                 Rect::new(rect.x, rect.y, plate_w, rect.h),
-                [0.0, 0.0, 1.0, 1.0],
+                [u0, v0, u1, v1],
                 tint,
             );
             ui.textured_quad(
                 asset.texture,
                 Rect::new(rect.right() - plate_w, rect.y, plate_w, rect.h),
-                [1.0, 0.0, 0.0, 1.0],
+                [u1, v0, u0, v1],
                 tint,
             );
         } else {
@@ -806,13 +1338,13 @@ impl HudPack {
             ui.textured_quad(
                 asset.texture,
                 Rect::new(rect.x, rect.y, half, rect.h),
-                [0.0, 0.0, 1.0, 1.0],
+                [u0, v0, u1, v1],
                 tint,
             );
             ui.textured_quad(
                 asset.texture,
                 Rect::new(rect.x + half, rect.y, half, rect.h),
-                [1.0, 0.0, 0.0, 1.0],
+                [u1, v0, u0, v1],
                 tint,
             );
         }
@@ -830,15 +1362,8 @@ impl HudPack {
             crate::dev_log!("HUD_PACK atlas_missing={id}");
             return false;
         };
-        let Some(asset) = self
-            .assets
-            .iter()
-            .find(|asset| asset.texture == cell.texture)
-        else {
-            return false;
-        };
-        let width = asset.w as f32;
-        let height = asset.h as f32;
+        let width = cell.page[0].max(1.0);
+        let height = cell.page[1].max(1.0);
         let [x, y, w, h] = cell.rect;
         ui.textured_quad(
             cell.texture,
@@ -885,7 +1410,8 @@ impl HudPack {
         let asset = self.asset(name)?;
         let scale = art_scale.max(0.01);
         let [al, at, ar, ab] = asset.insets;
-        let [aw, ah] = asset.size();
+        let [aw, ah] = asset.source_size();
+        let [ox, oy, _, _] = asset.rect();
         let (l, t, r, b) = (al * scale, at * scale, ar * scale, ab * scale);
         if rect.w <= l + r + 1.0 || rect.h <= t + b + 1.0 {
             return None;
@@ -893,7 +1419,7 @@ impl HudPack {
         let corner = |x: f32, y: f32, w: f32, h: f32, u: f32, v: f32, uw: f32, vh: f32| {
             (
                 Rect::new(x, y, w, h),
-                Rect::new(u * aw, v * ah, uw * aw, vh * ah),
+                Rect::new(ox + u * aw, oy + v * ah, uw * aw, vh * ah),
             )
         };
         Some([
@@ -1325,6 +1851,58 @@ mod tests {
             "HUD_PACK missing=a.png",
             "a missing asset must name the file"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A manifest asset whose bytes differ from `SHA256SUMS.txt` fails the load
+    /// with the file, the expected digest and the observed one.
+    #[test]
+    fn hud_pack_hash_mismatch_is_loud() {
+        let root = std::env::temp_dir().join("hud-pack-hash-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp");
+        std::fs::create_dir_all(root.join("fonts")).expect("fonts dir");
+        std::fs::write(root.join("fonts/f.ttf"), b"").expect("font");
+        std::fs::write(
+            root.join("manifest.json"),
+            r#"{"design_height":768,"reference_resolution":{"landscape":[1920,1080],"portrait":[1080,1920]},"safe_area_1080p":{"landscape":[48,80,48,48],"portrait":[24,96,24,64]},"command_card":{"columns":4,"rows":3,"cell":[64,64],"gap":4},"control_groups":{"count":10,"cell":[44,44]},"atlas":{"commandbuttons":{"file":"a.png","size":[64,64],"cell":[64,64],"columns":1,"rows":1,"entries":[{"id":"x","x":0,"y":0,"w":64,"h":64}]}},"assets":[{"name":"a","file":"a.png","w":64,"h":64,"insets":{"l":0,"t":0,"r":0,"b":0},"states":[],"atlas":"standalone","mips":false}],"font_files":["f.ttf"]}"#,
+        )
+        .expect("manifest");
+        std::fs::write(root.join("a.png"), b"x").expect("tampered asset");
+        let wrong = "0".repeat(64);
+        std::fs::write(
+            root.join("SHA256SUMS.txt"),
+            format!("{wrong}  a.png\n"),
+        )
+        .expect("sums");
+        let report = verify_pack(&root).expect("report");
+        assert_eq!(report.files, 1);
+        assert_eq!(report.mismatched, 1);
+        let error = HudPack::load(&root, &mut Vec::new()).expect_err("tampered asset");
+        assert!(
+            error.to_string().starts_with("HUD_PACK hash=a.png expected=0000"),
+            "unexpected error: {error}"
+        );
+        // A docs-only mismatch is reported, and it is not a declared asset:
+        // packaging notes must not take the HUD down.
+        std::fs::write(root.join("README.md"), b"notes").expect("readme");
+        let good = crate::map_registry::sha256_hex(b"x");
+        std::fs::write(
+            root.join("SHA256SUMS.txt"),
+            format!("{good}  a.png\n{wrong}  README.md\n"),
+        )
+        .expect("sums");
+        let report = verify_pack(&root).expect("report");
+        assert_eq!(report.files, 2);
+        assert_eq!(report.mismatched, 1);
+        assert_eq!(report.mismatches[0].file, "README.md");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
+                .unwrap();
+        let declared = declared_pack_files(&manifest);
+        assert!(declared.contains("a.png"));
+        assert!(declared.contains("fonts/f.ttf"));
+        assert!(!declared.contains("README.md"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

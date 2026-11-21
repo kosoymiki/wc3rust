@@ -1,11 +1,13 @@
 //! Console plate: left/right caps + the wide centre panel.
 //!
-//! WC3 puts the console under the play area: full screen width, height
-//! `3 * 0.0455 - 0.0075 = 0.129` of the screen (`analysis/agent-re/ui_audio/
+//! WC3 puts the console under the play area (`analysis/agent-re/ui_audio/
 //! ENGINE_MAP.md`: CommandBar ctor `0x6f12ae80`, pitch `0x6f692cbc`,
-//! gap `0x6f69ac20`, button `0x6f699c40`). The bounds of that band are
-//! [`HEIGHT_FRACTION`]; [`layout`] applies them and keeps the plate clear of the
-//! safe-area insets.
+//! gap `0x6f69ac20`, button `0x6f699c40`). The band's geometry is authored by
+//! the one live composer, `mobile_hud::HudLayout::compute`; this module only
+//! draws the three plate pieces into the rect that composer hands it. The old
+//! `HEIGHT_FRACTION`/`layout` pair (0.129 of the screen, 3.2x shorter than the
+//! live 0.42 band) was a second geometry authority with no callers and is gone
+//! (WC3-GAME-003).
 //!
 //! The plate is three atlas elements:
 //!
@@ -72,9 +74,6 @@ pub const PLATE_ART: [f32; 2] = [592.0, 208.0];
 /// Minimal ornament-free boundary of the 592x208 art (see the module docs).
 pub const INSETS: [f32; 4] = [56.0, 32.0, 56.0, 64.0];
 
-/// Console band height as a fraction of the screen height: `0.129` retail.
-pub const HEIGHT_FRACTION: f32 = 129.0 / 1000.0;
-
 /// Screen rects of the three plate pieces, for the caller's minimap/card.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlateParts {
@@ -94,18 +93,6 @@ impl PlateParts {
             self.left.h.max(self.centre.h).max(self.right.h),
         )
     }
-}
-
-/// Console band for a screen, clear of the safe-area insets.
-///
-/// `safe = [left, top, right, bottom]` in screen px. The band keeps the retail
-/// height (`129/1000` of `screen_h`) and sits directly above the bottom inset;
-/// it is only shortened when the safe area leaves less room than that.
-pub fn layout(screen_w: f32, screen_h: f32, safe: [f32; 4]) -> Rect {
-    let room = (screen_h - safe[1] - safe[3]).max(0.0);
-    let h = (screen_h * HEIGHT_FRACTION).min(room);
-    let w = (screen_w - safe[0] - safe[2]).max(0.0);
-    Rect::new(safe[0], screen_h - safe[3] - h, w, h)
 }
 
 /// Natural cap width for a band of `height`: the authored aspect is kept, so
@@ -460,7 +447,9 @@ mod tests {
             (2560.0, 1080.0),
             (400.0, 1080.0), // narrower than the two caps: clamp path
         ] {
-            let rect = layout(screen_w, screen_h, [0.0; 4]);
+            // Any band rect: the plate pieces scale to whatever the live
+            // composer hands them (the band geometry is authored elsewhere).
+            let rect = Rect::new(0.0, 0.0, screen_w, screen_h * 0.42);
             let mut batch = UiBatch::default();
             let parts = draw(&skin, &mut batch, rect, 1.0, [1.0; 4]);
             let aspect = CAP_ART[0] / CAP_ART[1];
@@ -492,36 +481,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn console_height_is_129_of_1000_of_the_screen() {
-        let hd = layout(1920.0, 1080.0, [0.0; 4]);
-        assert!((hd.h - 139.32).abs() <= 1e-4, "1080p band = {}", hd.h);
-        assert!((hd.h - 1080.0 * 129.0 / 1000.0).abs() <= 1e-4);
-
-        let tall = layout(1080.0, 2414.0, [0.0; 4]);
-        assert!((tall.h - 311.406).abs() <= 1e-4, "2414 band = {}", tall.h);
-        assert!((tall.h - 2414.0 * 129.0 / 1000.0).abs() <= 1e-4);
-        assert!((tall.h / 2414.0 - 0.129).abs() <= 1e-6);
-    }
-
-    #[test]
-    fn layout_keeps_the_plate_off_the_safe_area() {
-        let safe = [24.0, 0.0, 24.0, 48.0];
-        let rect = layout(1080.0, 2414.0, safe);
-        assert!((rect.x - 24.0).abs() <= 1e-4);
-        assert!((rect.w - 1032.0).abs() <= 1e-4);
-        assert!((rect.bottom() - (2414.0 - 48.0)).abs() <= 1e-4);
-        assert!((rect.h - 311.406).abs() <= 1e-4, "height must not shrink");
-
-        let clamped = layout(1080.0, 1000.0, [0.0, 400.0, 0.0, 500.0]);
-        assert!(
-            (clamped.h - 100.0).abs() <= 1e-4,
-            "band must fit the safe area"
-        );
-        assert!((clamped.y - 400.0).abs() <= 1e-4);
-        assert!((clamped.bottom() - 500.0).abs() <= 1e-4);
     }
 
     #[test]

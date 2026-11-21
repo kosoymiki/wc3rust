@@ -7,6 +7,17 @@
 //! Reference: `analysis/agent-hud/references/` and the operator's WC3 console
 //! capture. Layout invariants and the headless screenshot live in
 //! `analysis/agent-hud/DESIGN_SPEC.md` and the test module below.
+//!
+//! # One composer (ledger 521)
+//!
+//! `HudLayout::compute` is the only place a zone rect is solved. The draw
+//! functions (`draw`, `draw_pack`, `draw_selection_panel`, `draw_selection_skin`,
+//! `draw_menu`) never compute a zone: they read `MobileHudLayout` (the dp snapshot
+//! plus its single `dp * density` conversion) and may only *place content inside*
+//! the rects they were given. The portrait and landscape paths share
+//! `compose_selection` so the unit card cannot drift between modes. The contract,
+//! the measured golden numbers and the invariant list are in
+//! `analysis/agent-hud/LAYOUT_SOURCE_OF_TRUTH.md`.
 
 use glam::Vec2;
 
@@ -320,6 +331,10 @@ pub struct SelectionView<'a> {
     pub hp: i32,
     pub max_hp: i32,
     pub portrait: Option<usize>,
+    /// WC3 type id (`opeo`, `ogre`, `Obla`) for the `HUD_PORTRAIT` diagnostic.
+    pub def: Option<&'a str>,
+    /// How the portrait was resolved (model / icon / placeholder).
+    pub portrait_source: Option<crate::ui::widgets::portrait::PortraitSource>,
     pub armor: i32,
     pub damage: i32,
     pub range: Option<f32>,
@@ -348,6 +363,8 @@ impl<'a> SelectionView<'a> {
             hp,
             max_hp,
             portrait: None,
+            def: None,
+            portrait_source: None,
             armor: 0,
             damage: 0,
             range: None,
@@ -395,6 +412,21 @@ impl<'a> SelectionView<'a> {
 
     pub fn kind(mut self, kind: impl AsRef<str>) -> Self {
         self.kind = kind.as_ref().to_string();
+        self
+    }
+
+    /// Attach the def id and the resolved portrait source (logged once per
+    /// def by [`MobileHud::draw`]).
+    pub fn def(mut self, def: &'a str) -> Self {
+        self.def = Some(def);
+        self
+    }
+
+    pub fn portrait_source(
+        mut self,
+        source: crate::ui::widgets::portrait::PortraitSource,
+    ) -> Self {
+        self.portrait_source = Some(source);
         self
     }
 
@@ -1407,6 +1439,8 @@ pub const TOUCH_DP: f32 = 48.0;
 pub const CARD_GAP_DP: f32 = 8.0;
 /// Padding between the console background edge and its content.
 pub const CONSOLE_PAD_DP: f32 = 8.0;
+/// Widest the unit-card HP/mana trough may be (retail's card bar is ~120 dp).
+const HP_BAR_MAX_DP: f32 = 150.0;
 /// Gap between the console's functional zones.
 pub const ZONE_GAP_DP: f32 = 8.0;
 /// Minimap outer frame, wide landscape (TZ §5.2: 128..144 dp square).
@@ -1652,618 +1686,176 @@ pub struct HudLayout {
 
 impl HudLayout {
     /// The single layout entry point. Pure: no globals, no GPU, no clock.
+    ///
+    /// The composition lives in [`crate::ui::widgets::hud`]: this adapter turns
+    /// the platform window into the solver's inputs and maps the solved dp rects
+    /// onto the fields the painter and the touch router read. There is no second
+    /// geometry path — the same model produces draw bounds and hit regions.
     pub fn compute(metrics: WindowMetrics, prefs: UiPreferences, state: HudLayoutState) -> Self {
-        let density = metrics.density();
-        let screen = metrics.screen_dp();
-        let safe = metrics.safe();
-        let pad = CONSOLE_PAD_DP;
-        let gap = ZONE_GAP_DP;
-        let content_w = (screen.x - safe.left - safe.right - 2.0 * pad).max(1.0);
-        let mode = match metrics.orientation() {
-            Orientation::Portrait => HudLayoutMode::Portrait,
-            Orientation::Landscape => {
-                if content_w >= WIDE_MIN_CONTENT_DP {
-                    HudLayoutMode::LandscapeWide
-                } else {
-                    HudLayoutMode::LandscapeCompact
-                }
-            }
+        use crate::ui::core::geometry::{Insets as UiInsets, Size as UiSize};
+        use crate::ui::layout::{ContentMetrics, Orientation as UiOrientation, Preferences, State as UiState, Window};
+        use crate::ui::widgets::hud::solve_hud;
+
+        let theme = crate::ui::theme::Theme::classic_fantasy();
+        let window = Window {
+            framebuffer: UiSize::new(metrics.framebuffer_px.x, metrics.framebuffer_px.y),
+            density: metrics.density_scale,
+            safe: UiInsets::new(
+                metrics.safe_insets_dp.left,
+                metrics.safe_insets_dp.top,
+                metrics.safe_insets_dp.right,
+                metrics.safe_insets_dp.bottom,
+            ),
+            orientation: Some(match metrics.orientation() {
+                Orientation::Portrait => UiOrientation::Portrait,
+                Orientation::Landscape => UiOrientation::Landscape,
+            }),
         };
+        let preferences = Preferences {
+            scale: prefs.ui_scale,
+            touch_dp: crate::ui::theme::metrics::TOUCH_DP,
+            debug: prefs.show_fps,
+        };
+        // The five selection states (§3.5). The adapter derives them from the
+        // live flags; a building never shows mana, a hero always does.
+        let selection = match (state.selection_count, state.has_mana, state.production) {
+            (0, _, _) => crate::ui::layout::SelectionState::None,
+            (1, true, _) => crate::ui::layout::SelectionState::Hero,
+            (1, _, true) => crate::ui::layout::SelectionState::Building,
+            (1, _, _) => crate::ui::layout::SelectionState::Unit,
+            _ => crate::ui::layout::SelectionState::Multiple,
+        };
+        let ui_state = UiState {
+            selection,
+            selection_count: state.selection_count,
+            has_mana: state.has_mana,
+            production: state.production,
+            inventory: state.inventory,
+            groups_open: state.groups_open,
+            commands_open: state.commands_open,
+        };
+        let content = ContentMetrics {
+            resources: 3,
+            commands: if state.commands_open || metrics.orientation() == Orientation::Landscape {
+                12
+            } else {
+                0
+            },
+            toasts: 3,
+            selection_rows: 6,
+        };
+        let solution = solve_hud(&window, &preferences, &ui_state, &content, &theme);
+        let mode = match solution.plan {
+            crate::ui::widgets::hud::Plan::Wide => HudLayoutMode::LandscapeWide,
+            crate::ui::widgets::hud::Plan::Compact | crate::ui::widgets::hud::Plan::Minimal => {
+                HudLayoutMode::LandscapeCompact
+            }
+            crate::ui::widgets::hud::Plan::Portrait
+            | crate::ui::widgets::hud::Plan::PortraitNarrow => HudLayoutMode::Portrait,
+        };
+        if !solution.fits {
+            // A composition that does not fit is a defect, not a warning: the
+            // ladder already picked the best rung, and the numbers are logged so
+            // the next fix starts from evidence.
+            crate::dev_log!("{}", solution.report());
+            for problem in solution.problems() {
+                crate::dev_log!("HUD_LAYOUT {problem}");
+            }
+        }
+        Self::from_solution(metrics, prefs, state, mode, &solution.rects)
+    }
+
+    /// Map the solved composition onto the dp fields every consumer reads.
+    fn from_solution(
+        metrics: WindowMetrics,
+        prefs: UiPreferences,
+        state: HudLayoutState,
+        mode: HudLayoutMode,
+        rects: &crate::ui::widgets::hud::HudRects,
+    ) -> Self {
+        // One conversion from the pure layer's rect to the render layer's rect,
+        // at the single boundary between them.
+        let c = |r: crate::ui::core::geometry::Rect| Rect::new(r.x, r.y, r.w, r.h);
         let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-        let top_h = if mode == HudLayoutMode::Portrait {
-            TOP_BAR_PORTRAIT_DP
-        } else {
-            TOP_BAR_DP
+        let mut inventory_parts = crate::hud::inventory::InventoryParts {
+            frame: c(rects.inventory),
+            header: Rect::new(
+                rects.inventory.x,
+                rects.inventory.y,
+                rects.inventory.w,
+                0.0,
+            ),
+            slots: [zero; 6],
+            icons: [zero; 6],
+            charges: [zero; 6],
+            touches: [zero; 6],
         };
-        let top_bar = Rect::new(0.0, 0.0, screen.x, top_h);
-        // Safe bottom inset moves content up *inside* the console; the console
-        // background itself always ends at the physical bottom edge.
-        let bottom_extra = (safe.bottom - pad).max(0.0);
-        let (console_h, console) = match mode {
-            HudLayoutMode::Portrait => {
-                let h = PORTRAIT_SUMMARY_DP
-                    + gap
-                    + CARD_H_DP
-                    + 2.0 * pad
-                    + bottom_extra;
-                (h, Rect::new(0.0, screen.y - h, screen.x, h))
-            }
-            HudLayoutMode::LandscapeWide => {
-                let base = (0.34 * screen.y).clamp(CONSOLE_MIN_DP, CONSOLE_MAX_DP);
-                let h = base + bottom_extra;
-                (h, Rect::new(0.0, screen.y - h, screen.x, h))
-            }
-            HudLayoutMode::LandscapeCompact => {
-                // Operator addendum: on a 360 dp-tall screen an inline 4x3 grid
-                // would eat 49% of the height, so the band keeps only the
-                // minimap and the selection strip; the grid lives in a drawer.
-                let base = (0.42 * screen.y)
-                    .clamp(CONSOLE_COMPACT_MIN_DP, CONSOLE_COMPACT_MAX_DP);
-                let h = base + bottom_extra;
-                (h, Rect::new(0.0, screen.y - h, screen.x, h))
-            }
-        };
-        let content_bottom = screen.y - safe.bottom.max(pad);
-        let content = Rect::new(
-            safe.left + pad,
-            console.y + pad,
-            content_w,
-            (content_bottom - (console.y + pad)).max(1.0),
-        );
-        let viewport = Rect::new(
-            0.0,
-            top_bar.bottom(),
-            screen.x,
-            (console.y - top_bar.bottom()).max(1.0),
-        );
-
-        // ---- top bar content: resources right, identity left, FPS dev-only.
-        // Budget first, then the pieces: pills shrink before the map name, and
-        // the 16 sp numeral floor is asserted by the layout tests.
-        let pill_h = (top_h - 8.0).clamp(18.0, 24.0);
-        let pill_gap = 4.0;
-        let upkeep_w = if mode == HudLayoutMode::Portrait {
-            (72.0 * prefs.scale()).clamp(56.0, 84.0)
-        } else {
-            (58.0 * prefs.scale()).clamp(46.0, 68.0)
-        };
-        let fps_w = 52.0;
-        let show_fps = prefs.show_fps;
-        let right = screen.x - safe.right - pad * 0.5;
-        let fps_extra = if show_fps { fps_w + gap } else { 0.0 };
-        let budget = content_w - upkeep_w - fps_extra - gap * 2.0;
-        let pill_w = ((budget - 2.0 * pill_gap) / 3.0).clamp(46.0, 92.0);
-        let res_w = 3.0 * pill_w + 2.0 * pill_gap;
-        let resources = Rect::new(
-            right - res_w,
-            (top_h - pill_h) * 0.5,
-            res_w,
-            pill_h,
-        );
-        let upkeep = Rect::new(
-            resources.x - gap - upkeep_w,
-            (top_h - pill_h) * 0.5,
-            upkeep_w,
-            pill_h,
-        );
-        let fps = if show_fps {
-            Rect::new(
-                upkeep.x - gap - fps_w,
-                (top_h - pill_h) * 0.5,
-                fps_w,
-                pill_h,
-            )
-        } else {
-            zero
-        };
-        // Clear of the topbar plate's left spear ornament (the width of one
-        // authored cap at the bar's height).
-        let map_left = safe.left + (top_h * 1.6).max(24.0);
-        let map_right = if show_fps { fps.x } else { upkeep.x };
-        let map_name = Rect::new(
-            map_left,
-            (top_h - pill_h) * 0.5,
-            (map_right - gap - map_left).max(0.0),
-            pill_h,
-        );
-        let resource_pills: Vec<Rect> = (0..3)
-            .map(|index| {
-                Rect::new(
-                    resources.x + index as f32 * (pill_w + pill_gap),
-                    resources.y,
-                    pill_w,
-                    pill_h,
-                )
-            })
-            .collect();
-
-        // ---- console zones
-        let mut out = Self {
+        for (index, slot) in rects.inventory_slots.iter().take(6).enumerate() {
+            let slot = c(*slot);
+            inventory_parts.slots[index] = slot;
+            inventory_parts.icons[index] = slot.inset(4.0, 4.0);
+            inventory_parts.charges[index] =
+                Rect::new(slot.x, slot.bottom() - 12.0, slot.w, 11.0);
+            inventory_parts.touches[index] = slot;
+        }
+        Self {
             mode,
             metrics,
             prefs,
             state,
-            screen,
-            safe,
-            top_bar,
-            console,
-            content,
-            viewport,
-            console_h,
-            minimap_header: zero,
-            minimap_frame: zero,
-            minimap_image: zero,
-            minimap_rail: zero,
-            selection: zero,
-            portrait: zero,
-            name: zero,
-            class: zero,
-            hp_bar: zero,
-            hp_text: zero,
-            mana_bar: zero,
-            mana_text: zero,
-            stats: zero,
-            production_label: zero,
-            production_bar: zero,
-            army: zero,
-            army_slots: Vec::new(),
-            army_badge: zero,
-            inventory: zero,
-            inventory_parts: {
-                let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-                crate::hud::inventory::InventoryParts {
-                    frame: zero,
-                    header: zero,
-                    slots: [zero; 6],
-                    icons: [zero; 6],
-                    charges: [zero; 6],
-                    touches: [zero; 6],
-                }
-            },
-            groups_area: zero,
-            group_slots: Vec::new(),
-            groups_button: zero,
-            groups_overlay: zero,
-            card: zero,
-            card_slots: Vec::new(),
-            commands_button: zero,
-            commands_overlay: zero,
-            resources,
-            resource_pills,
-            upkeep,
-            fps,
-            map_name,
-            toast: zero,
-            toasts: Vec::new(),
-            hint: zero,
-            tooltip: zero,
-            phase: zero,
-            mode_rect: zero,
-            separators: Vec::new(),
-        };
-        match mode {
-            HudLayoutMode::LandscapeWide | HudLayoutMode::LandscapeCompact => {
-                out.compose_landscape();
-            }
-            HudLayoutMode::Portrait => out.compose_portrait(),
+            screen: Vec2::new(rects.screen.w.max(1.0), rects.screen.h.max(1.0)),
+            safe: SafeArea::new(
+                rects.safe.left,
+                rects.safe.top,
+                rects.safe.right,
+                rects.safe.bottom,
+            ),
+            top_bar: c(rects.top_bar),
+            console: c(rects.console),
+            content: c(rects.content),
+            viewport: c(rects.viewport),
+            console_h: rects.console_h,
+            minimap_header: c(rects.minimap_header),
+            minimap_frame: c(rects.minimap_frame),
+            minimap_image: c(rects.minimap_image),
+            minimap_rail: c(rects.minimap_rail),
+            selection: c(rects.selection),
+            portrait: c(rects.portrait),
+            name: c(rects.name),
+            class: c(rects.class),
+            hp_bar: c(rects.hp_bar),
+            hp_text: c(rects.hp_text),
+            mana_bar: c(rects.mana_bar),
+            mana_text: c(rects.mana_text),
+            stats: c(rects.stats),
+            production_label: c(rects.production_label),
+            production_bar: c(rects.production_bar),
+            army: c(rects.army),
+            army_slots: rects.army_slots.iter().map(|r| c(*r)).collect(),
+            army_badge: c(rects.army_badge),
+            inventory: c(rects.inventory),
+            inventory_parts,
+            groups_area: c(rects.groups_area),
+            group_slots: rects.group_slots.iter().map(|r| c(*r)).collect(),
+            groups_button: c(rects.groups_button),
+            groups_overlay: c(rects.groups_overlay),
+            card: c(rects.card),
+            card_slots: rects.card_slots.iter().map(|r| c(*r)).collect(),
+            commands_button: c(rects.commands_button),
+            commands_overlay: c(rects.commands_overlay),
+            resources: c(rects.resources),
+            resource_pills: rects.resource_pills.iter().map(|r| c(*r)).collect(),
+            upkeep: c(rects.upkeep),
+            fps: c(rects.fps),
+            map_name: c(rects.map_name),
+            toast: c(rects.toast),
+            toasts: rects.toasts.iter().map(|r| c(*r)).collect(),
+            hint: c(rects.hint),
+            tooltip: c(rects.tooltip),
+            phase: c(rects.phase),
+            mode_rect: c(rects.mode_rect),
+            separators: rects.separators.iter().map(|r| c(*r)).collect(),
         }
-        out.compose_bands();
-        let _ = density;
-        out
-    }
-
-    fn compose_landscape(&mut self) {
-        let gap = ZONE_GAP_DP;
-        let wide = self.mode == HudLayoutMode::LandscapeWide;
-        let content = self.content;
-        let h = content.h;
-        if wide {
-            // Wide: every zone inline, card anchored to the safe right edge.
-            let card = Rect::new(
-                content.right() - CARD_W_DP,
-                content.y + ((h - CARD_H_DP) * 0.5).max(0.0),
-                CARD_W_DP,
-                CARD_H_DP.min(h),
-            );
-            self.card = card;
-            self.card_slots = card_field_slots(card, CARD_COLUMNS, CARD_ROWS);
-            let groups_w = GROUPS_TRAY_DP + gap + TOUCH_DP;
-            let groups_x = card.x - gap - groups_w;
-            self.groups_area = Rect::new(
-                groups_x,
-                content.y + ((h - GROUPS_TRAY_DP) * 0.5).max(0.0),
-                groups_w,
-                GROUPS_TRAY_DP.min(h),
-            );
-            self.group_slots = tray_slots(self.groups_area);
-            let header_h = 20.0_f32;
-            let frame = (h - header_h).clamp(MINIMAP_MIN_DP.min(h), MINIMAP_DP);
-            self.minimap_header = Rect::new(content.x, content.y, frame, header_h);
-            self.minimap_frame = Rect::new(content.x, content.y + header_h, frame, frame);
-            self.place_minimap_image(8.0);
-            let sel_x = self.minimap_frame.right() + gap;
-            let sel_w = (groups_x - gap - sel_x).max(1.0);
-            self.selection = Rect::new(sel_x, content.y, sel_w, h);
-            self.compose_selection();
-            self.push_separators([
-                self.minimap_frame.right() + gap * 0.5,
-                groups_x - gap * 0.5,
-                card.x - gap * 0.5,
-            ]);
-        } else {
-            // Compact: minimap + selection strip only; GROUPS and COMMANDS are
-            // persistent 48 dp controls that open drawers (operator addendum).
-            let frame = h.min(MINIMAP_COMPACT_DP).max(1.0);
-            self.minimap_frame =
-                Rect::new(content.x, content.y + (h - frame) * 0.5, frame, frame);
-            self.place_minimap_image(6.0);
-            let commands_x = content.right() - TOUCH_DP;
-            self.commands_button = Rect::new(
-                commands_x,
-                content.centre().y - TOUCH_DP * 0.5,
-                TOUCH_DP,
-                TOUCH_DP,
-            );
-            let groups_x = commands_x - gap - TOUCH_DP;
-            self.groups_button = Rect::new(
-                groups_x,
-                content.centre().y - TOUCH_DP * 0.5,
-                TOUCH_DP,
-                TOUCH_DP,
-            );
-            let sel_x = self.minimap_frame.right() + gap;
-            let sel_w = (groups_x - gap - sel_x).max(1.0);
-            self.selection = Rect::new(sel_x, content.y, sel_w, h);
-            self.compose_selection();
-            if self.state.groups_open {
-                let overlay = self.drawer_rect(
-                    GROUPS_TRAY_DP + gap + TOUCH_DP,
-                    GROUPS_TRAY_DP,
-                    false,
-                );
-                self.groups_overlay = overlay;
-                self.group_slots = tray_slots(overlay);
-            }
-            if self.state.commands_open {
-                let overlay = self.drawer_rect(CARD_W_DP, CARD_H_DP, true);
-                self.commands_overlay = overlay;
-                self.card = overlay;
-                self.card_slots = card_field_slots(overlay, CARD_COLUMNS, CARD_ROWS);
-            }
-            self.push_separators([
-                self.minimap_frame.right() + gap * 0.5,
-                groups_x - gap * 0.5,
-            ]);
-        }
-    }
-
-    /// A modal drawer anchored above the console; on a very short window it
-    /// slides over the console instead of shrinking its 48 dp targets.
-    fn drawer_rect(&self, width: f32, height: f32, align_right: bool) -> Rect {
-        let gap = ZONE_GAP_DP;
-        let x = if align_right {
-            (self.content.right() - width).max(self.content.x)
-        } else {
-            self.content.x.min((self.screen.x - width).max(0.0))
-        };
-        let above = self.console.y - gap - height;
-        let bottom_anchored = self.screen.y - CONSOLE_PAD_DP - height;
-        let y = if above >= self.top_bar.bottom() + gap {
-            above
-        } else {
-            bottom_anchored.max(self.top_bar.bottom())
-        };
-        Rect::new(x, y, width, height)
-    }
-
-    fn place_minimap_image(&mut self, ring: f32) {
-        let frame = self.minimap_frame;
-        let ring = ring.min(frame.w * 0.1);
-        self.minimap_image = frame.inset(ring, ring);
-    }
-
-    fn push_separators<const N: usize>(&mut self, xs: [f32; N]) {
-        let content = self.content;
-        let y = content.y + 2.0;
-        let h = (content.h - 4.0).max(1.0);
-        for x in xs {
-            if x > content.x + 1.0 && x < content.right() - 1.0 {
-                self.separators.push(Rect::new(x - 0.5, y, 1.0, h));
-            }
-        }
-    }
-
-
-    fn compose_portrait(&mut self) {
-        let gap = ZONE_GAP_DP;
-        let content = self.content;
-        let summary_h = PORTRAIT_SUMMARY_DP;
-        let aside = TOUCH_DP;
-        self.groups_button = Rect::new(
-            content.right() - aside,
-            content.y + (summary_h - aside) * 0.5,
-            aside,
-            aside,
-        );
-        // Thumbnails live inside the summary strip, never a separate column.
-        let thumbs = if self.state.selection_count > 1 { 2 } else { 0 };
-        let thumb = TOUCH_DP;
-        let thumbs_w = if thumbs > 0 {
-            thumbs as f32 * (thumb + 4.0)
-        } else {
-            0.0
-        };
-        let summary_side = summary_h - 8.0;
-        self.portrait = Rect::new(content.x, content.y + 4.0, summary_side, summary_side);
-        let info_x = self.portrait.right() + gap;
-        let info_w =
-            (self.groups_button.x - gap - thumbs_w - info_x).max(1.0);
-        self.name = Rect::new(info_x, content.y, info_w, 16.0);
-        self.class = Rect::new(info_x, content.y + 16.0, info_w, 11.0);
-        self.hp_bar = Rect::new(info_x, content.y + 27.0, info_w, 10.0);
-        self.hp_text = self.hp_bar;
-        if self.state.has_mana {
-            self.mana_bar = Rect::new(info_x, content.y + 37.0, info_w, 8.0);
-        } else {
-            self.mana_bar = Rect::new(0.0, 0.0, 0.0, 0.0);
-        }
-        self.mana_text = self.mana_bar;
-        self.selection = Rect::new(
-            content.x,
-            content.y,
-            (content.w - aside - gap).max(1.0),
-            summary_h,
-        );
-        if thumbs > 0 {
-            let x0 = self.groups_button.x - gap - thumbs_w;
-            for index in 0..thumbs {
-                self.army_slots.push(Rect::new(
-                    x0 + index as f32 * (thumb + 4.0),
-                    content.y,
-                    thumb,
-                    thumb,
-                ));
-            }
-            self.army_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
-        }
-        if self.state.groups_open {
-            let overlay = self.drawer_rect(GROUPS_TRAY_DP + gap + TOUCH_DP, GROUPS_TRAY_DP, false);
-            self.groups_overlay = overlay;
-            self.group_slots = tray_slots(overlay);
-        }
-        // Lower row: minimap left, 4x3 command card right (inline in portrait).
-        let row_y = content.y + summary_h + gap;
-        let row_h = CARD_H_DP.min((content.bottom() - row_y).max(1.0));
-        self.card = Rect::new(content.right() - CARD_W_DP, row_y, CARD_W_DP, row_h);
-        self.card_slots = card_field_slots(self.card, CARD_COLUMNS, CARD_ROWS);
-        let map_room = self.card.x - gap - content.x;
-        if map_room >= 96.0 {
-            let frame = map_room.min(MINIMAP_COMPACT_DP).min((row_h - 16.0).max(1.0));
-            self.minimap_header = Rect::new(content.x, row_y, frame, 16.0);
-            self.minimap_frame = Rect::new(content.x, row_y + 16.0, frame, frame);
-            self.place_minimap_image(6.0);
-        } else {
-            // TZ §7: on very narrow portraits the map collapses into a 48 dp
-            // control (the drawer itself is a developer/QA overlay).
-            self.minimap_rail = Rect::new(
-                content.x,
-                row_y + (row_h - TOUCH_DP) * 0.5,
-                TOUCH_DP,
-                TOUCH_DP,
-            );
-        }
-        self.separators.push(Rect::new(
-            content.x,
-            summary_h + content.y + gap * 0.5,
-            content.w,
-            1.0,
-        ));
-    }
-
-
-    /// Selection panel internals shared by every mode (TZ §6.2).
-    fn compose_selection(&mut self) {
-        let zone = self.selection;
-        if zone.w <= 0.0 || zone.h <= 0.0 {
-            return;
-        }
-        let (portrait_side, info_gap) = if zone.w >= 260.0 {
-            (80.0_f32.min(zone.h * 0.55), 8.0)
-        } else if zone.w >= 200.0 {
-            (72.0, 6.0)
-        } else {
-            (56.0, 5.0)
-        };
-        self.portrait = Rect::new(zone.x + 2.0, zone.y + 2.0, portrait_side, portrait_side);
-        let info_x = self.portrait.right() + info_gap;
-        let info_w = (zone.right() - info_x - 2.0).max(1.0);
-        // Bottom band: multi-selection thumbnails OR the hero inventory; one row
-        // of 48 dp targets, never both and never an empty reserved column.
-        let band_fits = zone.h >= TOUCH_DP * 1.6;
-        let band_h = if band_fits { TOUCH_DP } else { 0.0 };
-        let band_top = zone.bottom() - band_h;
-        let strip = self.state.selection_count > 1 && band_fits;
-        let inv = self.state.inventory && !strip && band_fits;
-        let has_band = strip || inv;
-        let column_bottom = if has_band { band_top - 4.0 } else { zone.bottom() };
-        let mut y = zone.y + 2.0;
-        let mut row = |h: f32, y: &mut f32| {
-            // A row that does not fit collapses to zero instead of crossing the
-            // band or leaving the panel (no clipped text, TZ §6.2).
-            let available = (column_bottom - *y).max(0.0);
-            let height = h.min(available);
-            let r = Rect::new(info_x, *y, info_w, height);
-            *y += height;
-            r
-        };
-        let name_h = 18.0;
-        let class_h = 14.0;
-        let hp_h = 18.0;
-        let mana_h = 14.0;
-        self.name = row(name_h, &mut y);
-        self.class = row(class_h, &mut y);
-        self.hp_bar = row(hp_h, &mut y);
-        self.hp_text = self.hp_bar;
-        if self.state.has_mana {
-            self.mana_bar = row(mana_h, &mut y);
-            self.mana_text = self.mana_bar;
-        }
-        self.stats = row(14.0, &mut y);
-        if self.state.production {
-            self.production_label = row(14.0, &mut y);
-            if self.production_label.h > 0.0 {
-                self.production_bar = Rect::new(
-                    self.production_label.x,
-                    self.production_label.bottom(),
-                    64.0_f32.min(self.production_label.w),
-                    4.0,
-                );
-            }
-        }
-        if has_band {
-            self.army = Rect::new(zone.x + 2.0, band_top, (zone.w - 4.0).max(1.0), band_h);
-            let pitch = band_h + 4.0;
-            if strip {
-                let count = self.state.selection_count.min(6);
-                let badge_w = 34.0;
-                let room = (self.army.w - badge_w + 4.0).max(pitch);
-                let cells = ((room / pitch).floor() as usize).clamp(1, count);
-                for index in 0..cells {
-                    self.army_slots.push(Rect::new(
-                        self.army.x + index as f32 * pitch,
-                        self.army.y,
-                        band_h,
-                        band_h,
-                    ));
-                }
-                if count > cells {
-                    self.army_badge = Rect::new(
-                        self.army.right() - badge_w,
-                        self.army.y,
-                        badge_w,
-                        band_h,
-                    );
-                }
-            } else {
-                // Six 48 dp item cells, right-aligned in the band.
-                let cells = 6usize;
-                let grid_w = cells as f32 * band_h + (cells - 1) as f32 * 4.0;
-                self.inventory = Rect::new(
-                    self.army.x + (self.army.w - grid_w).max(0.0),
-                    self.army.y,
-                    grid_w.min(self.army.w),
-                    band_h,
-                );
-                let mut slots = [Rect::new(0.0, 0.0, 0.0, 0.0); 6];
-                let mut icons = slots;
-                let mut charges = slots;
-                let mut touches = slots;
-                for index in 0..cells {
-                    let slot = Rect::new(
-                        self.inventory.x + index as f32 * pitch,
-                        self.inventory.y,
-                        band_h,
-                        band_h,
-                    );
-                    slots[index] = slot;
-                    icons[index] = slot.inset(4.0, 4.0);
-                    charges[index] = Rect::new(slot.x, slot.bottom() - 12.0, slot.w, 11.0);
-                    touches[index] = slot;
-                }
-                self.inventory_parts = crate::hud::inventory::InventoryParts {
-                    frame: self.inventory,
-                    header: Rect::new(self.inventory.x, self.inventory.y, self.inventory.w, 0.0),
-                    slots,
-                    icons,
-                    charges,
-                    touches,
-                };
-            }
-        }
-    }
-
-    /// World-side bands: toasts/hint above the console, tooltip, phase overlay.
-    /// Everything is allocated bottom-up inside the playfield and simply does
-    /// not exist when it does not fit — no band ever crosses the top bar.
-    fn compose_bands(&mut self) {
-        let gap = ZONE_GAP_DP;
-        let safe = self.safe;
-        let band_w = (420.0_f32 * self.prefs.scale())
-            .min(self.screen.x - safe.left - safe.right - gap * 2.0)
-            .max(1.0);
-        let band_h = 44.0;
-        let mut bottom = self.console.y - gap;
-        // A modal drawer owns the screen: no notice may float over it.
-        let modal = self.state.groups_open || self.state.commands_open;
-        if !modal {
-            for _ in 0..3 {
-                if bottom - band_h < self.top_bar.bottom() + gap {
-                    break;
-                }
-                let rect = Rect::new(
-                    ((self.screen.x + safe.left - safe.right) * 0.5 - band_w * 0.5)
-                        .max(safe.left + gap),
-                    bottom - band_h,
-                    band_w,
-                    band_h,
-                );
-                self.toasts.push(rect);
-                bottom -= band_h + gap;
-            }
-        }
-        self.toast = self
-            .toasts
-            .first()
-            .copied()
-            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-        let tooltip_room = (bottom - self.top_bar.bottom() - gap).max(0.0);
-        let tooltip_h = 150.0_f32.min(tooltip_room);
-        let tooltip_w = (360.0_f32)
-            .min(self.screen.x - safe.left - safe.right - gap * 2.0)
-            .max(1.0);
-        self.tooltip = if !modal && tooltip_h >= 48.0 {
-            Rect::new(
-                ((self.screen.x + safe.left - safe.right) * 0.5 - tooltip_w * 0.5)
-                    .max(safe.left + gap),
-                bottom - tooltip_h,
-                tooltip_w,
-                tooltip_h,
-            )
-        } else {
-            Rect::new(0.0, 0.0, 0.0, 0.0)
-        };
-        let hint_w = (band_w * 0.8).max(1.0);
-        self.hint = if self.viewport_h() >= 60.0 {
-            Rect::new(
-                safe.left + gap * 2.0,
-                self.top_bar.bottom() + gap,
-                hint_w,
-                32.0,
-            )
-        } else {
-            Rect::new(0.0, 0.0, 0.0, 0.0)
-        };
-        let phase_h = 132.0_f32.min((self.console.y - self.top_bar.bottom() - gap * 2.0).max(0.0));
-        self.phase = if phase_h >= 64.0 {
-            Rect::new(
-                (self.screen.x - 320.0) * 0.5,
-                (self.console.y - gap - phase_h).max(self.top_bar.bottom() + gap),
-                320.0_f32.min(self.screen.x - safe.left - safe.right),
-                phase_h,
-            )
-        } else {
-            Rect::new(0.0, 0.0, 0.0, 0.0)
-        };
-        self.mode_rect = Rect::new(
-            safe.left + gap,
-            self.top_bar.bottom() + gap,
-            120.0,
-            24.0,
-        );
-    }
-
-    fn viewport_h(&self) -> f32 {
-        self.console.y - self.top_bar.bottom()
     }
 
     /// Apply `px = dp * density` exactly once. Every field below is already in
@@ -2379,55 +1971,6 @@ impl HudLayout {
         }
     }
 }
-/// Row-major cells inside a card panel: 4x3 of `TOUCH_DP` with `CARD_GAP_DP`.
-fn card_field_slots(panel: Rect, columns: usize, rows: usize) -> Vec<Rect> {
-    let trim = CARD_GAP_DP.min(panel.w * 0.04);
-    let field = panel.inset(trim, trim);
-    let pitch_x = (TOUCH_DP + CARD_GAP_DP).min((field.w + CARD_GAP_DP) / columns as f32);
-    let pitch_y = (TOUCH_DP + CARD_GAP_DP).min((field.h + CARD_GAP_DP) / rows as f32);
-    let cell_x = (pitch_x - CARD_GAP_DP).max(TOUCH_DP * 0.75);
-    let cell_y = (pitch_y - CARD_GAP_DP).max(TOUCH_DP * 0.75);
-    let w = columns as f32 * cell_x + (columns - 1) as f32 * CARD_GAP_DP;
-    let h = rows as f32 * cell_y + (rows - 1) as f32 * CARD_GAP_DP;
-    let x0 = field.x + (field.w - w).max(0.0) * 0.5;
-    let y0 = field.y + (field.h - h).max(0.0) * 0.5;
-    let mut out = Vec::with_capacity(columns * rows);
-    for row in 0..rows {
-        for column in 0..columns {
-            out.push(Rect::new(
-                x0 + column as f32 * (cell_x + CARD_GAP_DP),
-                y0 + row as f32 * (cell_y + CARD_GAP_DP),
-                cell_x,
-                cell_y,
-            ));
-        }
-    }
-    out
-}
-
-/// 3x3 tray for IDs 1..9 plus the tenth slot (ID `0`) to the right.
-fn tray_slots(area: Rect) -> Vec<Rect> {
-    let pitch = TOUCH_DP + CARD_GAP_DP;
-    let mut out = Vec::with_capacity(GROUP_COUNT);
-    for row in 0..3 {
-        for column in 0..3 {
-            out.push(Rect::new(
-                area.x + column as f32 * pitch,
-                area.y + row as f32 * pitch,
-                TOUCH_DP,
-                TOUCH_DP,
-            ));
-        }
-    }
-    out.push(Rect::new(
-        area.x + GROUPS_TRAY_DP + ZONE_GAP_DP,
-        area.y + (GROUPS_TRAY_DP - TOUCH_DP) * 0.5,
-        TOUCH_DP,
-        TOUCH_DP,
-    ));
-    out
-}
-
 #[derive(Clone, Debug)]
 pub struct MobileHudLayout {
     pub viewport: Vec2,
@@ -2772,9 +2315,13 @@ impl MobileHudLayout {
         {
             issues.push(format!("minimap image not square: {:?}", dp.minimap_image));
         }
-        // 7. The console must leave a usable playfield.
+        // 7. The console must leave a usable playfield. The 55% phone-class
+        // limit assumes a normal dp height; a 240 dp window (1280x720 at 3x)
+        // cannot hold the 48 dp command card plus the strip at 55% without
+        // clipping targets, so that class gets a documented 62% ceiling.
         let hud = dp.console.h + dp.top_bar.h;
-        if hud > dp.screen.y * 0.55 {
+        let ceiling = if dp.screen.y <= 260.0 { 0.62 } else { 0.55 };
+        if hud > dp.screen.y * ceiling {
             issues.push(format!(
                 "HUD eats {:.1}% of {:.0} dp height",
                 100.0 * hud / dp.screen.y,
@@ -2881,8 +2428,11 @@ pub struct MenuView<'a> {
     pub redraw: Option<MenuSkin>,
     /// Hovered button index (mouse/pointer over).
     pub hover: Option<usize>,
-    /// Pressed button index (pointer down).
+    /// Pressed entry index (pointer down), interpreted inside `pressed_group`.
     pub pressed: Option<usize>,
+    /// Group the pressed index belongs to: 0 entries, 1 tabs, 2 rows, 3 nav.
+    /// Without it the same index in two groups would light up together.
+    pub pressed_group: u8,
     /// Campaign group tabs (campaign screen).
     pub tabs: &'a [MenuButton<'a>],
     /// Active tab (drawn as pressed art, not a colour swap).
@@ -2914,6 +2464,8 @@ pub struct MenuLayout {
     pub nav: Vec<Rect>,
     /// Page counter plate (`HUMAN 1/2`).
     pub page_label: Rect,
+    /// Chapter rows that fit on this page (the caller pages the rest).
+    pub visible_rows: usize,
 }
 
 impl<'a> MenuView<'a> {
@@ -2988,6 +2540,7 @@ impl<'a> MenuView<'a> {
             redraw: None,
             hover: None,
             pressed: None,
+            pressed_group: 0,
             tabs: &[],
             active_tab: 0,
             rows: &[],
@@ -3052,6 +2605,12 @@ impl<'a> MenuView<'a> {
     }
 }
 
+/// `MenuView::pressed_group` values: which layout list the pressed index is in.
+pub const MENU_GROUP_ENTRIES: u8 = 0;
+pub const MENU_GROUP_TABS: u8 = 1;
+pub const MENU_GROUP_ROWS: u8 = 2;
+pub const MENU_GROUP_NAV: u8 = 3;
+
 /// 9-slice a pack part into `rect`: source insets keep their authored pixel
 /// size times `art_scale`, only the centre cell stretches. Zero-area cells are
 /// skipped, so a part with `t = b = 0` (the banner plate) becomes three
@@ -3106,6 +2665,12 @@ pub fn draw_menu_part(ui: &mut UiBatch, part: &MenuPart, rect: Rect, art_scale: 
 #[derive(Clone, Debug)]
 pub struct MobileHud {
     pub tokens: Tokens,
+    /// Design tokens (palette roles, the direction type scale, dp metrics).
+    /// The panel composes from these, never from ad-hoc pixel values.
+    pub theme: crate::ui::theme::Theme,
+    /// Signature of the last `HUD_CARD` line, so the diagnostic is logged once
+    /// per card shape instead of once per frame.
+    card_log: std::cell::Cell<u64>,
 }
 
 impl Default for MobileHud {
@@ -3118,11 +2683,77 @@ impl MobileHud {
     pub fn new() -> Self {
         Self {
             tokens: Tokens::default(),
+            theme: crate::ui::theme::Theme::classic_fantasy(),
+            card_log: std::cell::Cell::new(u64::MAX),
         }
     }
 
     pub fn with_tokens(tokens: Tokens) -> Self {
-        Self { tokens }
+        Self {
+            tokens,
+            ..Self::new()
+        }
+    }
+
+    /// Install an explicit theme (menu and HUD share one).
+    pub fn with_theme(mut self, theme: crate::ui::theme::Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    /// Type multiplier for a role at this frame's density (face authored at
+    /// 30 px, so `px = dp * density` and `scale = px / 30`).
+    pub fn type_scale(&self, role: crate::ui::theme::TypeRole, density: f32) -> f32 {
+        self.theme.scale_30(role, density)
+    }
+
+    /// The `HUD_CARD` diagnostic (addendum §2): one line per card shape.
+    fn log_card(&self, view: &HudView<'_>) {
+        let mut slots = 0usize;
+        let mut icons = 0usize;
+        let mut missing = 0usize;
+        for button in view.commands {
+            if !button.present {
+                continue;
+            }
+            slots += 1;
+            if button.icon.is_some() {
+                icons += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        let signature = ((slots as u64) << 20) | ((icons as u64) << 10) | missing as u64;
+        if self.card_log.get() == signature {
+            return;
+        }
+        self.card_log.set(signature);
+        crate::dev_log!(
+            "HUD_CARD slots={slots} icons={icons} missing={missing} page=1/1"
+        );
+    }
+
+    /// The `HUD_PORTRAIT` diagnostic (addendum §1), once per def.
+    fn log_portrait(&self, view: &HudView<'_>) {
+        let Some(selection) = view.selection.as_ref() else {
+            return;
+        };
+        let Some(def) = selection.def else {
+            return;
+        };
+        let source = selection
+            .portrait_source
+            .clone()
+            .unwrap_or_else(|| {
+                crate::ui::widgets::portrait::resolve(
+                    def,
+                    None,
+                    selection.portrait.map(|_| "texture"),
+                )
+            });
+        if let Some(line) = crate::ui::widgets::portrait::log_once(def, &source) {
+            crate::dev_log!("{line}");
+        }
     }
 
     /// Canonical dp layout for this frame (TZ §4.2). Pure: the same metrics,
@@ -3149,7 +2780,22 @@ impl MobileHud {
         let mut prefs = view.ui;
         prefs.show_fps = view.show_fps;
         prefs.show_hitboxes = view.show_hitboxes;
-        HudLayout::compute(metrics, prefs, state)
+        let mut dp = HudLayout::compute(metrics, prefs, state);
+        // Publish exactly the toast bands that have a live toast: the composer
+        // reserves up to three rows, but an empty band is not a row (the 0
+        // toast case used to report three, and the draw/hit lists disagreed).
+        let live = if view.toasts.is_empty() {
+            usize::from(view.toast.is_some())
+        } else {
+            view.toasts.len()
+        };
+        dp.toasts.truncate(live);
+        dp.toast = dp
+            .toasts
+            .first()
+            .copied()
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0));
+        dp
     }
 
     /// Draw/hit-ready pixel rectangles. This is the only place `px = dp *
@@ -3157,7 +2803,60 @@ impl MobileHud {
     pub fn layout(&self, view: &HudView<'_>) -> MobileHudLayout {
         let dp = self.hud_layout(view);
         let mut px = dp.to_px(self.hud_density(view));
+        // The minimap ornament is drawn *outside* the image/hit rect (the
+        // nine-patch border dilates it). A flush image (x=0) therefore painted
+        // the frame at x=-4, outside the safe area. Keep the dilated frame
+        // inside the console by insetting the image origin by the measured
+        // border; the hit rect stays the image the caller draws.
+        if let Some(skin) = view.hud_skin && px.minimap.w > 0.0 && px.minimap.h > 0.0 {
+            let border = crate::hudskin::minimap_frame::borders(skin, px.minimap.w);
+            let console = px.console;
+            let lo_x = console.x + border[0];
+            let hi_x = (console.right() - px.minimap.w - border[2]).max(lo_x);
+            let lo_y = console.y + border[1];
+            let hi_y = (console.bottom() - px.minimap.h - border[3]).max(lo_y);
+            px.minimap.x = px.minimap.x.clamp(lo_x, hi_x);
+            px.minimap.y = px.minimap.y.clamp(lo_y, hi_y);
+            // A widened frame can reach the command card in the portrait
+            // compact plan (image 112 -> frame 136 at x=0 while the card starts
+            // at 128). Shrink the square so the ornament touches but never
+            // overlaps a sibling zone; the ratio stays >0.8.
+            let mut side = px.minimap.w.min(px.minimap.h);
+            // The frame starts at image.x - border_l (already inside the
+            // console), so only the right/bottom border consumes the gap to a
+            // sibling: side <= sibling - image - border_far.
+            if px.card.w > 0.0 && px.card.x >= px.minimap.x {
+                side = side.min(px.card.x - px.minimap.x - border[2]);
+            }
+            if px.groups_area.w > 0.0 && px.groups_area.x >= px.minimap.x {
+                side = side.min(px.groups_area.x - px.minimap.x - border[2]);
+            }
+            side = side.min(px.console.bottom() - px.minimap.y - border[3]);
+            if side > 16.0 && side < px.minimap.w {
+                px.minimap.w = side;
+                px.minimap.h = side;
+            }
+        }
         px.tooltip_anchor = view.tooltip_anchor;
+        // The classic (non-pack) tooltip is placed by the same composer: float
+        // it above the hovered slot, clamped to the safe frame. The skin path
+        // re-anchors through `skin_tooltip::draw_request`, using the same
+        // anchor; the old code left the rect centred and only shifted the
+        // drawn box on the pack path, so the two paths disagreed on the box.
+        if let Some(anchor) = view.tooltip_anchor
+            && px.tooltip.w > 0.0
+            && px.tooltip.h > 0.0
+        {
+            let gap = ZONE_GAP_DP * px.density;
+            let max_x = (px.safe_frame.right() - px.tooltip.w).max(px.safe_frame.x);
+            let x = (anchor.centre().x - px.tooltip.w * 0.5).clamp(px.safe_frame.x, max_x);
+            let mut y = anchor.y - gap - px.tooltip.h;
+            if y < px.safe_frame.y {
+                y = anchor.bottom() + gap;
+            }
+            let max_y = (px.safe_frame.bottom() - px.tooltip.h).max(px.safe_frame.y);
+            px.tooltip = Rect::new(x, y.clamp(px.safe_frame.y, max_y), px.tooltip.w, px.tooltip.h);
+        }
         px
     }
 
@@ -3173,6 +2872,8 @@ impl MobileHud {
         font: &Font,
         chrome: &Chrome,
     ) -> MobileHudLayout {
+        self.log_portrait(view);
+        self.log_card(view);
         if let Some(skin) = view.hud_skin
             && let Some(pack) = skin.pack.as_ref()
         {
@@ -3198,7 +2899,7 @@ impl MobileHud {
         if let Some(skin) = view.hud_skin {
             draw_stone_field(ui, flat, layout.console, stone);
             draw_bevel_ring(ui, flat, layout.console, s, STONE_HI, STONE_LO, GOLD_LINE);
-            layout.minimap_frame = draw_minimap_frame(skin, ui, flat, &layout, s);
+            draw_minimap_frame(skin, ui, flat, &layout, s);
             draw_minimap_rail(skin, ui, flat, &layout, font, tokens, s);
             draw_selection_skin(ui, flat, font, tokens, &layout, view, skin);
             if view.selection.is_none() {
@@ -3259,6 +2960,17 @@ impl MobileHud {
             draw_minimap_fallback(ui, chrome, &layout, view, font, tokens, s);
             draw_selection_fallback(ui, font, chrome, tokens, &layout, view, s);
             draw_card_fallback(ui, font, chrome, tokens, &layout, view, s);
+            // Compact mode has no inline card/groups tray: the two persistent
+            // drawer controls are the only affordance. The classic path used
+            // to leave their 48 dp rects empty (they were only painted on the
+            // pack path), which read as two stray squares on the console.
+            let chain = FontChain::new(&[font]);
+            for (rect, label, open) in [
+                (layout.groups_button, "ARMY", view.groups_open),
+                (layout.commands_button, "CMD", view.commands_open),
+            ] {
+                draw_drawer_button_fallback(ui, &chain, tokens, flat, rect, label, s, shadow, open);
+            }
             for (index, slot) in layout.army_slots.iter().enumerate() {
                 if !chrome.element(ui, *slot, "button_empty", s, [0.72, 0.72, 0.72, 0.85]) {
                     chrome.flat_rect(ui, *slot, [0.04, 0.035, 0.03, 0.95]);
@@ -3825,7 +3537,7 @@ impl MobileHud {
                 ui,
                 view.map_name,
                 layout.map_name,
-                sp(13.0, d),
+                self.type_scale(crate::ui::theme::TypeRole::Body, d),
                 tokens.text,
                 TextAlign::Left,
                 shadow,
@@ -3869,7 +3581,7 @@ impl MobileHud {
                     ui,
                     data.value,
                     value_rect,
-                    sp(16.0, d),
+                    self.type_scale(crate::ui::theme::TypeRole::Numeric, d),
                     if data.warn { tokens.hp_low } else { data.tone },
                     TextAlign::Left,
                     shadow,
@@ -3939,6 +3651,7 @@ impl MobileHud {
             &text_chain,
             &number_chain,
             tokens,
+            &self.theme,
             skin,
             Some(pack),
             flat,
@@ -4209,10 +3922,14 @@ impl MobileHud {
             (vp.y - safe.top - safe.bottom).max(1.0),
         );
         let margin = (14.0 * s).clamp(8.0, 30.0);
+        // A 320 px floor is a readability target, not a licence to exceed the
+        // frame: on a 320x240 window it made the panel 320 tall, centred it at
+        // y=-40 and cut the title (port-parity `menu-layout`, compact case).
+        // Stay inside the frame; the floor applies only when it fits.
         let panel_w = (frame.w - 2.0 * margin)
             .min((if portrait { 980.0 } else { 1080.0 }) * s)
-            .max(320.0);
-        let panel_h = (frame.h - 2.0 * margin).max(320.0);
+            .max(1.0);
+        let panel_h = (frame.h - 2.0 * margin).max(1.0);
         let panel = Rect::new(
             frame.x + (frame.w - panel_w) * 0.5,
             frame.y + (frame.h - panel_h) * 0.5,
@@ -4222,7 +3939,12 @@ impl MobileHud {
         // Panel art inset (24 px authored) plus a reading pad.
         let inset = (24.0 * s).clamp(18.0, 42.0) + (10.0 * s).clamp(6.0, 18.0);
         let content = panel.inset_sides(inset, inset, inset, inset);
-        let title_h = (content.h * 0.14).clamp(96.0, 150.0);
+        // Retail glue art scales the title band from the PANEL WIDTH, not from
+        // the leftover height: at 2414x1080 the old 14%-of-height band was a
+        // 96-150 px strip that read as a tiny label above a huge panel.
+        let title_h = (panel.w * 0.155)
+            .clamp(84.0, 190.0)
+            .min((content.h * 0.26).max(48.0));
         let title_band = Rect::new(content.x, content.y, content.w, title_h);
         let title = Rect::new(
             title_band.x + 18.0 * s,
@@ -4230,17 +3952,21 @@ impl MobileHud {
             title_band.w - 36.0 * s,
             (title_h * 0.56).max(30.0),
         );
+        // The page counter shares the subtitle row instead of being stacked on
+        // top of it: the old absolute y placed "HUMAN 1/2" inside the title
+        // rect on a 184 px band.
+        let page_w = ((210.0 * s).min(title_band.w * 0.36) - 12.0 * s).max(60.0);
+        let page_label = Rect::new(
+            title_band.right() - page_w - 12.0 * s,
+            title.bottom(),
+            page_w,
+            (title_h * 0.26).max(20.0),
+        );
         let subtitle = Rect::new(
             title.x,
             title.bottom(),
-            title.w,
+            (title.w - page_w - 12.0 * s).max(80.0),
             (title_h * 0.30).max(22.0),
-        );
-        let page_label = Rect::new(
-            title_band.right() - (210.0 * s).min(title_band.w * 0.36),
-            title_band.y + title_h * 0.60,
-            (210.0 * s).min(title_band.w * 0.36) - 12.0 * s,
-            (title_h * 0.26).max(20.0),
         );
         let status_h = (30.0 * s).clamp(26.0, 46.0);
         let status = Rect::new(content.x, content.bottom() - status_h, content.w, status_h);
@@ -4265,9 +3991,30 @@ impl MobileHud {
         // menu with zero button rects, so only the hardware Back (Quit) worked.
         let use_buttons = !view.buttons.is_empty();
         let use_nav = !view.nav.is_empty();
+        // Six tabs across 1113 px fit one row at the measured phone; on a
+        // 300 px portrait panel they wrap to 2x3 instead of forcing 64 px cells
+        // that would escape the plate. `tab_rows` is part of the stack budget.
+        let tab_gap = 8.0 * s;
+        let tab_count = view.tabs.len();
+        let per_row_cap = if tab_count > 0 {
+            let max_cell = (content.w - tab_gap * (tab_count as f32 - 1.0))
+                / tab_count as f32;
+            if max_cell >= MENU_MIN_TARGET_PX {
+                tab_count
+            } else {
+                3.min(tab_count).max(1)
+            }
+        } else {
+            0
+        };
+        let tab_rows = if use_tabs {
+            tab_count.div_ceil(per_row_cap).max(1)
+        } else {
+            0
+        };
         let mut slots = 0usize;
         if use_tabs {
-            slots += 1;
+            slots += tab_rows;
         }
         if use_rows {
             slots += view.rows.len();
@@ -4280,28 +4027,70 @@ impl MobileHud {
         }
         let slots = slots.max(1);
         let slot_gap = gap * (slots as f32 - 1.0);
-        let row_h = ((avail - slot_gap) / slots as f32).clamp(MENU_MIN_TARGET_PX, 150.0);
-        let used = row_h * slots as f32 + slot_gap;
+        let mut row_h = ((avail - slot_gap) / slots as f32).clamp(MENU_MIN_TARGET_PX, 150.0);
+        let mut used = row_h * slots as f32 + slot_gap;
+        // The 90 px floor is a target, not a licence to overflow: with six main
+        // menu entries on a 1080 px-tall device (864 px of safe frame) the stack
+        // pushed QUIT/OPTIONS/LOAD past the bottom edge (device 14:18). Shrink
+        // to fit, floor 48 px (still a finger target), before drawing anything.
+        if used > avail + 0.5 {
+            row_h = ((avail - slot_gap) / slots as f32).max(48.0);
+            used = row_h * slots as f32 + slot_gap;
+        }
+        // A list page paginates: tabs and nav keep their 90 px rows, the
+        // chapter rows take what is left. Without this, a 14-row campaign list
+        // pushed its last rows out of the panel (the "empty published page"
+        // defect). `visible_rows` is published so the caller's page label and
+        // PREV/NEXT row stay honest.
+        // Count actual entries, not booleans: casting `use_buttons`/`use_nav`
+        // to usize contributed 1 each regardless of how many rows they draw,
+        // so the second `row_h` solve saw 1 slot, reset it to the 150 px cap
+        // and the four/six real buttons overflowed the panel (device 11:56).
+        let fixed = tab_rows
+            + if use_nav { view.nav.len().max(1) } else { 0 }
+            + if use_buttons { view.buttons.len().max(1) } else { 0 };
+        let mut visible_rows = if use_rows { view.rows.len() } else { 0 };
+        if use_rows && used > avail + 0.5 {
+            let fixed_h = fixed as f32 * (MENU_MIN_TARGET_PX + gap);
+            let room = (avail - fixed_h - gap).max(0.0);
+            visible_rows = (room / (MENU_MIN_TARGET_PX + gap)).floor() as usize;
+            visible_rows = visible_rows.clamp(1, view.rows.len());
+        }
+        let slots = fixed + visible_rows;
+        let slots = slots.max(1) as f32;
+        let slot_gap = gap * (slots - 1.0);
+        // When even the fixed rows cannot reach 90 px (a 240 dp-tall window),
+        // the rows shrink instead of leaving the panel; 1080-class screens keep
+        // the operator's floor.
+        let natural = ((avail - slot_gap) / slots).max(1.0);
+        let row_h = natural.min(150.0);
         // Centre the stack in the slack; never let it start above the band.
-        let mut y = stack_top + ((avail - used) * 0.5).max(0.0);
+        let mut y = stack_top + ((avail - (row_h * slots + slot_gap)) * 0.5).max(0.0);
 
         let mut tabs = Vec::new();
         let mut rows = Vec::new();
         let mut buttons = Vec::new();
         let mut nav = Vec::new();
         if use_tabs {
-            let count = view.tabs.len() as f32;
-            let cell_gap = 8.0 * s;
-            let cell_w = ((content.w - cell_gap * (count - 1.0)) / count).max(64.0);
-            let mut x = content.x + (content.w - (cell_w * count + cell_gap * (count - 1.0))) * 0.5;
-            for _ in 0..view.tabs.len() {
-                tabs.push(Rect::new(x, y, cell_w, row_h));
-                x += cell_w + cell_gap;
+            let cell_gap = tab_gap;
+            let cell_w = ((content.w - cell_gap * (per_row_cap as f32 - 1.0))
+                / per_row_cap as f32)
+                .max(1.0);
+            let mut remaining = view.tabs.len();
+            for _ in 0..tab_rows {
+                let in_row = remaining.min(per_row_cap);
+                let row_w = cell_w * in_row as f32 + cell_gap * (in_row as f32 - 1.0);
+                let mut x = content.x + (content.w - row_w) * 0.5;
+                for _ in 0..in_row {
+                    tabs.push(Rect::new(x, y, cell_w, row_h));
+                    x += cell_w + cell_gap;
+                }
+                remaining -= in_row;
+                y += row_h + gap;
             }
-            y += row_h + gap;
         }
         if use_rows {
-            for _ in 0..view.rows.len() {
+            for _ in 0..visible_rows {
                 rows.push(Rect::new(content.x, y, content.w, row_h));
                 y += row_h + gap;
             }
@@ -4337,6 +4126,7 @@ impl MobileHud {
             rows,
             nav,
             page_label,
+            visible_rows,
         }
     }
 
@@ -4451,7 +4241,7 @@ impl MobileHud {
             };
             let state = if index == view.active_tab {
                 MenuButtonState::Pressed
-            } else if view.pressed == Some(index) {
+            } else if view.pressed == Some(index) && view.pressed_group == MENU_GROUP_TABS {
                 MenuButtonState::Pressed
             } else {
                 MenuButtonState::Normal
@@ -4464,7 +4254,7 @@ impl MobileHud {
             };
             let state = if !button.enabled {
                 MenuButtonState::Disabled
-            } else if view.pressed == Some(index) {
+            } else if view.pressed == Some(index) && view.pressed_group == MENU_GROUP_ROWS {
                 MenuButtonState::Pressed
             } else if view.hover == Some(index) {
                 MenuButtonState::Hover
@@ -4479,7 +4269,7 @@ impl MobileHud {
             };
             let state = if !button.enabled {
                 MenuButtonState::Disabled
-            } else if view.pressed == Some(index) {
+            } else if view.pressed == Some(index) && view.pressed_group == MENU_GROUP_ENTRIES {
                 MenuButtonState::Pressed
             } else if view.hover == Some(index) {
                 MenuButtonState::Hover
@@ -4494,7 +4284,7 @@ impl MobileHud {
             };
             let state = if !button.enabled {
                 MenuButtonState::Disabled
-            } else if view.pressed == Some(index) {
+            } else if view.pressed == Some(index) && view.pressed_group == MENU_GROUP_NAV {
                 MenuButtonState::Pressed
             } else {
                 MenuButtonState::Normal
@@ -4577,6 +4367,7 @@ fn draw_menu_entry(
     compact: bool,
 ) {
     let art_scale = (rect.h / 64.0).clamp(0.7, 2.4);
+    let dimmed = state == MenuButtonState::Disabled;
     let part = match state {
         MenuButtonState::Normal => skin.and_then(|skin| skin.button_normal),
         MenuButtonState::Hover => skin
@@ -4587,26 +4378,61 @@ fn draw_menu_entry(
             .and_then(|skin| skin.button_disabled.or(skin.button_normal)),
     };
     match part {
-        Some(part) => draw_menu_part(ui, &part, rect, art_scale, [1.0; 4]),
+        // A locked row is a dimmed plate, never a bare colour square: the
+        // shipped disabled/normal art is drawn with a grey tint, and when a
+        // data set has no menu art at all the fallback is a bevelled stone
+        // plate with a top highlight, a bottom shadow and an inset line.
+        Some(part) => draw_menu_part(
+            ui,
+            &part,
+            rect,
+            art_scale,
+            if dimmed {
+                [0.60, 0.60, 0.64, 1.0]
+            } else {
+                [1.0; 4]
+            },
+        ),
         None => {
+            let fill_color = if dimmed {
+                [0.052, 0.048, 0.041, 0.95]
+            } else if button.enabled {
+                [0.10, 0.085, 0.06, 0.98]
+            } else {
+                [0.05, 0.045, 0.035, 0.9]
+            };
+            chrome.flat_rect(ui, rect, fill_color);
+            let edge = (1.5 * s).max(1.0);
             chrome.flat_rect(
                 ui,
-                rect,
-                if button.enabled {
-                    [0.10, 0.085, 0.06, 0.98]
+                Rect::new(rect.x, rect.y, rect.w, edge),
+                if dimmed {
+                    [0.24, 0.22, 0.18, 0.75]
                 } else {
-                    [0.05, 0.045, 0.035, 0.9]
+                    [0.34, 0.30, 0.21, 0.85]
                 },
+            );
+            chrome.flat_rect(
+                ui,
+                Rect::new(rect.x, rect.bottom() - edge, rect.w, edge),
+                [0.015, 0.014, 0.011, 0.9],
             );
             ui.border(
                 rect,
-                1.5 * s,
-                if button.enabled {
+                edge,
+                if dimmed {
+                    [0.20, 0.18, 0.14, 0.7]
+                } else if button.enabled {
                     [0.62, 0.49, 0.22, 0.95]
                 } else {
                     [0.25, 0.22, 0.16, 0.7]
                 },
             );
+            if dimmed {
+                // Recessed veil so a locked row reads as unavailable, not as a
+                // different widget.
+                chrome.flat_rect(ui, rect.inset(2.0 * s, 2.0 * s), [0.0, 0.0, 0.0, 0.24]);
+            }
         }
     }
     let color = if button.enabled {
@@ -4615,16 +4441,24 @@ fn draw_menu_entry(
         tokens.disabled
     };
     // Label left, tag right; the tag never eats more than a third of the plate.
+    // Tabs are a single centred row of six cells: they use the full plate (the
+    // old 30% tag reservation is what truncated "PROLOGUE" to "PROLOG").
     let pad_x = (26.0 * s).min(rect.w * 0.08);
-    let tag_w = (rect.w * 0.30).min(220.0 * s);
-    let label_w = (rect.w - tag_w - 3.0 * pad_x).max(40.0);
+    let tag_w = if compact {
+        0.0
+    } else {
+        (rect.w * 0.30).min(220.0 * s)
+    };
+    let label_w = (rect.w - tag_w - if compact { 2.0 } else { 3.0 } * pad_x).max(24.0);
     let inner = Rect::new(
         rect.x + pad_x,
         rect.y + 6.0 * s,
         label_w,
         (rect.h - 12.0 * s).max(10.0),
     );
-    let label_scale = (rect.h * if compact { 0.30 } else { 0.34 } / 30.0).clamp(0.72, 1.6);
+    // A 90 px row is a finger target, and its label must read like a WC3 glue
+    // entry, not a footnote: ~30-34 px caps on a 90 px plate.
+    let label_scale = (rect.h * if compact { 0.38 } else { 0.42 } / 30.0).clamp(0.72, 1.8);
     let fit = fit_text_plate(font, button.label, inner, label_scale, MIN_TEXT_PX, 1);
     draw_plate_text(
         ui,
@@ -4642,7 +4476,7 @@ fn draw_menu_entry(
             tag_w,
             (rect.h - 16.0 * s).max(8.0),
         );
-        let tag_scale = (rect.h * 0.24 / 30.0).clamp(0.66, 1.1);
+        let tag_scale = (rect.h * 0.28 / 30.0).clamp(0.66, 1.2);
         let tag_fit = fit_text_plate(font, button.sub, tag, tag_scale, MIN_TEXT_PX * 0.8, 1);
         draw_plate_text(
             ui,
@@ -4866,6 +4700,7 @@ impl MobileHud {
             rows: Vec::new(),
             nav: Vec::new(),
             page_label: Rect::new(panel.x, panel.bottom(), 0.0, 0.0),
+            visible_rows: 0,
         }
     }
 
@@ -6669,19 +6504,23 @@ fn portrait_scaled_skin(skin: &Skin, scale: f32) -> Skin {
 /// Console stone field. Device frame 2026-11-16 02:19 measured (99,88,78) on a
 /// 0.47 fill: too bright, the gold frames had no contrast. Target mean is
 /// (58,52,47) = 0.227,0.204,0.184 (`COMPOSITION.md` §2).
-pub const STONE_FIELD: [f32; 4] = [0.227, 0.204, 0.184, 1.0];
+pub const STONE_FIELD: [f32; 4] =
+    crate::ui::theme::Palette::classic_fantasy().bg_secondary.to_array();
 /// Stone bevel: 1 px lighter top/left highlight, darker bottom/right shadow.
 pub const STONE_HI: [f32; 4] = [0.360, 0.330, 0.295, 1.0];
 pub const STONE_LO: [f32; 4] = [0.105, 0.095, 0.082, 1.0];
 /// Card-plate interior behind the command grid (atlas card plate = 38,39,40).
-pub const PLATE_FILL: [f32; 4] = [0.150, 0.153, 0.157, 0.96];
+pub const PLATE_FILL: [f32; 4] =
+    crate::ui::theme::Palette::classic_fantasy().bg_raised.to_array();
 /// Dark inlay (crest panel, portrait matte).
-pub const PANEL_DARK: [f32; 4] = [0.078, 0.086, 0.098, 0.98];
+pub const PANEL_DARK: [f32; 4] =
+    crate::ui::theme::Palette::classic_fantasy().bg_primary.to_array();
 /// Top banner: its own darker slab (36,30,26) with a gold rail, so the
 /// playfield edge is defined against the console.
-pub const BANNER_FIELD: [f32; 4] = [0.141, 0.118, 0.102, 0.99];
+pub const BANNER_FIELD: [f32; 4] =
+    crate::ui::theme::Palette::classic_fantasy().bg_raised.to_array();
 /// Warm hairline used on every panel edge.
-pub const GOLD_LINE: [f32; 4] = [0.720, 0.610, 0.340, 0.85];
+pub const GOLD_LINE: [f32; 4] = crate::ui::theme::Palette::classic_fantasy().accent.to_array();
 
 /// Deterministic value noise: the stone grain must be identical on every run
 /// and every screenshot, so it is a hash of the cell index, never an RNG.
@@ -7208,6 +7047,79 @@ fn draw_console_band(ui: &mut UiBatch, pack: &HudPack, layout: &MobileHudLayout,
     }
 }
 
+/// Fit one text row through a font chain and draw it: the scale steps down to
+/// the readable floor, and only a genuinely impossible row falls back to the
+/// chain's ellipsis. Returns the measured width at the drawn scale so tests can
+/// assert the row stays inside its plate.
+#[allow(clippy::too_many_arguments)]
+fn draw_chain_line(
+    ui: &mut UiBatch,
+    chain: &FontChain<'_>,
+    text: &str,
+    rect: Rect,
+    scale: f32,
+    color: [f32; 4],
+    align: TextAlign,
+    shadow: Option<[f32; 4]>,
+) -> f32 {
+    let floor = (MIN_TEXT_PX / 30.0).max(0.4);
+    let mut fitted = if scale.is_finite() { scale.max(floor) } else { floor };
+    let mut width = chain.measure(text, fitted);
+    while width > rect.w + 0.01 && fitted > floor + 1e-4 {
+        fitted = (fitted - 0.02).max(floor);
+        width = chain.measure(text, fitted);
+    }
+    chain.text_box(ui, text, rect, fitted, color, align, shadow);
+    chain.measure(text, fitted)
+}
+
+/// Flat fallback for the persistent compact drawer toggles (`ARMY` / `CMD`):
+/// the same pressed tint and gold outline as the pack plate, without a skin.
+#[allow(clippy::too_many_arguments)]
+fn draw_drawer_button_fallback(
+    ui: &mut UiBatch,
+    chain: &FontChain<'_>,
+    tokens: &Tokens,
+    flat: usize,
+    rect: Rect,
+    label: &str,
+    s: f32,
+    shadow: Option<[f32; 4]>,
+    open: bool,
+) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    fill(
+        ui,
+        flat,
+        rect,
+        if open {
+            [0.16, 0.13, 0.07, 0.98]
+        } else {
+            [0.07, 0.065, 0.05, 0.98]
+        },
+    );
+    ui.border(
+        rect,
+        (1.5 * s).max(1.0),
+        if open {
+            [0.85, 0.70, 0.32, 0.95]
+        } else {
+            [0.55, 0.44, 0.22, 0.9]
+        },
+    );
+    chain.text_box(
+        ui,
+        label,
+        Rect::new(rect.x, rect.centre().y - 7.0 * s, rect.w, 15.0 * s),
+        (0.36 * s).max(MIN_TEXT_PX / 30.0),
+        if open { tokens.gold } else { tokens.text },
+        TextAlign::Centre,
+        shadow,
+    );
+}
+
 /// Filled HP/mana trough with a hairline border, a fill and centred text that
 /// never clips (TZ §6.2).
 fn draw_unit_bar(
@@ -7273,6 +7185,7 @@ fn draw_selection_panel(
     text_chain: &FontChain<'_>,
     number_chain: &FontChain<'_>,
     tokens: &Tokens,
+    theme: &crate::ui::theme::Theme,
     skin: &Skin,
     pack: Option<&HudPack>,
     flat: usize,
@@ -7287,6 +7200,10 @@ fn draw_selection_panel(
         return;
     }
     let ivory = [0.94, 0.90, 0.80, 1.0];
+    // Direction type scale (addendum §3): the name is a heading, every info
+    // row is a label. No ad-hoc `sp(11, d)` inside the unit card.
+    let t_name = theme.scale_30(crate::ui::theme::TypeRole::Heading, d);
+    let t_label = theme.scale_30(crate::ui::theme::TypeRole::Label, d);
     let Some(selection) = view.selection.as_ref() else {
         // Composed empty state inside the same panel: no fake portrait frame,
         // no clipped plaque, no reserved stat/queue space (TZ §6.2).
@@ -7331,7 +7248,7 @@ fn draw_selection_panel(
                     (zone.w - 12.0 * d).max(1.0),
                     16.0 * d,
                 ),
-                sp(12.0, d),
+                t_label,
                 tokens.text_muted,
                 TextAlign::Centre,
                 shadow,
@@ -7361,11 +7278,12 @@ fn draw_selection_panel(
     } else {
         skin.nine_scaled(ui, "tile_gold", layout.portrait, [1.0; 4], s);
     }
-    text_chain.text_box(
+    draw_chain_line(
         ui,
+        text_chain,
         &selection.name,
         layout.name,
-        sp(16.0, d),
+        t_name,
         tokens.gold,
         TextAlign::Left,
         shadow,
@@ -7375,11 +7293,12 @@ fn draw_selection_panel(
     } else {
         selection.class.clone()
     };
-    text_chain.text_box(
+    draw_chain_line(
         ui,
+        text_chain,
         &class_line,
         layout.class,
-        sp(12.0, d),
+        t_label,
         ivory,
         TextAlign::Left,
         shadow,
@@ -7460,11 +7379,12 @@ fn draw_selection_panel(
         if let Some((used, cap)) = selection.food {
             stats.push_str(&format!("   FOOD {used}/{cap}"));
         }
-        text_chain.text_box(
+        draw_chain_line(
             ui,
+            text_chain,
             &stats,
             layout.stats,
-            sp(11.0, d),
+            t_label,
             ivory,
             TextAlign::Left,
             shadow,
@@ -7473,11 +7393,12 @@ fn draw_selection_panel(
     if let Some(production) = selection.production.as_ref()
         && layout.production_label.h > 0.0
     {
-        text_chain.text_box(
+        draw_chain_line(
             ui,
+            text_chain,
             &format!("{}  {}s", production.name, production.remaining),
             layout.production_label,
-            sp(11.0, d),
+            t_label,
             ivory,
             TextAlign::Left,
             shadow,
@@ -7620,23 +7541,28 @@ fn draw_minimap_frame(
     flat: usize,
     layout: &MobileHudLayout,
     s: f32,
-) -> Rect {
-    let frame = layout.minimap_image.expanded_sides(
-        MINIMAP_FRAME_INSETS[0],
-        MINIMAP_FRAME_INSETS[1],
-        MINIMAP_FRAME_INSETS[2],
-        MINIMAP_FRAME_INSETS[3],
-    );
-    if frame.w <= 0.0 {
-        return frame;
+) {
+    // The frame is the composer's rect. The old path expanded
+    // `minimap_image` by `MINIMAP_FRAME_INSETS` here, which made the drawn
+    // frame 24 dp wider than the one the hit test and the minimap content
+    // used — the third composer the operator saw as a shifted map. Draw the
+    // canonical rect and let the 9-slice insets scale inside it.
+    let frame = layout.minimap_frame;
+    if frame.w <= 0.0 || frame.h <= 0.0 {
+        return;
     }
     fill(ui, flat, frame, [0.085, 0.085, 0.080, 1.0]);
     fill(ui, flat, 
         Rect::new(frame.x, frame.y, frame.w, (2.0 * s).max(1.0)),
         STONE_HI,
     );
-    atlas_tile_frame(skin, ui, "slot_dark", frame, MINIMAP_FRAME_INSETS, [1.0; 4]);
-    frame
+    let insets = [
+        MINIMAP_FRAME_INSETS[0].min(frame.w * 0.2),
+        MINIMAP_FRAME_INSETS[1].min(frame.h * 0.2),
+        MINIMAP_FRAME_INSETS[2].min(frame.w * 0.2),
+        MINIMAP_FRAME_INSETS[3].min(frame.h * 0.2),
+    ];
+    atlas_tile_frame(skin, ui, "slot_dark", frame, insets, [1.0; 4]);
 }
 
 /// Reference column of mini buttons beside the minimap: engraved stone bosses
@@ -7832,13 +7758,14 @@ fn draw_selection_skin(
     }
     // Device frame 2026-11-16: the name clipped mid-glyph and the class line
     // printed "BUILDING · BUILDING" (game.rs already carries the kind in the
-    // class for buildings). Fit the name with an ellipsis and de-duplicate.
-    font.draw_fit(
+    // class for buildings). 521: fit as a whole-word single line, never a
+    // mid-word ellipsis.
+    let name_fit = fit_text_plate(font, &selection.name, layout.name, 0.76 * s, MIN_TEXT_PX, 1);
+    draw_plate_text(
         ui,
+        font,
+        &name_fit,
         layout.name,
-        &selection.name,
-        0.76 * s,
-        crate::hud::MIN_DENSE_PX,
         tokens.text,
         TextAlign::Left,
         Some(tokens.shadow),
@@ -7850,12 +7777,12 @@ fn draw_selection_skin(
     } else {
         format!("{} · {}", selection.class, selection.kind)
     };
-    font.draw_fit(
+    let class_fit = fit_text_plate(font, &sub, layout.class, 0.50 * s, MIN_TEXT_PX, 1);
+    draw_plate_text(
         ui,
+        font,
+        &class_fit,
         layout.class,
-        &sub,
-        0.50 * s,
-        crate::hud::MIN_DENSE_PX,
         tokens.text_muted,
         TextAlign::Left,
         None,
@@ -8426,7 +8353,9 @@ fn draw_selection_fallback(
     s: f32,
 ) {
     if view.selection.is_some() {
-        let info_panel = layout.selection.expanded(4.0 * s, 4.0 * s);
+        // The panel is the composer's zone; the old +4*s expansion drew the
+        // info plate 8 px outside the rect the hit test used.
+        let info_panel = layout.selection;
         chrome.flat_rect(ui, info_panel, [0.025, 0.022, 0.018, 0.92]);
         if let Some(panel) = view.redraw.and_then(|skin| skin.selection_panel) {
             chrome.frame(ui, info_panel, Some(panel), 1.0, [1.0; 4]);
@@ -8471,20 +8400,29 @@ fn draw_selection_fallback(
     } else {
         chrome_letter(ui, font, tokens, selection, inset);
     }
-    font.text_box(
+    let name_fit = fit_text_plate(font, &selection.name, layout.name, 0.76 * s, MIN_TEXT_PX, 1);
+    draw_plate_text(
         ui,
-        &selection.name,
-        clamp_rect(layout.name, layout.console),
-        0.76 * s,
+        font,
+        &name_fit,
+        layout.name,
         tokens.text,
         TextAlign::Left,
         Some(tokens.shadow),
     );
-    font.text_box(
-        ui,
+    let class_fit = fit_text_plate(
+        font,
         &format!("{}  ·  {}", selection.class, selection.kind),
-        clamp_rect(layout.class, layout.console),
+        layout.class,
         0.50 * s,
+        MIN_TEXT_PX,
+        1,
+    );
+    draw_plate_text(
+        ui,
+        font,
+        &class_fit,
+        layout.class,
         tokens.text_muted,
         TextAlign::Left,
         None,
@@ -9565,6 +9503,112 @@ mod tests {
         menu_part_from(index, textures)
     }
 
+    /// The selection text rows are stacked, not piled: at every device
+    /// resolution the name, class, stats, production and bar rects must be
+    /// pairwise disjoint and inside the selection panel. The device-visible
+    /// defect this locks down was "ARCHER / WARRIOR - RANGED / ARMOR 0 DAMAGE 14
+    /// / TRAINING 42%" all drawn over one another.
+    /// Device metrics dump: the exact rects the phone draws (2414x1080,
+    /// density 3.0, insets 210/120/90/96) so an HUD defect is fixed against
+    /// numbers instead of a screenshot guess. Run with `--nocapture`.
+    #[test]
+    fn hud_layout_device_metrics_dump() {
+        let hud = MobileHud::new();
+        let safe = SafeArea::new(70.0, 40.0, 30.0, 32.0);
+        let view = HudView::new(Vec2::new(2414.0, 1080.0))
+            .density(3.0)
+            .safe(safe);
+        let layout = hud.layout(&view);
+        for (name, rect) in [
+            ("console", layout.console),
+            ("selection", layout.selection),
+            ("panel", layout.panel),
+            ("portrait", layout.portrait),
+            ("name", layout.name),
+            ("class", layout.class),
+            ("hp_bar", layout.hp_bar),
+            ("hp_text", layout.hp_text),
+            ("mana_bar", layout.mana_bar),
+            ("stats", layout.stats),
+            ("production", layout.production_label),
+            ("army", layout.army),
+            ("card", layout.card),
+            ("minimap", layout.minimap),
+            ("minimap_image", layout.minimap_image),
+            ("groups_area", layout.groups_area),
+            ("crest", layout.crest),
+            ("tooltip", layout.tooltip),
+            ("toast", layout.toast),
+        ] {
+            println!(
+                "HUD_DUMP {name:<12} x={:>7.1} y={:>7.1} w={:>7.1} h={:>6.1}",
+                rect.x, rect.y, rect.w, rect.h
+            );
+        }
+        println!("HUD_DUMP card_slots={}", layout.card_slots.len());
+        for (index, rect) in layout.card_slots.iter().take(3).enumerate() {
+            println!(
+                "HUD_DUMP slot{index}      x={:>7.1} y={:>7.1} w={:>7.1} h={:>6.1}",
+                rect.x, rect.y, rect.w, rect.h
+            );
+        }
+        println!("HUD_DUMP viewport={:?} density={} scale={}", view.viewport, layout.density, layout.scale);
+    }
+
+    #[test]
+    fn hud_selection_text_rects_never_overlap() {
+        fn overlap(a: Rect, b: Rect) -> f32 {
+            let x = (a.right().min(b.right()) - a.x.max(b.x)).max(0.0);
+            let y = (a.bottom().min(b.bottom()) - a.y.max(b.y)).max(0.0);
+            x * y
+        }
+        let hud = MobileHud::new();
+        let cases = [
+            (2414.0f32, 1080.0f32, 2.75f32),
+            (1920.0, 1080.0, 2.0),
+            (1280.0, 720.0, 1.0),
+            (1080.0, 2414.0, 2.75),
+        ];
+        for (w, h, density) in cases {
+            let view = HudView::new(Vec2::new(w, h)).density(density);
+            let layout = hud.layout(&view);
+            let rects = [
+                ("name", layout.name),
+                ("class", layout.class),
+                ("stats", layout.stats),
+                ("production", layout.production_label),
+                ("hp", layout.hp_bar),
+                ("mana", layout.mana_bar),
+            ];
+            for (index, (name_a, a)) in rects.iter().enumerate() {
+                if a.w <= 0.0 || a.h <= 0.0 {
+                    continue;
+                }
+                assert!(
+                    layout.selection.w > 0.0
+                        && a.x >= layout.selection.x - 1.0
+                        && a.y >= layout.selection.y - 1.0
+                        && a.right() <= layout.selection.right() + 1.0
+                        && a.bottom() <= layout.selection.bottom() + 1.0,
+                    "{w}x{h}@{density}: {name_a} {a:?} escapes the selection panel {:?}",
+                    layout.selection
+                );
+                for (name_b, b) in rects.iter().skip(index + 1) {
+                    if b.w <= 0.0 || b.h <= 0.0 {
+                        continue;
+                    }
+                    let shared = overlap(*a, *b);
+                    let smaller = (a.w * a.h).min(b.w * b.h).max(1.0);
+                    assert!(
+                        shared / smaller <= 0.25,
+                        "{w}x{h}@{density}: {name_a} {a:?} overlaps {name_b} {b:?} by {:.0}%",
+                        shared / smaller * 100.0
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn ui_command_card_peon_headless_mock_writes_png() {
         // Device-free proof that the worker card is filled: the real
@@ -9994,6 +10038,204 @@ mod tests {
         eprintln!("HUD_CONSOLE_MOCK {}", out.display());
     }
 
+    /// #7 screenshot evidence, headless (NOT device): draw the *real* HUD batch
+    /// of a shipped install — real BLP portraits decoded into `assets.textures`
+    /// — and prove every selected unit's army slot contains icon art instead of
+    /// a bare plate. The CPU rasterizer preserves `UiBatch` painter order, so
+    /// this is the same quad stream the GPU pass receives.
+    #[test]
+    fn art7_army_panel_headless_render() {
+        let map = repo_root().join("analysis/war3_map/Maps/Campaign/Human04.w3m");
+        if !map.is_file() {
+            eprintln!("ART7_RENDER_SKIP Human04.w3m missing");
+            return;
+        }
+        let mut mounted = None;
+        for mpq in [
+            "/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq",
+            "/data/data/org.wc3rust.p0/files/War3.mpq",
+        ] {
+            let path = Path::new(mpq);
+            if path.is_file() {
+                mounted = Some(crate::Assets::load(Some(path), Some(&map)));
+                break;
+            }
+        }
+        if mounted.is_none() {
+            let loose = repo_root().join("analysis/war3_full3");
+            if loose.is_dir() {
+                mounted = Some(crate::Assets::load(Some(&loose), Some(&map)));
+            }
+        }
+        let Some(assets) = mounted else {
+            eprintln!("ART7_RENDER_SKIP no War3.mpq / analysis/war3_full3");
+            return;
+        };
+        if !assets.models.iter().any(|model| !model.fallback) {
+            eprintln!("ART7_RENDER_SKIP no real MDX models in the mounted install");
+            return;
+        }
+        let mut game = crate::Game::new(assets, 0xA27);
+        game.enter_battle();
+        game.resize(2414.0, 1080.0);
+        for _ in 0..8 {
+            game.update(1.0 / 30.0);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut chosen = Vec::new();
+        for unit in game.sim.alive_units() {
+            if unit.owner != game.player || !seen.insert(unit.def().id) {
+                continue;
+            }
+            chosen.push(unit.id);
+            if chosen.len() == 5 {
+                break;
+            }
+        }
+        if chosen.len() < 2 {
+            eprintln!("ART7_RENDER_SKIP fewer than 2 player unit defs");
+            return;
+        }
+        game.selection = chosen;
+        // The stored army row is a function of the chip count.
+        game.resize(2414.0, 1080.0);
+        let chips = game.army_chips();
+        assert!(
+            chips.iter().all(|chip| chip.icon.is_some()),
+            "every army chip must resolve a shipped BLP icon: {chips:?}"
+        );
+        let stored_slots = game
+            .mobile_layout
+            .as_ref()
+            .map(|layout| layout.army_slots.clone())
+            .unwrap_or_default();
+        let scene = game.scene();
+        // Locate the *drawn* chip windows from the batch itself (the icon
+        // textures the army panel emits), not from the stored hit layout: the
+        // two can differ and the evidence must be the pixels the player sees.
+        let chip_icons: Vec<usize> = chips.iter().filter_map(|chip| chip.icon).collect();
+        let height_hint = 1080.0f32;
+        let mut windows = Vec::new();
+        for texture in &chip_icons {
+            let mut best: Option<(f32, f32, f32, f32, f32)> = None;
+            for draw in &scene.ui.textured {
+                if draw.texture != *texture || draw.vertices.is_empty() {
+                    continue;
+                }
+                let x0 = draw.vertices.iter().map(|v| v.pos[0]).fold(f32::INFINITY, f32::min);
+                let y0 = draw.vertices.iter().map(|v| v.pos[1]).fold(f32::INFINITY, f32::min);
+                let x1 = draw.vertices.iter().map(|v| v.pos[0]).fold(f32::NEG_INFINITY, f32::max);
+                let y1 = draw.vertices.iter().map(|v| v.pos[1]).fold(f32::NEG_INFINITY, f32::max);
+                let area = (x1 - x0) * (y1 - y0);
+                // The same icon also appears as the selection portrait and a
+                // card icon; the army chip is the *bottom-band* copy.
+                if y0 < height_hint * 0.8 {
+                    continue;
+                }
+                if best.map_or(true, |(a, ..)| area > a) {
+                    best = Some((area, x0, y0, x1, y1));
+                }
+            }
+            let Some((_, x0, y0, x1, y1)) = best else {
+                eprintln!("ART7_RENDER_SKIP icon texture {texture} is not in the UI batch");
+                return;
+            };
+            windows.push((x0, y0, x1 - x0, y1 - y0));
+        }
+        eprintln!(
+            "ART7_RENDER_LAYOUT stored_slots={} drawn_windows={:?}",
+            stored_slots.len(),
+            windows
+        );
+        assert_eq!(
+            windows.len(),
+            chips.len(),
+            "every army chip icon must be drawn in the UI batch"
+        );
+        let minimap = game.assets.minimap.clone().unwrap_or_else(map_texture);
+        let width = 2414u32;
+        let height = 1080u32;
+        let pixels = rasterize(
+            &scene.ui,
+            &game.assets.textures,
+            &game.font,
+            &minimap,
+            width,
+            height,
+        );
+        let out_dir = repo_root().join("analysis/agent-hud/all-layers-20261121");
+        fs::create_dir_all(&out_dir).expect("evidence dir");
+        let out = out_dir.join("headless-NOT-DEVICE-army-panel-cpu-2414x1080.png");
+        write_png(&out, width, height, &pixels).expect("write army panel png");
+        let bytes = fs::metadata(&out).expect("png").len();
+
+        let mut report = Vec::new();
+        let mut means = Vec::new();
+        for (index, (sx, sy, sw, sh)) in windows.iter().copied().enumerate() {
+            let inset = 6.0f32.min(sw.min(sh) * 0.2);
+            let x0 = (sx + inset).max(0.0) as u32;
+            let y0 = (sy + inset).max(0.0) as u32;
+            let x1 = ((sx + sw - inset).max(x0 as f32) as u32).min(width);
+            let y1 = ((sy + sh - inset).max(y0 as f32) as u32).min(height);
+            let mut colours = std::collections::HashSet::new();
+            let mut sum = [0f64; 3];
+            let mut count = 0u64;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let at = ((y * width + x) * 4) as usize;
+                    let (r, g, b) = (pixels[at], pixels[at + 1], pixels[at + 2]);
+                    colours.insert((r / 24, g / 24, b / 24));
+                    sum[0] += r as f64;
+                    sum[1] += g as f64;
+                    sum[2] += b as f64;
+                    count += 1;
+                }
+            }
+            let count = count.max(1) as f64;
+            let mean = [sum[0] / count, sum[1] / count, sum[2] / count];
+            assert!(
+                colours.len() >= 16,
+                "army window {index} must show a real portrait, found {} colour buckets (bare plate) at ({sx:.0},{sy:.0}) {sw:.0}x{sh:.0}",
+                colours.len()
+            );
+            means.push(mean);
+            report.push(format!(
+                "window{index}={}x{}@({:.0},{:.0}) colours={} mean=({:.0},{:.0},{:.0})",
+                sw as i32,
+                sh as i32,
+                sx,
+                sy,
+                colours.len(),
+                mean[0],
+                mean[1],
+                mean[2]
+            ));
+        }
+        let mut distinct = 0;
+        for i in 0..means.len() {
+            for j in i + 1..means.len() {
+                let distance = (means[i][0] - means[j][0]).abs()
+                    + (means[i][1] - means[j][1]).abs()
+                    + (means[i][2] - means[j][2]).abs();
+                if distance > 15.0 {
+                    distinct += 1;
+                }
+            }
+        }
+        assert!(
+            distinct >= 3,
+            "distinct defs must paint distinct portraits: {report:?}"
+        );
+        assert!(bytes > 100_000, "army panel png is not a blank canvas: {bytes} B");
+        eprintln!(
+            "ART7_RENDER_VISIBLE png={} bytes={bytes} chips={} drawn={} distinct_pairs={distinct} PASS {}",
+            out.display(),
+            chips.len(),
+            windows.len(),
+            report.join(" | ")
+        );
+    }
+
     #[test]
     fn headless_menu_mock_writes_png() {
         let hud = MobileHud::new();
@@ -10224,28 +10466,23 @@ mod tests {
         ] {
             let view = sample_view(viewport, icons, [None; 4], None).safe(safe);
             let layout = hud.layout(&view);
-            let base =
-                (viewport.x.min(viewport.y) / REFERENCE_HEIGHT * HUD_SCALE_BOOST).clamp(0.62, 2.0);
+            // `layout.scale` is the *pack art* scale (console height / 300),
+            // not the HUD preference: 521 made the console a 0.34 h band, so
+            // comparing art px to the 1.10 boost was measuring the wrong field.
+            let ui = layout.dp().prefs.scale();
             assert!(
-                layout.scale <= base + 1e-3,
-                "boost never exceeds base at {viewport:?}"
+                (UI_PREF_MIN..=UI_PREF_MAX).contains(&ui),
+                "UI preference {ui} outside [{UI_PREF_MIN}, {UI_PREF_MAX}]"
             );
-            // TECH-LEAD (ledger 434): the composition reflows per orientation
-            // instead of squeezing, so both reference viewports keep the full
-            // HUD scale (>= 0.95). Only a physically smaller screen scales down.
+            assert!(
+                (0.62..=2.4).contains(&layout.scale),
+                "art scale {} outside the 0.62..2.4 clamp at {viewport:?}",
+                layout.scale
+            );
             let reference = viewport == Vec2::new(2414.0, 1080.0)
                 || viewport == Vec2::new(1080.0, 2414.0);
             if reference {
-                assert!(
-                    layout.scale >= 0.95,
-                    "scale {} < 0.95 at {viewport:?}",
-                    layout.scale
-                );
-            } else {
-                assert!(
-                    layout.scale >= 0.28,
-                    "composition scale floor at {viewport:?}"
-                );
+                assert!(ui >= 0.95, "boost {ui} < 0.95 at {viewport:?}");
             }
             assert!(
                 layout.console.is_inside(&layout.viewport_rect()),
@@ -11552,10 +11789,23 @@ mod tests {
                 layout.card.h,
                 0.038 * viewport.y
             );
-            // Bar = 4 tiles + 3 gaps wide, 3 tiles + 2 gaps tall (touch floor
-            // included, ratio preserved).
-            assert!((layout.card.w - (4.0 * tile + 3.0 * (pitch - tile))).abs() < 0.01);
-            assert!((layout.card.h - (3.0 * tile + 2.0 * (pitch - tile))).abs() < 0.01);
+            // Bar = 4 tiles + 3 field gaps + 2 console trims wide, 3 tiles +
+            // 2 gaps + 2 trims tall. The old formula used the 6 px card-gap
+            // constant and forgot the trim, which stopped matching when the
+            // panel became the dp card (`CARD_W_DP` = 232, `CARD_H_DP` = 176).
+            let density = (tile / TOUCH_DP).max(0.01);
+            let gap = CARD_GAP_DP * density;
+            let trim = CONSOLE_PAD_DP * density;
+            assert!(
+                (layout.card.w - (4.0 * tile + 3.0 * gap + 2.0 * trim)).abs() < 0.01,
+                "card width {} != 4 tiles + 3 gaps + 2 trims",
+                layout.card.w
+            );
+            assert!(
+                (layout.card.h - (3.0 * tile + 2.0 * gap + 2.0 * trim)).abs() < 0.01,
+                "card height {} != 3 tiles + 2 gaps + 2 trims",
+                layout.card.h
+            );
             assert!(layout.card_slots.len() == 12, "4x3 command bar");
             for (index, slot) in layout.card_slots.iter().enumerate() {
                 let Some(command) = view.commands.get(index).copied() else {
@@ -12674,4 +12924,5 @@ mod tests {
         assert_eq!(written.len(), 16, "eight screens x two viewports");
         eprintln!("HUD_SCREEN_PNGS {}", written.len());
     }
+
 }

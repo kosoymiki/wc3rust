@@ -13,11 +13,13 @@ use wc3_assetdb::audio_provider::VoiceId;
 use crate::assets::{Assets, Carry, SequenceKind, TERRAIN_TILE_SIZE};
 use crate::camera::Camera;
 use crate::hud::mobile_hud::{
-    ArmyChip, CommandButton, GroupView, HintView, HudView, MenuButton, MenuScreen, MenuView,
-    MinimapDot, MinimapView, PhaseView, PortraitFrame, RedrawSkin, ResourcePill, SafeArea,
-    SelectionView, ToastTone, ToastView,
+    ArmyChip, CommandButton, GroupView, HintView, HudView, MENU_GROUP_ENTRIES, MENU_GROUP_NAV,
+    MENU_GROUP_ROWS, MENU_GROUP_TABS, MenuButton, MenuScreen, MenuView, MinimapDot, MinimapView,
+    PhaseView, PortraitFrame, RedrawSkin, ResourcePill, SafeArea, SelectionView, ToastTone,
+    ToastView,
 };
 use crate::hud::{self, Button, Font, HudLayout, Rect, TextAlign, UiBatch};
+use wc3_input::menu::MenuPointer;
 use wc3_input::{TouchButton, TouchEnd, TouchInput, TouchLayout, TouchMove, TouchStart};
 
 /// Input-layer hotkey type re-exported for platform hosts (SDL key events).
@@ -63,6 +65,8 @@ pub const MENU_ACT_CUSTOM: u8 = 18;
 pub const MENU_ACT_OPTIONS: u8 = 19;
 /// Rows 40..=44: start the visible campaign chapter at that slot.
 pub const MENU_ACT_CHAPTER: u8 = 40;
+/// Pause menu: open the save/load list (§4.6).
+pub const MENU_ACT_SAVELOAD: u8 = 98;
 /// Campaign group tabs (Prologue, Human, Undead, Orc, Night Elf, Extra).
 pub const MENU_ACT_TAB: u8 = 60;
 /// Chapter list paging.
@@ -155,6 +159,25 @@ fn sidecar_path(save: &Path, suffix: &str) -> PathBuf {
     let mut name = save.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
+}
+
+/// `YYYY-MM-DD HH:MM` (UTC) for a save sidecar's mtime. §4.6 asks for the date
+/// and time; the save format itself stores no timestamp, the file does.
+fn format_unix(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, minute) = (rem / 3_600, (rem % 3_600) / 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 /// Save files are player data: owner-only where the platform has modes.
@@ -250,6 +273,36 @@ fn map_choices_from(assets: &Assets) -> Vec<crate::hud::menu::MapChoice> {
         if let Some(root) = install_root_for(current) {
             let maps_root = root.join("Maps");
             collect_maps(&maps_root, 0, &mut maps);
+            // Loose maps also sit next to the archives (`Melee.w3x`,
+            // `Human04.w3m`), which a `Maps/`-only scan missed.
+            collect_maps(&root, 1, &mut maps);
+            // Melee maps ship INSIDE the archives, not in the loose tree: the
+            // device's `files/Maps` holds one chapter, so the custom-game list
+            // showed a single row. An archive entry is carried as
+            // `<archive>|<entry>` and extracted when the player starts it.
+            if let Some(archive) = crate::map_registry::install_archive(&root, "War3.mpq") {
+                for entry in crate::map_registry::archive_map_entries(&archive) {
+                    let lower = entry.to_ascii_lowercase();
+                    if lower.contains("campaign") || lower.contains(r"\campaign\") {
+                        continue;
+                    }
+                    if !(lower.ends_with(".w3m") || lower.ends_with(".w3x")) {
+                        continue;
+                    }
+                    let stem = entry
+                        .rsplit(['\\', '/'])
+                        .next()
+                        .unwrap_or(&entry)
+                        .trim_end_matches(".w3m")
+                        .trim_end_matches(".w3x")
+                        .to_string();
+                    maps.push(MapChoice {
+                        name: stem,
+                        path: format!("{}|{}", archive.display(), entry),
+                        players: 2,
+                    });
+                }
+            }
         }
     }
     if maps.is_empty() {
@@ -296,10 +349,13 @@ fn collect_maps(dir: &Path, depth: usize, out: &mut Vec<crate::hud::menu::MapCho
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        // Real seat count from the map header (`war3map.w3i`), not a constant:
+        // the menu row used to claim two players for every map on the device.
+        let players = crate::map_registry::players_for_file(&path).unwrap_or(2).max(1);
         out.push(crate::hud::menu::MapChoice {
             name,
             path: path.to_string_lossy().into_owned(),
-            players: 2,
+            players,
         });
         if out.len() >= 64 {
             return;
@@ -575,11 +631,13 @@ pub struct Game {
     pub total_trained: u32,
     pub total_kills: u32,
     /// WC3 score counters per seat ([`ScoreRow`] is the public view).
-    score: [SeatScore; 2],
+    /// One slot per simulated seat (campaign missions seat the human at 4).
+    score: [SeatScore; wc3_sim::MAX_PLAYERS],
     /// Seats that had units when the battle started; only a seat that was
     /// actually in the match can be defeated (an empty demo map must not end
     /// on frame one).
-    seat_started: [bool; 2],
+    /// One flag per simulated seat: a campaign mission can seat the human at 4.
+    seat_started: [bool; wc3_sim::MAX_PLAYERS],
     /// Seats eliminated so far, in detection order.
     defeated: Vec<u8>,
     /// Match result, written once by [`Game::evaluate_match`].
@@ -679,10 +737,51 @@ pub struct Game {
     input_seen: bool,
     /// QUIT is a two-tap confirm: the first tap arms it, the second exits.
     quit_armed: bool,
+    /// Every live def owns a parsed MDX (the per-frame residency scan stops).
+    models_settled: bool,
+    /// Last completed tap (point, elapsed). The platform delivers one finger
+    /// gesture twice (measured: two complete down/up pairs 1-4 ms apart for a
+    /// single `input tap`), so a mirrored tap is dropped instead of activating
+    /// the entry twice or issuing two orders.
+    last_tap: Option<(Vec2, f32)>,
+    /// Last glue action that fired (code, elapsed). The mirrored gesture can
+    /// still reach `activate_menu` through its own press, so the dedupe lives
+    /// at this choke point as well.
+    last_menu_action: Option<(u8, f32)>,
+    /// Last accepted pointer press (point, elapsed). The platform mirrors one
+    /// gesture into a second press/release pair; on a slow frame (device fps
+    /// measured at 10) the pair straddles two ticks, so the 60 ms tap window
+    /// missed it. Suppressing the mirrored *press* kills both the menu
+    /// double-activation and the double order at the source.
+    last_press: Option<(Vec2, f32)>,
+    /// Glue-screen press: the entry whose rect the current pointer went down
+    /// inside. Activation happens on release (`pointer_up`), so a finger tap,
+    /// a mouse click and a dragged-off press all resolve once, in one place.
+    menu_press: Option<MenuPress>,
+    /// The one typed menu list the current frame was drawn from (§1.2). The
+    /// hit test, the device-log rects and `activate_menu` all read this model,
+    /// never a second hand-built button table.
+    menu_model: Option<crate::hud::menu::MenuScreenModel>,
+    /// Gesture-level menu guard (§8.2): one activation per press, drag-off
+    /// cancel, mirrored-press suppression.
+    menu_pointer: MenuPointer,
+    /// Command-level guard (§8.1/§8.2): the mirrored copy is rejected even when
+    /// the screen changed between the two copies, plus per-command cooldown.
+    menu_gate: crate::hud::menu::MenuCommandGate,
     /// `war3map.w3i` header of the running map: the quest log's objective text
     /// comes from the map itself, not from a hardcoded scenario string.
     map_info: Option<MapInfoText>,
     seed: u64,
+}
+
+/// A glue-screen entry held down by the pointer.
+#[derive(Clone, Copy, Debug)]
+struct MenuPress {
+    action: u8,
+    rect: Rect,
+    /// `MENU_GROUP_*`: which list the index belongs to (draw feedback).
+    group: u8,
+    index: usize,
 }
 
 /// Objective text of the running map (`war3map.w3i`).
@@ -832,23 +931,27 @@ impl Game {
         sim.grid = build_grid(&assets, map_w, map_h);
         // The melee arena runs a real shipped map's terrain/pathing/trees but
         // never its campaign script (Human04's script spawns three halls).
-        let melee = assets
-            .debug
-            .iter()
-            .find_map(|line| line.strip_prefix("map="))
-            .and_then(|path| Path::new(path).file_stem())
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| {
-                Self::MELEE_MAP_STEMS
-                    .iter()
-                    .any(|candidate| stem.eq_ignore_ascii_case(candidate))
-            })
-            // A real melee map carries two or more `sloc` start markers, no
-            // matter what the file is called. The old name-only test made the
-            // same map run as a demo when it had its original filename.
-            // Retail layout: campaign maps live under `Maps\\Campaign` and are
-            // never melee, even when their `.doo` carries start markers.
-            || (assets.start_locations >= 2 && !map_path_is_campaign(&assets));
+        // A chapter is never the arena: `Maps\Campaign\*` owns its script even
+        // when its stem is also in the arena list (Human04, Orc01). Without
+        // this a chapter loaded from the MPQ ran as a skirmish arena, so
+        // `war3map.j` was never booted: no quests, no camera, no mission clock.
+        let campaign_path = map_path_is_campaign(&assets);
+        let melee = !campaign_path
+            && (assets
+                .debug
+                .iter()
+                .find_map(|line| line.strip_prefix("map="))
+                .and_then(|path| Path::new(path).file_stem())
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| {
+                    Self::MELEE_MAP_STEMS
+                        .iter()
+                        .any(|candidate| stem.eq_ignore_ascii_case(candidate))
+                })
+                // A real melee map carries two or more `sloc` start markers, no
+                // matter what the file is called. The old name-only test made
+                // the same map run as a demo when it had its original filename.
+                || assets.start_locations >= 2);
         // The HUD menu view requires a `'static` map title; leak one copy per
         // game instance (bounded, created once).
         let menu_map_name = Box::leak(assets.map_name.clone().into_boxed_str());
@@ -888,7 +991,7 @@ impl Game {
             total_trained: 0,
             total_kills: 0,
             score: Default::default(),
-            seat_started: [false; 2],
+            seat_started: [false; wc3_sim::MAX_PLAYERS],
             defeated: Vec::new(),
             outcome: None,
             paused: false,
@@ -942,12 +1045,22 @@ impl Game {
             menu_title: "WARCRAFT III",
             menu_subtitle: "",
             menu_labels: Vec::new(),
-            // The melee arena is the interactive session: it opens on the
-            // retail glue screens. A campaign map boots straight into its own
-            // script (WC3 starts the mission from the campaign screen).
-            boot_menu: melee,
+            // Every interactive session opens on the retail glue screens: a
+            // chapter that is preloaded at boot must not start itself under the
+            // main menu (the device booted straight into a running Orc01 and
+            // the operator never saw the menu). Probes/hosts that drive the sim
+            // directly call `enter_battle` (or tap before the first frame).
+            boot_menu: true,
             input_seen: false,
             quit_armed: false,
+            models_settled: false,
+            last_tap: None,
+            last_menu_action: None,
+            last_press: None,
+            menu_press: None,
+            menu_model: None,
+            menu_pointer: MenuPointer::new(),
+            menu_gate: crate::hud::menu::MenuCommandGate::new(),
             map_info: None,
             sim,
             engine: None,
@@ -1128,7 +1241,7 @@ impl Game {
         self.total_trained = 0;
         self.total_kills = 0;
         self.score = Default::default();
-        self.seat_started = [false; 2];
+        self.seat_started = [false; wc3_sim::MAX_PLAYERS];
         self.defeated.clear();
         self.outcome = None;
         self.paused = false;
@@ -1708,6 +1821,11 @@ impl Game {
             self.assets.map_width_cells,
             self.assets.map_height_cells,
         ));
+        // `.w3e` origin: the script addresses the world in absolute coordinates,
+        // the sim in local map space.
+        if let Some(terrain) = self.assets.terrain.as_ref() {
+            bridge.set_origin(glam::Vec2::new(terrain.center.0, terrain.center.1));
+        }
         if let Some(runtime) = self.engine.as_mut().and_then(|engine| engine.runtime_mut()) {
             bridge.attach(&mut runtime.world);
         }
@@ -1871,6 +1989,9 @@ impl Game {
         self.camera.viewport(width, height);
         self.rebuild_layout();
         self.refresh_buttons();
+        // The glue rects move with the viewport: republish them so a device tap
+        // driver never uses yesterday's geometry after a rotation.
+        self.log_menu_layout();
     }
 
     /// Pixels per logical dp reported by the platform (SDL:
@@ -1906,6 +2027,7 @@ impl Game {
         self.safe_insets = insets.sanitised(self.viewport);
         self.rebuild_layout();
         self.refresh_buttons();
+        self.log_menu_layout();
     }
 
     /// Developer overlay (FPS + hitbox debug). Off in release.
@@ -2827,6 +2949,42 @@ impl Game {
         self.assets.hud_skin_dialog()
     }
 
+    /// Parse the MDX of up to `budget` visible units that currently render as
+    /// the placeholder cube. Idempotent: a resolved def is skipped for the rest
+    /// of the session (`model_by_def` keeps the parsed model).
+    fn ensure_visible_models(&mut self, budget: usize) {
+        if budget == 0 || self.models_settled {
+            return;
+        }
+        let mut wanted: Vec<String> = Vec::new();
+        let mut scanned = 0usize;
+        for unit in self.sim.alive_units() {
+            let def = unit.def().id.to_string();
+            scanned += 1;
+            if !self.assets.is_placeholder(&def) || wanted.iter().any(|known| known == &def) {
+                continue;
+            }
+            wanted.push(def);
+            if wanted.len() >= budget {
+                break;
+            }
+        }
+        if scanned == 0 {
+            // Nothing alive to resolve yet (menu, loading): retry next frame.
+            return;
+        }
+        for def in &wanted {
+            self.assets.ensure_model(def);
+        }
+        // One full scan that found nothing to parse means every live def owns a
+        // real MDX; stop paying for the scan.
+        self.models_settled = wanted.is_empty()
+            && self
+                .sim
+                .alive_units()
+                .all(|unit| !self.assets.is_placeholder(&unit.def().id));
+    }
+
     pub fn player_hall(&self) -> Option<UnitId> {
         self.sim.main_hall(self.player)
     }
@@ -2847,6 +3005,11 @@ impl Game {
             self.tick_screen(dt);
             return;
         }
+        // Units created after the load-time model census (the player's own
+        // army, reinforcements, summons) were never parsed and rendered as the
+        // compiled-in white cube (device screenshot 11:30). Resolve a few per
+        // frame so a spawn never hitches the frame.
+        self.ensure_visible_models(4);
         self.frames += 1;
         self.update_audio();
         let instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
@@ -2880,6 +3043,7 @@ impl Game {
             // keeps running (camera, HUD, render). Orders tapped while paused
             // stay queued and execute on resume.
             self.drive_camera(dt);
+            self.clamp_camera_to_map();
             self.refresh_buttons();
             return;
         }
@@ -2887,6 +3051,7 @@ impl Game {
             return;
         }
         self.drive_camera(dt);
+        self.clamp_camera_to_map();
         self.update_tooltip();
         self.accumulator += dt;
         let mut steps = 0;
@@ -2953,6 +3118,62 @@ impl Game {
         if delta != Vec2::ZERO {
             self.camera.pan_pixels(delta);
         }
+    }
+
+    /// Offsets of the visible ground rectangle relative to the camera target,
+    /// derived from the same projection the renderer uses. The four screen
+    /// corners and the centre are intersected with the terrain; the offsets are
+    /// translation-invariant (the camera orientation depends on `distance` only).
+    fn camera_ground_offsets(&self) -> Option<(Vec2, Vec2)> {
+        let viewport = self.camera.viewport;
+        if viewport.x < 2.0 || viewport.y < 2.0 {
+            return None;
+        }
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for screen in [
+            Vec2::ZERO,
+            Vec2::new(viewport.x, 0.0),
+            Vec2::new(0.0, viewport.y),
+            viewport,
+            viewport * 0.5,
+        ] {
+            // Flat ground plane: the offsets must be translation-invariant.
+            // Terrain relief only shifts the intersection by its local height,
+            // far below the map-edge margin this clamp uses.
+            let point = self.camera.screen_to_world(screen, |_, _| 0.0)?;
+            let offset = point - self.camera.target;
+            min = min.min(offset);
+            max = max.max(offset);
+        }
+        (min.is_finite() && max.is_finite()).then_some((min, max))
+    }
+
+    /// Keep the whole visible ground footprint on the map.
+    ///
+    /// `Camera::clamp_target` (wc3-input) only clamps the *target* with a fixed
+    /// 200-world-unit margin, but at the default 1500-unit distance the frame
+    /// sees ~1000+ units past the target on the far edge. A camera pushed to the
+    /// map border therefore rendered the world pass's clear colour as a flat
+    /// band (Human06 dry left edge, 48.8% of a row at 2414x1080). The clamp is
+    /// derived from the projection, so it follows zoom and aspect instead of a
+    /// hand-tuned constant. If the map is smaller than the footprint the view is
+    /// centred instead of inverted.
+    fn clamp_camera_to_map(&mut self) {
+        let world = self.camera.world.max(Vec2::splat(1.0));
+        let Some((min, max)) = self.camera_ground_offsets() else {
+            return;
+        };
+        let lo = -min;
+        let hi = world - max;
+        for axis in 0..2 {
+            if lo[axis] <= hi[axis] {
+                self.camera.target[axis] = self.camera.target[axis].clamp(lo[axis], hi[axis]);
+            } else {
+                self.camera.target[axis] = world[axis] * 0.5;
+            }
+        }
+        self.camera.clamp_target();
     }
 
     /// Long-press on the world shows the WC3 tooltip of the unit under the
@@ -3875,11 +4096,8 @@ impl Game {
     /// the score screen rows.
     fn match_state_encode(&self) -> String {
         let mut text = format!("h2match=1\nelapsed={:.3}\n", self.elapsed);
-        text.push_str(&format!(
-            "seat_started={},{}\n",
-            u8::from(self.seat_started[0]),
-            u8::from(self.seat_started[1])
-        ));
+        let started: Vec<u8> = self.seat_started.iter().map(|flag| u8::from(*flag)).collect();
+        text.push_str(&format!("seat_started={}\n", started.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")));
         for seat in 0..2 {
             let raw = self.score[seat];
             text.push_str(&format!(
@@ -3912,8 +4130,11 @@ impl Game {
                     }
                 }
                 "seat_started" => {
-                    if let Some((a, b)) = value.split_once(',') {
-                        self.seat_started = [a == "1", b == "1"];
+                    // Any number of seats (2 in the old format, MAX_PLAYERS now).
+                    for (index, flag) in value.split(',').enumerate() {
+                        if index < self.seat_started.len() {
+                            self.seat_started[index] = flag.trim() == "1";
+                        }
                     }
                 }
                 "score0" | "score1" => {
@@ -4031,7 +4252,7 @@ impl Game {
         self.haptics.clear();
         self.outcome = None;
         self.defeated.clear();
-        self.seat_started = [false; 2];
+        self.seat_started = [false; wc3_sim::MAX_PLAYERS];
         self.score = Default::default();
         // Old saves without a score sidecar resume with a zero score rather
         // than inheriting the counters of the battle that was open.
@@ -4103,6 +4324,31 @@ impl Game {
     pub fn save_slot_exists(&self, slot: u8) -> bool {
         let path = self.save_slot_path(slot);
         path.is_file() && sidecar_path(&path, ".meta").is_file()
+    }
+
+    /// The save CONTINUE resumes: the quick-save slot when the player made one,
+    /// otherwise the host autosave the platform writes when the app goes to the
+    /// background. `None` when neither carries a sidecar.
+    pub fn continue_save_path(&self) -> Option<PathBuf> {
+        let slot = self.save_slot_path(1);
+        if slot.is_file() && sidecar_path(&slot, ".meta").is_file() {
+            return Some(slot);
+        }
+        let autosave = self.save_dir.join("autosave.sav");
+        (autosave.is_file() && sidecar_path(&autosave, ".meta").is_file()).then_some(autosave)
+    }
+
+    /// True when the main menu should offer CONTINUE.
+    pub fn has_continue_save(&self) -> bool {
+        self.continue_save_path().is_some()
+    }
+
+    /// CONTINUE / LOAD GAME from the menu: resume the reachable save.
+    fn load_continue_save(&mut self) -> Result<u64, String> {
+        let path = self
+            .continue_save_path()
+            .ok_or_else(|| "no save on this device".to_string())?;
+        self.load_match(&path)
     }
 
     /// WC3 single-player pause: sim ticks stop, rendering and input keep
@@ -4550,304 +4796,215 @@ impl Game {
 
     /// Rebuild the current glue screen's title, subtitle and buttons. Called
     /// whenever the page, the battle state or the quit arm changes.
+    /// Build the one typed menu list (§1.2) and project it into the draw
+    /// groups the HUD already renders. Every list is a filter of `model.items`
+    /// in draw order, so the layout rect index and the model item index are the
+    /// same and the hit test cannot see a button the frame did not draw.
     fn sync_menu(&mut self) {
-        use crate::hud::menu::{DIFFICULTIES, MenuPage, RACES};
-        let page = self.menu_flow.page;
-        let race = self.menu_flow.race.label();
-        let opponent = self.menu_flow.opponent.label();
-        let difficulty = self.menu_flow.difficulty.label();
+        let facts = self.menu_context();
+        let model = self.menu_flow.model(&facts);
+        let mut entries: Vec<MenuButton<'static>> = Vec::new();
+        let mut tabs: Vec<MenuButton<'static>> = Vec::new();
+        let mut rows: Vec<MenuButton<'static>> = Vec::new();
+        let mut nav: Vec<MenuButton<'static>> = Vec::new();
+        for item in &model.items {
+            let button = MenuButton {
+                label: self.intern(&item.label),
+                sub: self.intern(&item.sub),
+                action: item.command.legacy,
+                enabled: item.enabled(),
+            };
+            match item.role {
+                crate::hud::menu::MenuItemRole::Entry => entries.push(button),
+                crate::hud::menu::MenuItemRole::Tab => tabs.push(button),
+                crate::hud::menu::MenuItemRole::Row => rows.push(button),
+                crate::hud::menu::MenuItemRole::Nav => nav.push(button),
+            }
+        }
+        self.menu_buttons = entries;
+        self.menu_tabs = tabs;
+        self.menu_rows = rows;
+        self.menu_nav = nav;
+        self.menu_title = self.intern(&model.title);
+        self.menu_subtitle = self.intern(&model.subtitle);
+        self.menu_page_label = self.intern(&model.page_label);
+        self.menu_veil = model.veil;
+        self.menu_map_name = self.intern(&facts.map_name);
+        self.menu_model = Some(model);
+        // Publish the exact rects the hit test will use.
+        self.log_menu_layout();
+    }
+
+    /// Runtime facts the model cannot own: the campaign registry rows, the save
+    /// sidecar verdicts and the engine's current audio gains. The model stays
+    /// pure; this is the only place that reads the filesystem for the menu.
+    fn menu_context(&mut self) -> crate::hud::menu::MenuContext {
+        use crate::hud::menu::{CampaignEntry, CampaignState, MenuContext, SaveSlotKind};
+        let host = match self.screen {
+            Screen::Paused => crate::hud::menu::HostScreen::Paused,
+            Screen::Victory => crate::hud::menu::HostScreen::Victory,
+            Screen::Defeat => crate::hud::menu::HostScreen::Defeat,
+            Screen::Loading => crate::hud::menu::HostScreen::Loading,
+            _ => crate::hud::menu::HostScreen::MainMenu,
+        };
+        let chapters: Vec<CampaignEntry> = self
+            .campaign_chapters()
+            .into_iter()
+            .map(|row| CampaignEntry {
+                index: row.index,
+                id: row.id,
+                title: row.title,
+                number: row.number,
+                group: row.group,
+                state: match row.state {
+                    crate::campaign::ChapterState::Cleared => CampaignState::Cleared,
+                    crate::campaign::ChapterState::Unlocked => CampaignState::Unlocked,
+                    crate::campaign::ChapterState::Locked => CampaignState::Locked,
+                },
+                interlude: row.interlude,
+            })
+            .collect();
+        let chapter_count = chapters.len();
+        let slots = vec![
+            self.save_slot_info(SaveSlotKind::Quick, &self.save_slot_path(MENU_SAVE_SLOT)),
+            self.save_slot_info(SaveSlotKind::Autosave, &self.save_dir.join("autosave.sav")),
+        ];
+        let save_api = self.engine.is_none() && self.phase == Phase::Playing;
+        let save_reason = if self.engine.is_some() {
+            Some("CAMPAIGN ENGINE STATE IS NOT SAVABLE".to_string())
+        } else if self.phase != Phase::Playing {
+            Some("THE MATCH IS FINISHED".to_string())
+        } else {
+            None
+        };
         let map_name = self
             .menu_flow
             .map()
             .map(|map| map.name.clone())
             .unwrap_or_else(|| self.assets.map_name.clone());
-        let stats = self.end_stats();
-        let quit_armed = self.quit_armed;
-        let mut buttons: Vec<MenuButton<'static>> = Vec::new();
-        let mut tabs: Vec<MenuButton<'static>> = Vec::new();
-        let mut rows: Vec<MenuButton<'static>> = Vec::new();
-        let mut nav: Vec<MenuButton<'static>> = Vec::new();
-        let title: &'static str;
-        let subtitle: String = match (self.screen, page) {
-            (Screen::Paused, _) => {
-                title = "GAME PAUSED";
-                format!("{map_name}  ·  {race}  ·  {difficulty}")
-            }
-            (Screen::Victory, _) => {
-                title = "VICTORY";
-                stats.clone()
-            }
-            (Screen::Defeat, _) => {
-                title = "DEFEAT";
-                stats.clone()
-            }
-            (Screen::Loading, _) | (_, MenuPage::Loading) => {
-                title = "LOADING";
-                format!("{map_name}  ·  {race} vs {opponent}  ·  {difficulty}")
-            }
-            (_, MenuPage::Main) => {
-                title = "WARCRAFT III";
-                "REIGN OF CHAOS · MOBILE".to_string()
-            }
-            (_, MenuPage::SinglePlayer) => {
-                title = "SKIRMISH";
-                format!("{race} vs {opponent}  ·  {map_name}  ·  {difficulty}")
-            }
-            (_, MenuPage::Campaign) => {
-                title = "CAMPAIGN";
-                format!("CHAPTERS  ·  {difficulty}")
-            }
-            (_, MenuPage::CustomGame) => {
-                title = "CUSTOM GAME";
-                format!("{map_name}  ·  {race} vs {opponent}")
-            }
-            (_, MenuPage::RaceSelect) => {
-                title = "SELECT RACE";
-                format!("CURRENT {race}")
-            }
-            (_, MenuPage::OpponentSelect) => {
-                title = "SELECT OPPONENT";
-                format!("CURRENT {opponent}")
-            }
-            (_, MenuPage::MapSelect) => {
-                title = "SELECT MAP";
-                map_name.clone()
-            }
-            (_, MenuPage::Difficulty) => {
-                title = "DIFFICULTY";
-                format!("CURRENT {difficulty}")
-            }
-            (_, MenuPage::Options) => {
-                title = "OPTIONS";
-                "AUDIO · VIDEO · GAMEPLAY".to_string()
-            }
-            (_, MenuPage::SaveLoad) => {
-                title = "SAVE / LOAD";
-                self.menu_flow
-                    .save
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "SAVE API UNAVAILABLE".to_string())
-            }
-            (_, MenuPage::Paused) | (_, MenuPage::InGame) => {
-                title = "GAME PAUSED";
-                format!("{map_name}  ·  {race}  ·  {difficulty}")
+        MenuContext {
+            host,
+            map_name,
+            chapters,
+            chapter_count,
+            has_save: self.has_continue_save(),
+            save_api,
+            save_reason,
+            slots,
+            quit_armed: self.quit_armed,
+            loading_progress: self.loading_time,
+            save_loading: false,
+            end_stats: Some(self.end_stats()),
+            audio: self.audio_settings(),
+        }
+    }
+
+    /// Engine gains the menu can actually read. Master has no getter in the
+    /// engine, so the menu's applied value stays authoritative for it.
+    fn audio_settings(&mut self) -> Option<crate::hud::menu::AudioSettings> {
+        // Master has no engine getter: the menu's applied value is its source
+        // of truth. Music/effects are read from the real buses.
+        let master = self.menu_flow.settings.applied.master;
+        let engine = self.assets.audio.as_mut()?.engine();
+        Some(crate::hud::menu::AudioSettings {
+            master,
+            music: (engine.category_gain(wc3_audio::engine::Category::Music) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8,
+            effects: (engine.category_gain(wc3_audio::engine::Category::Sfx) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8,
+        })
+    }
+
+    /// Classify one save file for the §4.6 list: empty, ready, unreadable
+    /// (I/O), or unsupported (the strict meta decoder rejected it).
+    fn save_slot_info(
+        &self,
+        kind: crate::hud::menu::SaveSlotKind,
+        path: &Path,
+    ) -> crate::hud::menu::SaveSlotInfo {
+        use crate::hud::menu::{SaveSlotInfo, SaveSlotState};
+        if !path.is_file() {
+            return SaveSlotInfo::empty(kind);
+        }
+        let text = match std::fs::read_to_string(sidecar_path(path, ".meta")) {
+            Ok(text) => text,
+            Err(error) => {
+                return SaveSlotInfo {
+                    kind,
+                    state: SaveSlotState::Unreadable {
+                        reason: error.to_string(),
+                    },
+                };
             }
         };
-        match (self.screen, page) {
-            (Screen::Victory, _) | (Screen::Defeat, _) => {
-                buttons.push(self.menu_button("RESTART", "ENTER", 9, true));
-                buttons.push(self.menu_button("MAIN MENU", "ESC", 8, true));
-            }
-            (Screen::Paused, _) => {
-                buttons.push(self.menu_button("RESUME", "ESC", 7, true));
-                let save_ok = self.engine.is_none() && self.phase == Phase::Playing;
-                buttons.push(self.menu_button("SAVE GAME", "SLOT 1", 14, save_ok));
-                buttons.push(self.menu_button(
-                    "LOAD GAME",
-                    "SLOT 1",
-                    15,
-                    self.engine.is_none() && self.save_slot_exists(MENU_SAVE_SLOT),
-                ));
-                buttons.push(self.menu_button("RESTART", "ENTER", 9, true));
-                buttons.push(self.menu_button(
-                    if quit_armed { "CONFIRM QUIT" } else { "QUIT TO MENU" },
-                    "2x",
-                    2,
-                    true,
-                ));
-            }
-            (Screen::Loading, _) | (_, MenuPage::Loading) => {}
-            (_, MenuPage::Main) => {
-                // WC3 main menu: CONTINUE resumes the checkpoint, the three
-                // campaign/custom/load entries open real screens, OPTIONS and
-                // QUIT close the list. All six are 90 px+ rows.
-                if self.menu_flow.has_save {
-                    buttons.push(self.menu_button("CONTINUE", "SAVE", MENU_ACT_CONTINUE, true));
-                }
-                let chapters = self.campaign_chapters().len();
-                buttons.push(self.menu_button(
-                    "CAMPAIGN",
-                    &format!("{chapters} CHAPTERS"),
-                    MENU_ACT_CAMPAIGN,
-                    chapters > 0,
-                ));
-                let maps = self.menu_flow.maps.len();
-                buttons.push(self.menu_button(
-                    "CUSTOM GAME",
-                    &format!("{maps} MAPS"),
-                    MENU_ACT_CUSTOM,
-                    maps > 0,
-                ));
-                buttons.push(self.menu_button(
-                    "LOAD GAME",
-                    "SLOT 1",
-                    MENU_ACT_LOAD,
-                    self.save_slot_exists(MENU_SAVE_SLOT),
-                ));
-                buttons.push(self.menu_button("OPTIONS", "SETUP", MENU_ACT_OPTIONS, true));
-                buttons.push(self.menu_button(
-                    if quit_armed { "CONFIRM QUIT" } else { "QUIT" },
-                    "2x",
-                    MENU_ACT_QUIT,
-                    true,
-                ));
-            }
-            (_, MenuPage::Campaign) => {
-                let chapters = self.campaign_chapters();
-                // Group tabs: the retail campaigns plus EXTRA (credits reels and
-                // any chapter without a race prefix) — never hidden.
-                for (index, name) in crate::hud::menu::CAMPAIGN_GROUPS.iter().enumerate() {
-                    let count = chapters.iter().filter(|row| row.group == index).count();
-                    tabs.push(self.menu_button(
-                        name,
-                        &count.to_string(),
-                        MENU_ACT_TAB + index as u8,
-                        count > 0,
-                    ));
-                }
-                let tab = self.menu_flow.campaign_tab.min(crate::hud::menu::CAMPAIGN_GROUPS.len() - 1);
-                let group: Vec<crate::campaign::ChapterRow> = chapters
-                    .iter()
-                    .filter(|row| row.group == tab)
-                    .cloned()
-                    .collect();
-                let pages = self.menu_flow.campaign_pages();
-                let page = self.menu_flow.campaign_page.min(pages.saturating_sub(1));
-                let per_page = crate::hud::menu::CAMPAIGN_ROWS_PER_PAGE;
-                for (slot, row) in group
-                    .iter()
-                    .skip(page * per_page)
-                    .take(per_page)
-                    .enumerate()
-                {
-                    let label = if row.interlude {
-                        format!("{}  {}", "—", row.title)
-                    } else {
-                        format!("{:02}  {}", row.number, row.title)
-                    };
-                    rows.push(self.menu_button(
-                        &label,
-                        row.state.as_str(),
-                        MENU_ACT_CHAPTER + slot as u8,
-                        row.state != crate::campaign::ChapterState::Locked,
-                    ));
-                }
-                nav.push(self.menu_button("PREV", "<", MENU_ACT_PAGE_PREV, page > 0));
-                nav.push(self.menu_button(
-                    "NEXT",
-                    ">",
-                    MENU_ACT_PAGE_NEXT,
-                    page + 1 < pages,
-                ));
-                nav.push(self.menu_button("BACK", "ESC", MENU_ACT_BACK, true));
-                let label = format!(
-                    "{} {}/{}",
-                    crate::hud::menu::CAMPAIGN_GROUPS[tab],
-                    page + 1,
-                    pages.max(1)
-                );
-                self.menu_page_label = self.intern(&label);
-            }
-            (_, MenuPage::CustomGame) => {
-                // Race and difficulty are cycle fields on this screen; the map
-                // list is paginated rows with the player count from the census.
-                tabs.push(self.menu_button("RACE", race, MENU_ACT_RACE, true));
-                tabs.push(self.menu_button("DIFFICULTY", difficulty, MENU_ACT_DIFFICULTY, true));
-                let pages = self.menu_flow.map_pages();
-                let page = self.menu_flow.map_page.min(pages.saturating_sub(1));
-                let per_page = crate::hud::menu::MAP_ROWS_PER_PAGE;
-                let map_rows: Vec<(String, usize)> = self
-                    .menu_flow
-                    .maps
-                    .iter()
-                    .skip(page * per_page)
-                    .take(per_page)
-                    .map(|map| (map.name.clone(), map.players.max(1) as usize))
-                    .collect();
-                for (slot, (name, players)) in map_rows.into_iter().enumerate() {
-                    let index = page * per_page + slot;
-                    let selected = index == self.menu_flow.map_index;
-                    let sub = format!(
-                        "{}P · {} PLAYERS",
-                        if selected { ">" } else { "" },
-                        players
-                    );
-                    rows.push(self.menu_button(
-                        &name,
-                        &sub,
-                        MENU_ACT_MAP_ROW + slot as u8,
-                        true,
-                    ));
-                }
-                nav.push(self.menu_button("PREV", "<", MENU_ACT_MAP_PREV, page > 0));
-                nav.push(self.menu_button(
-                    "NEXT",
-                    ">",
-                    MENU_ACT_MAP_NEXT,
-                    page + 1 < pages,
-                ));
-                nav.push(self.menu_button(
-                    "START",
-                    "PLAY",
-                    MENU_ACT_START,
-                    self.menu_flow.can_start(),
-                ));
-                nav.push(self.menu_button("BACK", "ESC", MENU_ACT_BACK, true));
-                let label = format!("MAPS {}/{}", page + 1, pages.max(1));
-                self.menu_page_label = self.intern(&label);
-            }
-            (_, MenuPage::SinglePlayer) => {
-                buttons.push(self.menu_button("RACE", race, 10, true));
-                buttons.push(self.menu_button("OPPONENT", opponent, 11, true));
-                buttons.push(self.menu_button("MAP", "SELECT", 12, true));
-                buttons.push(self.menu_button("DIFFICULTY", difficulty, 13, true));
-                buttons.push(self.menu_button("START GAME", "ENTER", 0, self.menu_flow.can_start()));
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::RaceSelect) => {
-                for (index, choice) in RACES.iter().enumerate() {
-                    buttons.push(self.menu_button(choice.label(), if *choice == self.menu_flow.race { "CURRENT" } else { "PICK" }, 20 + index as u8, true));
-                }
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::OpponentSelect) => {
-                for (index, choice) in RACES.iter().enumerate() {
-                    buttons.push(self.menu_button(choice.label(), if *choice == self.menu_flow.opponent { "CURRENT" } else { "PICK" }, 30 + index as u8, true));
-                }
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::MapSelect) => {
-                let maps = self.menu_flow.maps.clone();
-                for (index, map) in maps.iter().enumerate() {
-                    buttons.push(self.menu_button(
-                        &map.name,
-                        if index == self.menu_flow.map_index { "CURRENT" } else { "PICK" },
-                        40 + index as u8,
-                        true,
-                    ));
-                }
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::Difficulty) => {
-                for (index, level) in DIFFICULTIES.iter().enumerate() {
-                    buttons.push(self.menu_button(
-                        level.label(),
-                        if *level == self.menu_flow.difficulty { "CURRENT" } else { "PICK" },
-                        50 + index as u8,
-                        true,
-                    ));
-                }
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::Options) | (_, MenuPage::SaveLoad) => {
-                buttons.push(self.menu_button("BACK", "ESC", 3, true));
-            }
-            (_, MenuPage::Paused) | (_, MenuPage::InGame) => {}
+        let Some(meta) = crate::sim_bridge::CheckpointMeta::decode(&text) else {
+            return SaveSlotInfo {
+                kind,
+                state: SaveSlotState::Unsupported {
+                    reason: "meta-unreadable".to_string(),
+                },
+            };
+        };
+        let saved_at = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|age| format_unix(age.as_secs()));
+        SaveSlotInfo {
+            kind,
+            state: SaveSlotState::Ready {
+                map: meta.map.path,
+                tick: meta.tick.min(u32::MAX as u64) as u32,
+                saved_at,
+            },
         }
-        self.menu_buttons = buttons;
-        self.menu_title = self.intern(title);
-        self.menu_subtitle = self.intern(&subtitle);
+    }
+
+    /// One `GAME_MENU_ENTRY` line per tappable rect of the current screen.
+    fn log_menu_layout(&mut self) {
+        if self.screen == Screen::Playing {
+            return;
+        }
+        let (viewport, screen, entries) = {
+            let view = self.menu_view();
+            let layout = self.mobile_hud.layout_menu(&view);
+            let mut entries: Vec<(u8, usize, crate::hud::Rect, u8, String)> = Vec::new();
+            let groups = [
+                (MENU_GROUP_ENTRIES, &layout.buttons, view.buttons),
+                (MENU_GROUP_TABS, &layout.tabs, view.tabs),
+                (MENU_GROUP_ROWS, &layout.rows, view.rows),
+                (MENU_GROUP_NAV, &layout.nav, view.nav),
+            ];
+            for (group, rects, items) in groups {
+                for (index, rect) in rects.iter().enumerate() {
+                    if let Some(button) = items.get(index) {
+                        entries.push((group, index, *rect, button.action, button.label.to_string()));
+                    }
+                }
+            }
+            (self.viewport, view.screen, entries)
+        };
+        self.log(format!(
+            "GAME_MENU_LAYOUT screen={:?} vp={:.0}x{:.0} entries={}",
+            screen,
+            viewport.x,
+            viewport.y,
+            entries.len()
+        ));
+        for (group, index, rect, action, label) in entries {
+            self.log(format!(
+                "GAME_MENU_ENTRY group={group} index={index} action={action} rect={:.0},{:.0},{:.0},{:.0} tap={:.0},{:.0} label={}",
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                rect.x + rect.w * 0.5,
+                rect.y + rect.h * 0.5,
+                label
+            ));
+        }
     }
 
     /// Labels of the current glue/pause screen buttons, in draw order (HUD
@@ -4859,6 +5016,10 @@ impl Game {
     fn menu_view(&self) -> MenuView<'_> {
         let screen = self.menu_screen();
         let mut view = MenuView::for_screen(screen, self.viewport, self.menu_map_name);
+        // The panel must live inside the safe area: the device reports
+        // insets=210,120,90,96 in landscape, and a full-frame panel puts the
+        // title under the camera cutout.
+        view.safe = Some(self.safe_insets);
         view.title = self.menu_title;
         view.subtitle = self.menu_subtitle;
         view.buttons = &self.menu_buttons;
@@ -4872,6 +5033,10 @@ impl Game {
         view.active_tab = self.menu_flow.campaign_tab;
         view.page_label = self.menu_page_label;
         view.veil = self.menu_veil;
+        if let Some(press) = self.menu_press {
+            view.pressed = Some(press.index);
+            view.pressed_group = press.group;
+        }
         view
     }
 
@@ -5008,6 +5173,31 @@ impl Game {
     /// Load another shipped map from the menu: rebuild the whole game from that
     /// file (assets, terrain, units, engine) under the same seed and races.
     fn load_map(&mut self, path: &Path) {
+        // Archive entry (`<archive>|<entry>`): extract it to the chapter cache
+        // first, then load the real file.
+        let extracted;
+        let path = if let Some((archive, entry)) = path.to_str().and_then(|text| text.split_once('|'))
+        {
+            match crate::map_registry::extract_archive_map(Path::new(archive), entry) {
+                Ok(path) => {
+                    self.log(format!(
+                        "GAME_MAP_EXTRACT archive={} entry={} path={}",
+                        archive,
+                        entry,
+                        path.display()
+                    ));
+                    extracted = path;
+                    extracted.as_path()
+                }
+                Err(error) => {
+                    self.log(format!("GAME_MAP_EXTRACT_FAILED entry={entry} err={error}"));
+                    self.toast("MAP UNREADABLE", 1.6);
+                    return;
+                }
+            }
+        } else {
+            path
+        };
         let Some(mpq) = self.mpq_source_path() else {
             self.log("GAME_LOAD no-install".to_string());
             self.toast("NO GAME INSTALL", 1.6);
@@ -5036,12 +5226,13 @@ impl Game {
     }
 
     fn mpq_source_path(&self) -> Option<PathBuf> {
+        // The load knows its archive; a debug-line scrape does not (the line is
+        // `GAME_DATA mpq=Some(...)`, so `strip_prefix("mpq=")` never matched and
+        // every campaign chapter failed with `GAME_LOAD no-install`).
         self.assets
-            .debug
-            .iter()
-            .find_map(|line| line.strip_prefix("mpq="))
-            .map(PathBuf::from)
+            .mpq_path()
             .filter(|path| path.is_file())
+            .map(Path::to_path_buf)
     }
 
     /// Stable name for a menu action code (`GAME_MENU action=…`).
@@ -5060,19 +5251,123 @@ impl Game {
             13 => "difficulty",
             14 => "save",
             15 => "load",
+            16 => "continue",
+            17 => "campaign",
+            18 => "custom-game",
+            19 => "options",
             20..=24 => "set-race",
             30..=34 => "set-opponent",
-            // Difficulty codes sit inside the map range; they must be matched
-            // first or map index 10..12 shadows them.
+            40..=47 => "chapter",
             50..=52 => "set-difficulty",
-            40..=63 => "set-map",
+            60..=65 => "campaign-tab",
+            70 => "campaign-prev",
+            71 => "campaign-next",
+            80..=87 => "map-row",
+            90 => "map-prev",
+            91 => "map-next",
+            97 => "start-game",
+            98 => "save-load",
+            100..=102 => "settings-select",
+            110..=111 => "settings-step",
+            120 => "settings-tab",
+            130 => "apply-settings",
+            131 => "cancel-settings",
+            133..=134 => "save-load-mode",
+            140..=141 => "save-slot",
             _ => "unknown",
         }
     }
 
-    /// One glue-screen button. Actions are page-relative indices into the
-    /// buttons `sync_menu` produced (`activate_menu` maps them back).
+    /// §8.1 typed path for the model-only screens. The model decides; the host
+    /// executes only the returned `HostAction` (audio, save, load).
+    fn activate_model_command(&mut self, action: u8) {
+        let command = self
+            .menu_model
+            .as_ref()
+            .and_then(|model| model.by_legacy(action))
+            .map(|item| item.command.id);
+        let Some(command) = command else {
+            self.log(format!("GAME_MENU unknown id={action}"));
+            return;
+        };
+        let facts = self.menu_context();
+        let dispatch = self.menu_flow.dispatch(command, &facts);
+        if let Some(reject) = &dispatch.reject {
+            self.log(format!(
+                "GAME_MENU rejected id={action} reason={reject:?}"
+            ));
+        }
+        match dispatch.host {
+            Some(crate::hud::menu::HostAction::ApplyAudio(audio)) => self.apply_audio(audio),
+            Some(crate::hud::menu::HostAction::Save(slot)) => {
+                let _ = self.save_slot(slot);
+                return;
+            }
+            Some(crate::hud::menu::HostAction::Load(slot)) => {
+                let _ = self.load_slot(slot);
+                return;
+            }
+            _ => {}
+        }
+        self.sync_menu();
+    }
+
+    /// Push the committed audio draft to the engine and keep it as the new
+    /// applied state (§4.4 apply).
+    fn apply_audio(&mut self, audio: crate::hud::menu::AudioSettings) {
+        use crate::hud::menu::SettingKey;
+        if let Some(audio_engine) = self.assets.audio.as_mut() {
+            let engine = audio_engine.engine();
+            engine.set_master_gain(audio.gain(SettingKey::Master));
+            engine.set_category_gain(
+                wc3_audio::engine::Category::Music,
+                audio.gain(SettingKey::Music),
+            );
+            engine.set_category_gain(
+                wc3_audio::engine::Category::Sfx,
+                audio.gain(SettingKey::Effects),
+            );
+        }
+        self.menu_flow.settings.adopt(audio);
+        self.log(format!(
+            "GAME_MENU audio master={} music={} effects={}",
+            audio.master, audio.music, audio.effects
+        ));
+    }
+
+    /// One glue-screen button. Actions are the legacy codes published by the
+    /// one menu model (`CommandSpec::legacy`); `activate_menu` maps them back.
     pub fn activate_menu(&mut self, action: u8) {
+        // A mirrored gesture delivers the same press twice; the second copy is
+        // dropped here so the page does not navigate a second time.
+        if let Some((last, when)) = self.last_menu_action
+            && last == action
+            && self.elapsed - when <= 0.12
+        {
+            return;
+        }
+        self.last_menu_action = Some((action, self.elapsed));
+        // §8.1: the model publishes availability and the exact reason. A
+        // disabled item never fires and never guesses its reason from a label.
+        let model_state = self
+            .menu_model
+            .as_ref()
+            .and_then(|model| model.by_legacy(action))
+            .map(|item| (item.enabled(), item.reason().map(str::to_string)));
+        if let Some((false, reason)) = model_state {
+            self.log(format!(
+                "GAME_MENU disabled id={action} reason={}",
+                reason.unwrap_or_else(|| "UNAVAILABLE".to_string())
+            ));
+            return;
+        }
+        // Codes >= 100 are model-only screens (settings, save/load). They go
+        // through the typed reducer so draft/applied and overwrite arming live
+        // in exactly one place.
+        if action >= 100 {
+            self.activate_model_command(action);
+            return;
+        }
         self.log(format!(
             "GAME_MENU action={} id={action}",
             Self::menu_action_name(action)
@@ -5095,7 +5390,12 @@ impl Game {
                         let _ = self.save_slot(MENU_SAVE_SLOT);
                     }
                     MENU_ACT_LOAD => {
-                        let _ = self.load_slot(MENU_SAVE_SLOT);
+                        match self.load_continue_save() {
+                            Ok(_) => return,
+                            Err(error) => {
+                                self.toast(format!("NO SAVE: {error}"), 1.8);
+                            }
+                        }
                     }
                     MENU_ACT_RESTART => self.begin_battle(),
                     MENU_ACT_QUIT => {
@@ -5134,6 +5434,115 @@ impl Game {
         use crate::hud::menu::{DIFFICULTIES, MenuAction, MenuPage, RACES};
         let page = self.menu_flow.page;
         let maps = self.menu_flow.maps.len();
+
+        // ---------------------------------------------------------- campaign
+        // The chapter list has its own action space (40.. chapters, 60.. tabs,
+        // 70/71 paging). It is resolved BEFORE the map codes: with 40+ maps in
+        // the install a chapter row used to be read as a skirmish map index and
+        // the tab row as map 20..25, so the campaign screen did nothing.
+        if (MENU_ACT_CHAPTER..MENU_ACT_CHAPTER + 8).contains(&action) {
+            let slot = (action - MENU_ACT_CHAPTER) as usize;
+            let tab = self
+                .menu_flow
+                .campaign_tab
+                .min(crate::hud::menu::CAMPAIGN_GROUPS.len() - 1);
+            let pages = self.menu_flow.campaign_pages().max(1);
+            let page_index = self.menu_flow.campaign_page.min(pages - 1);
+            let per_page = crate::hud::menu::CAMPAIGN_ROWS_PER_PAGE;
+            let row = self
+                .campaign_chapters()
+                .into_iter()
+                .filter(|row| row.group == tab)
+                .nth(page_index * per_page + slot);
+            match row {
+                Some(row) if row.state != crate::campaign::ChapterState::Locked => {
+                    self.log(format!(
+                        "GAME_MENU chapter={} title={} source={}",
+                        row.id, row.title, row.source
+                    ));
+                    // A chapter is not a melee map: `load_map` only knows the
+                    // loose-file path, so an archive chapter died with
+                    // `GAME_LOAD no-install`. The campaign path extracts the
+                    // entry, opens the session, resolves the human seat and
+                    // boots `war3map.j`.
+                    match self.start_campaign_mission(row.index) {
+                        Ok(_) => return,
+                        Err(error) => {
+                            self.log(format!(
+                                "GAME_MENU chapter_failed={} err={error}",
+                                row.id
+                            ));
+                            self.toast(format!("CHAPTER FAILED: {error}"), 2.4);
+                            self.sync_menu();
+                            return;
+                        }
+                    }
+                }
+                Some(row) => {
+                    self.toast(format!("{} IS LOCKED", row.title.to_uppercase()), 1.6);
+                    self.sync_menu();
+                    return;
+                }
+                None => {
+                    self.sync_menu();
+                    return;
+                }
+            }
+        }
+        if (MENU_ACT_TAB..MENU_ACT_TAB + 6).contains(&action) {
+            self.menu_flow.campaign_tab = (action - MENU_ACT_TAB) as usize;
+            self.menu_flow.campaign_page = 0;
+            self.sync_menu();
+            return;
+        }
+        if action == MENU_ACT_PAGE_PREV || action == MENU_ACT_PAGE_NEXT {
+            let pages = self.menu_flow.campaign_pages().max(1);
+            self.menu_flow.campaign_page = if action == MENU_ACT_PAGE_PREV {
+                self.menu_flow.campaign_page.saturating_sub(1)
+            } else {
+                (self.menu_flow.campaign_page + 1).min(pages - 1)
+            };
+            self.sync_menu();
+            return;
+        }
+        // ------------------------------------------------------- custom game
+        if (MENU_ACT_MAP_ROW..MENU_ACT_MAP_ROW + 8).contains(&action) {
+            let slot = (action - MENU_ACT_MAP_ROW) as usize;
+            let index =
+                self.menu_flow.map_page * crate::hud::menu::MAP_ROWS_PER_PAGE + slot;
+            if index < maps {
+                self.menu_flow.apply(MenuAction::SetMap(index));
+            }
+            self.sync_menu();
+            return;
+        }
+        if action == MENU_ACT_MAP_PREV || action == MENU_ACT_MAP_NEXT {
+            let pages = self.menu_flow.map_pages().max(1);
+            self.menu_flow.map_page = if action == MENU_ACT_MAP_PREV {
+                self.menu_flow.map_page.saturating_sub(1)
+            } else {
+                (self.menu_flow.map_page + 1).min(pages - 1)
+            };
+            self.sync_menu();
+            return;
+        }
+        if action == MENU_ACT_START {
+            self.begin_battle();
+            return;
+        }
+        // Main-menu LOAD GAME: the pause menu's LOAD is handled above, and this
+        // code had no arm here, so the entry was another dead button.
+        if action == MENU_ACT_LOAD && self.screen == Screen::MainMenu {
+            match self.load_continue_save() {
+                Ok(_) => return,
+                Err(error) => {
+                    self.toast(format!("NO SAVE: {error}"), 1.8);
+                    self.sync_menu();
+                    return;
+                }
+            }
+        }
+
         let applied = if (20..25).contains(&action) {
             RACES
                 .get((action - 20) as usize)
@@ -5145,14 +5554,10 @@ impl Game {
                 .copied()
                 .map(MenuAction::SetOpponent)
         } else if (50..53).contains(&action) {
-            // Difficulty before maps: 50..52 would otherwise read as map
-            // indices once the install ships 11+ maps.
             DIFFICULTIES
                 .get((action - 50) as usize)
                 .copied()
                 .map(MenuAction::SetDifficulty)
-        } else if (40..64).contains(&action) && ((action - 40) as usize) < maps {
-            Some(MenuAction::SetMap((action - 40) as usize))
         } else {
             match action {
                 // PLAY opens the skirmish screen; START GAME (same code) starts
@@ -5161,20 +5566,36 @@ impl Game {
                     Some(MenuAction::Goto(MenuPage::SinglePlayer))
                 }
                 MENU_ACT_PLAY => Some(MenuAction::StartGame),
+                // The four main-menu entries that used to be dead buttons: the
+                // tap hit them, `menu_action_name` said "unknown" and nothing
+                // opened, because activate_menu had no case for these codes.
+                MENU_ACT_CONTINUE => {
+                    self.log("GAME_MENU continue".to_string());
+                    match self.load_continue_save() {
+                        Ok(_) => return,
+                        Err(error) => {
+                            self.toast(format!("NO SAVE: {error}"), 1.8);
+                            self.sync_menu();
+                            return;
+                        }
+                    }
+                }
+                MENU_ACT_CAMPAIGN => Some(MenuAction::Goto(MenuPage::Campaign)),
+                MENU_ACT_CUSTOM => Some(MenuAction::Goto(MenuPage::CustomGame)),
+                MENU_ACT_OPTIONS => Some(MenuAction::OpenOptions),
                 MENU_ACT_MAPS => Some(MenuAction::Goto(MenuPage::MapSelect)),
-                MENU_ACT_BACK => Some(match page {
-                    // Pickers return to the skirmish screen they came from.
-                    MenuPage::RaceSelect
-                    | MenuPage::OpponentSelect
-                    | MenuPage::MapSelect
-                    | MenuPage::Difficulty => MenuAction::Goto(MenuPage::SinglePlayer),
-                    MenuPage::Main => MenuAction::Goto(MenuPage::Main),
-                    _ => MenuAction::Back,
-                }),
+                // §4.7: BACK is the model's logical parent — settings opened
+                // from the pause menu return to the pause menu, a campaign or
+                // custom-game screen returns to main, a picker returns to the
+                // screen that opened it. The old per-page `Goto(Main)` sent the
+                // pause-screen settings to the main menu and lost the battle.
+                MENU_ACT_BACK => Some(MenuAction::Back),
                 MENU_ACT_RACE => Some(MenuAction::Goto(MenuPage::RaceSelect)),
                 MENU_ACT_OPPONENT => Some(MenuAction::Goto(MenuPage::OpponentSelect)),
                 MENU_ACT_MAP => Some(MenuAction::Goto(MenuPage::MapSelect)),
                 MENU_ACT_DIFFICULTY => Some(MenuAction::Goto(MenuPage::Difficulty)),
+                // §4.6 list screen (slot state, overwrite confirm, errors).
+                MENU_ACT_SAVELOAD => Some(MenuAction::OpenSaveLoad),
                 _ => None,
             }
         };
@@ -5229,6 +5650,21 @@ impl Game {
     }
 
     pub fn pointer_down(&mut self, pos: Vec2) {
+        // One physical gesture arrives twice (SDL mirrors touch into a second
+        // press/release pair). A second press at the same point inside 300 ms
+        // is that mirror: drop it before it can arm a menu press or a world
+        // gesture. 300 ms covers the 10 fps device frame, not a human tap.
+        if let Some((last, when)) = self.last_press
+            && last.distance(pos) <= 8.0
+            && self.elapsed - when <= 0.30
+        {
+            self.log(format!(
+                "GAME_INPUT_MIRROR_SUPPRESSED x={:.0} y={:.0}",
+                pos.x, pos.y
+            ));
+            return;
+        }
+        self.last_press = Some((pos, self.elapsed));
         self.input_seen = true;
         if self.screen != Screen::Playing {
             // Every group the painter draws must be hit-tested with the same
@@ -5240,25 +5676,53 @@ impl Game {
                 let view = self.menu_view();
                 let layout = self.mobile_hud.layout_menu(&view);
                 let mut hit = None;
-                'groups: for (rects, items) in [
-                    (&layout.tabs, view.tabs),
-                    (&layout.rows, view.rows),
-                    (&layout.buttons, view.buttons),
-                    (&layout.nav, view.nav),
+                'groups: for (group, rects, items) in [
+                    (MENU_GROUP_TABS, &layout.tabs, view.tabs),
+                    (MENU_GROUP_ROWS, &layout.rows, view.rows),
+                    (MENU_GROUP_ENTRIES, &layout.buttons, view.buttons),
+                    (MENU_GROUP_NAV, &layout.nav, view.nav),
                 ] {
                     for (index, rect) in rects.iter().enumerate() {
                         if rect.contains(pos)
                             && let Some(button) = items.get(index)
                         {
-                            hit = Some(button.action);
+                            hit = Some(MenuPress {
+                                action: button.action,
+                                rect: *rect,
+                                group,
+                                index,
+                            });
                             break 'groups;
                         }
                     }
                 }
                 hit
             };
-            if let Some(action) = hit {
-                self.activate_menu(action);
+            if let Some(press) = hit {
+                let rect = touch_rect(press.rect);
+                match self.menu_pointer.press(
+                    press.action as u32,
+                    rect,
+                    pos,
+                    self.elapsed,
+                    self.density_scale,
+                ) {
+                    wc3_input::menu::PressOutcome::Armed { .. } => {
+                        self.log(format!(
+                            "GAME_MENU_DOWN x={:.0} y={:.0} action={}",
+                            pos.x, pos.y, press.action
+                        ));
+                        // Activation is deferred to the release: the finger
+                        // path ends a gesture in `pointer_up`, and one place
+                        // that fires means a tap can never activate twice.
+                        self.menu_press = Some(press);
+                        self.push_haptic(HapticCue::Press);
+                    }
+                    outcome => self.log(format!(
+                        "GAME_MENU_PRESS_SUPPRESSED x={:.0} y={:.0} action={} outcome={outcome:?}",
+                        pos.x, pos.y, press.action
+                    )),
+                }
             }
             return;
         }
@@ -5303,6 +5767,18 @@ impl Game {
 
     pub fn pointer_move(&mut self, pos: Vec2) {
         self.input_seen = true;
+        if self.screen != Screen::Playing {
+            // §8.2 drag-off: the press dies as soon as the pointer leaves the
+            // row, even if it comes back before the lift.
+            if self.menu_press.is_some()
+                && self.menu_pointer.move_to(pos, self.density_scale)
+                    == Some(wc3_input::menu::CancelReason::DragOff)
+            {
+                self.menu_press = None;
+                self.log("GAME_MENU_DRAG_OFF".to_string());
+            }
+            return;
+        }
         if self.placing.is_some() {
             self.placing_at = self
                 .camera
@@ -5336,6 +5812,52 @@ impl Game {
 
     pub fn pointer_up(&mut self, pos: Vec2) {
         self.input_seen = true;
+        if self.screen != Screen::Playing {
+            self.log(format!(
+                "GAME_MENU_UP x={:.0} y={:.0} held={}",
+                pos.x,
+                pos.y,
+                self.menu_press.is_some()
+            ));
+            // The menu press resolves here — the only place a menu action
+            // fires. The gesture layer has already refused the mirrored press;
+            // a lift outside the row or after a drag-off activates nothing.
+            let Some(press) = self.menu_press.take() else {
+                return;
+            };
+            let release = self.menu_pointer.release(pos, self.elapsed);
+            if !matches!(release, wc3_input::menu::ReleaseOutcome::Activate { .. })
+                || !press.rect.contains(pos)
+            {
+                self.log(format!(
+                    "GAME_MENU_CANCEL action={} release={release:?}",
+                    press.action
+                ));
+                return;
+            }
+            let spec = self
+                .menu_model
+                .as_ref()
+                .and_then(|model| model.by_legacy(press.action))
+                .map(|item| item.command.clone());
+            if let Some(spec) = spec {
+                match self
+                    .menu_gate
+                    .admit(&spec, pos, self.elapsed, self.density_scale)
+                {
+                    crate::hud::menu::CommandVerdict::Apply => {
+                        self.activate_menu(press.action);
+                    }
+                    verdict => self.log(format!(
+                        "GAME_MENU rejected id={} verdict={verdict:?}",
+                        press.action
+                    )),
+                }
+            } else {
+                self.activate_menu(press.action);
+            }
+            return;
+        }
         let blocked = self.blocked_rects();
         let layout = TouchLayout {
             minimap: Some(touch_rect(self.layout.minimap)),
@@ -5433,11 +5955,33 @@ impl Game {
                 }
             }
             TouchEnd::Box { start, end } => self.box_select(start, end),
-            TouchEnd::Tap { at, double } => self.tap_action(at, double),
+            TouchEnd::Tap { at, double } => {
+                if self.is_mirrored_tap(at) {
+                    return;
+                }
+                self.tap_action(at, double)
+            }
         }
     }
 
+    /// True when `at` is the second copy of the gesture that just finished.
+    /// The window is 60 ms and the tolerance 6 px: a human double tap is far
+    /// slower and a deliberate two-finger order is handled elsewhere.
+    fn is_mirrored_tap(&mut self, at: Vec2) -> bool {
+        let mirrored = self.last_tap.is_some_and(|(last, when)| {
+            self.elapsed - when <= 0.06 && last.distance(at) <= 6.0
+        });
+        if !mirrored {
+            self.last_tap = Some((at, self.elapsed));
+        }
+        mirrored
+    }
+
     pub fn pointer_cancel(&mut self) {
+        // Facts to keep across a cancel: the armed QUIT confirm and the menu
+        // page. The live pointer, the pending menu press and the double-tap
+        // history must not survive into the next gesture.
+        self.menu_press = None;
         // `cancel` drops the live pointer/pinch but keeps the double-tap and
         // last-button history, so a tap after focus loss/rotation could pair
         // with one from before the transition. `reset` clears both.
@@ -6946,6 +7490,48 @@ impl Game {
         }
     }
 
+    /// Console army chips for the current selection: one per selected unit with
+    /// its resolved command icon and live HP. The atlas-skin HUD draws exactly
+    /// this vector (`draw_army_chips`), so exposing it lets the `art7_army_icons`
+    /// evidence test exercise the drawn path instead of a parallel copy. The
+    /// first chip is the active subgroup and takes the gold `slot_gold` frame.
+    pub fn army_chips(&self) -> Vec<ArmyChip> {
+        let mut chips: Vec<ArmyChip> = self
+            .selection
+            .iter()
+            .take(8)
+            .map(|id| {
+                let Some(unit) = self.sim.unit(*id) else {
+                    return ArmyChip::default();
+                };
+                let icon = self
+                    .assets
+                    .ui
+                    .type_icon(unit.def().id)
+                    .or_else(|| {
+                        self.assets
+                            .icon_name_for_def(unit.def().id)
+                            .and_then(|name| self.assets.ui.texture(&name))
+                    })
+                    .or_else(|| {
+                        self.assets
+                            .unit_icon_name(unit.kind)
+                            .and_then(|name| self.assets.ui.texture(&name))
+                    })
+                    .or_else(|| self.assets.ui.unit_icon(unit.kind));
+                ArmyChip {
+                    icon,
+                    hp: (unit.hp as f32 / unit.max_hp.max(1) as f32).clamp(0.0, 1.0),
+                    selected: false,
+                }
+            })
+            .collect();
+        if let Some(first) = chips.first_mut() {
+            first.selected = true;
+        }
+        chips
+    }
+
     fn build_hud(&self, ui: &mut UiBatch) -> Option<(String, String)> {
         if self.screen != Screen::Playing {
             let view = self.menu_view();
@@ -7314,36 +7900,7 @@ impl Game {
         // Army chips for the atlas-skin console row: resolved icons + live HP,
         // exactly the units the fallback block draws (first is the active
         // subgroup, so it takes the gold `slot_gold` frame).
-        let army: Vec<ArmyChip> = self
-            .selection
-            .iter()
-            .take(8)
-            .map(|id| {
-                let Some(unit) = self.sim.unit(*id) else {
-                    return ArmyChip::default();
-                };
-                let icon = self
-                    .assets
-                    .ui
-                    .type_icon(unit.def().id)
-                    .or_else(|| {
-                        self.assets
-                            .icon_name_for_def(unit.def().id)
-                            .and_then(|name| self.assets.ui.texture(&name))
-                    })
-                    .or_else(|| {
-                        self.assets
-                            .unit_icon_name(unit.kind)
-                            .and_then(|name| self.assets.ui.texture(&name))
-                    })
-                    .or_else(|| self.assets.ui.unit_icon(unit.kind));
-                ArmyChip {
-                    icon,
-                    hp: (unit.hp as f32 / unit.max_hp.max(1) as f32).clamp(0.0, 1.0),
-                    selected: false,
-                }
-            })
-            .collect();
+        let army = self.army_chips();
         // The ten control-group plates take the game's own hit rects, so the
         // skin art can never drift from the touch row.
         let group_rects = self.group_row_slots();
@@ -7360,16 +7917,19 @@ impl Game {
                 }
             })
             .collect();
-        let mut army = army;
-        if let Some(first) = army.first_mut() {
-            first.selected = true;
-        }
         let view = HudView::new(self.viewport)
+            // The draw and the stored touch layout must share one density and
+            // one safe-area unit: `rebuild_layout` solves with `density_scale`
+            // and divides the platform pixel insets into dp, so a draw view on
+            // the 1.0 default (with raw pixel insets) put the art at a
+            // different scale and margin from the hit rects (army chips
+            // 163..465 px drawn vs 332..844 px hit-tested).
+            .density(self.density_scale.max(0.05))
             .safe(SafeArea::new(
-                self.safe_insets.left,
-                self.safe_insets.top,
-                self.safe_insets.right,
-                self.safe_insets.bottom,
+                self.safe_insets.left / self.density_scale.max(0.05),
+                self.safe_insets.top / self.density_scale.max(0.05),
+                self.safe_insets.right / self.density_scale.max(0.05),
+                self.safe_insets.bottom / self.density_scale.max(0.05),
             ))
             .resources(&resources)
             .selection(selection)
@@ -7578,7 +8138,7 @@ impl Game {
             .map(|layout| (layout.top_meta.bottom(), layout.console.y))
             .unwrap_or((0.0, self.viewport.y));
         let minimap = self.mobile_layout.as_ref().map(|layout| layout.minimap);
-        let bar_height = 7.0 * scale.max(0.1);
+        let bar_height = 5.0 * scale.clamp(0.1, 1.25);
         let mut bars = Vec::new();
         for unit in self.sim.alive_units() {
             if unit.owner != self.player && !self.sim.is_visible(self.player, unit.pos) {
@@ -7594,7 +8154,10 @@ impl Game {
                 .camera
                 .world_to_screen(Vec3::new(unit.pos.x, y, unit.pos.y))
             {
-                let width = if unit.is_building() { 110.0 } else { 48.0 } * scale;
+                // Retail proportions: a unit bar is about the model's shoulder
+                // width, a building bar about a third of its footprint. The old
+                // 48/110 px * 1.52 drew 73/167 px bars over 30 px units.
+                let width = if unit.is_building() { 96.0 } else { 34.0 } * scale.min(1.25);
                 let quad = Rect::new(screen.x - width * 0.5, screen.y, width, bar_height);
                 // Never paint over the strip/console or the minimap ring; a
                 // half-off-screen bar may clip at the viewport edge.
@@ -7783,7 +8346,56 @@ mod tests {
     use super::*;
 
     fn game() -> Game {
+        let mut game = Game::new(Assets::load(None, None), 0x5eed);
+        // `Game::new` now opens on the retail main menu (a preloaded chapter
+        // must not start itself). Battle tests enter the battle directly; the
+        // menu tests call `open_main_menu()` themselves.
+        game.enter_battle();
+        game
+    }
+
+    /// A game that keeps the retail boot state (main menu on the first tick).
+    fn booting_game() -> Game {
         Game::new(Assets::load(None, None), 0x5eed)
+    }
+
+    /// DEVICE REGRESSION (2026-11-21): the retail main-menu panel counted its
+    /// button stack against the safe frame but the *drawn* rects escaped the
+    /// viewport on a 2414x1080 phone with insets 210/120/90/96. Solve the real
+    /// menu view at those exact metrics and require every glue button rect,
+    /// the title band and the panel itself to stay inside the viewport.
+    #[test]
+    fn menu_layout_fits_device_safe_frame_2414x1080() {
+        let mut game = booting_game();
+        game.set_window_metrics(
+            Vec2::new(2414.0, 1080.0),
+            3.0,
+            SafeInsets::new(210.0, 120.0, 90.0, 96.0),
+        );
+        game.open_main_menu();
+        let view = game.menu_view();
+        let layout = game.mobile_hud.layout_menu(&view);
+        let inside = |r: &crate::hud::Rect| {
+            r.x >= -0.5 && r.y >= -0.5
+                && r.right() <= view.viewport.x + 0.5
+                && r.bottom() <= view.viewport.y + 0.5
+        };
+        assert!(inside(&layout.panel), "panel escaped viewport: {:?}", layout.panel);
+        assert!(inside(&layout.title_band), "title band escaped: {:?}", layout.title_band);
+        assert!(
+            layout.buttons.len() >= 4,
+            "glue menu must lay out its entries, got {}",
+            layout.buttons.len()
+        );
+        for (i, r) in layout.buttons.iter().enumerate() {
+            assert!(inside(r), "button {i} escaped viewport: {r:?}");
+        }
+        // Buttons must not overlap the title band or each other vertically.
+        let mut prev_bottom = layout.title_band.bottom();
+        for (i, r) in layout.buttons.iter().enumerate() {
+            assert!(r.y >= prev_bottom - 0.5, "button {i} overlaps the band above");
+            prev_bottom = r.bottom();
+        }
     }
 
     #[test]
@@ -9233,10 +9845,20 @@ mod tests {
                 .iter()
                 .any(|button| button.action == UiAction::BuildDef("hhou"))
         );
+        // WC3: the peasant builds the Scout Tower base form; Guard Tower is its
+        // in-place upgrade, so the build menu carries `hwtw`, not `hgtw`.
         assert!(
             buttons
                 .iter()
-                .any(|button| button.action == UiAction::BuildDef("hgtw"))
+                .any(|button| button.action == UiAction::BuildDef("hwtw")),
+            "tower base form in the build menu: {:?}",
+            buttons
+                .iter()
+                .filter_map(|button| match button.action {
+                    UiAction::BuildDef(id) => Some(id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
         );
     }
 
@@ -9550,6 +10172,13 @@ mod tests {
         assert!(report.main_ok, "war3map.j main ran in-game");
         assert!(report.executed_triggers > 0, "InitCustomTriggers executed");
         let before = engine.runtime().expect("runtime").world.game_time;
+        // `Game::new` opens on the retail boot menu, and `Game::update`
+        // deliberately does not tick the battle while `screen != Playing`
+        // (game.rs:3003). `enter_battle` (game.rs:4653) is the canonical hook
+        // the other headless scene tests use; with it the engine-tick branch at
+        // game.rs:3061 is reached and the script clock advances. Without it the
+        // test measured 0 -> 0 and mis-attributed the freeze to the engine.
+        game.enter_battle();
         game.update(TICK_SECONDS);
         let after = game
             .engine
@@ -9561,6 +10190,80 @@ mod tests {
             .game_time;
         assert!(after > before, "Engine ticks inside Game::update: {before} -> {after}");
         assert!(!game.sim.units.is_empty(), "map units are live in the canonical sim");
+    }
+
+    /// Human06 dry edge: a camera pushed past the map border used to render the
+    /// world pass clear colour as a flat band (agent A measured 48.8% of a row
+    /// at 2414x1080). `Camera::clamp_target` only bounds the *target* with a
+    /// fixed 200-unit margin, while the 1500-unit view sees ~1000+ units past
+    /// it. The fix clamps the whole projected ground footprint
+    /// (`Game::clamp_camera_to_map`); this test pins the condition headlessly.
+    #[test]
+    fn camera_dry_edge_stays_inside_the_map() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../analysis/war3_full3");
+        let map = root.join("Maps/Campaign/Human06.w3m");
+        if !map.is_file() {
+            eprintln!("skip: Human06.w3m missing");
+            return;
+        }
+        let mut game = Game::new(Assets::load(None, Some(&map)), 0x5EED);
+        game.enter_battle();
+        game.resize(2414.0, 1080.0);
+        game.update(TICK_SECONDS);
+        let world = game.camera.world;
+
+        // Human06's shipped script ends the mission at 0.0 s (scripted
+        // victory), which makes `update` return before the camera branch. Force
+        // the live-playing state the clamp is wired for (game.rs update), then
+        // run one frame: this is the same path a live mission takes.
+        game.screen = Screen::Playing;
+        game.phase = Phase::Playing;
+        // Long drag past the left dry edge, then one frame runs the clamp.
+        game.camera.target = Vec2::new(-4000.0, world.y * 0.5);
+        game.update(TICK_SECONDS);
+        let (min, max) = game.camera_ground_offsets().expect("ground footprint");
+        let target = game.camera.target;
+        assert!(
+            target.x + min.x >= -1.0 && target.x + max.x <= world.x + 1.0,
+            "camera view is off the map left/right: target={target:?} offsets=({min:?},{max:?}) world={world:?}"
+        );
+        assert!(
+            target.y + min.y >= -1.0 && target.y + max.y <= world.y + 1.0,
+            "camera view is off the map near/far: target={target:?} offsets=({min:?},{max:?}) world={world:?}"
+        );
+        // The exact symptom: the leftmost screen column must land on terrain,
+        // not on the clear colour (before the clamp it projected x << 0).
+        let left_edge = game
+            .camera
+            .screen_to_world(Vec2::new(0.0, 540.0), |_, _| 0.0)
+            .expect("left edge ray hits the ground");
+        assert!(
+            left_edge.x >= -1.0,
+            "left screen edge is inside the map: {left_edge:?}"
+        );
+
+        // Symmetric right edge.
+        game.screen = Screen::Playing;
+        game.phase = Phase::Playing;
+        game.camera.target = Vec2::new(world.x + 4000.0, world.y * 0.5);
+        game.update(TICK_SECONDS);
+        let (min, max) = game.camera_ground_offsets().expect("ground footprint");
+        let target = game.camera.target;
+        assert!(
+            target.x + max.x <= world.x + 1.0,
+            "camera view is off the map on the right: target={target:?} offsets=({min:?},{max:?}) world={world:?}"
+        );
+        let right_edge = game
+            .camera
+            .screen_to_world(Vec2::new(2414.0, 540.0), |_, _| 0.0)
+            .expect("right edge ray hits the ground");
+        assert!(
+            right_edge.x <= world.x + 1.0,
+            "right screen edge is inside the map: {right_edge:?}"
+        );
+        eprintln!(
+            "CAMERA_DRY_EDGE target={target:?} offsets=({min:?},{max:?}) right={right_edge:?} PASS"
+        );
     }
 
     /// Human04 is the shipped melee arena: its campaign script (which spawns
@@ -9768,33 +10471,56 @@ mod tests {
     fn ui_menu_flow_boots_to_main_menu_and_reaches_battle() {
         let mut game = game();
         game.boot_menu = true;
+        // Retail boot opens the menu only for a session that has not seen input
+        // yet (`Game::update`: `if !self.input_seen`). The test helper drives
+        // the battle directly, so restore the boot state explicitly instead of
+        // asserting MainMenu against an already-injected session.
+        game.input_seen = false;
         game.update(1.0 / 30.0);
         assert_eq!(game.screen, Screen::MainMenu, "retail boot opens the menu");
         assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::Main);
+        // Retail RoC main menu: the campaign is the first entry (there is no
+        // PLAY button; the old expectation predates the shipped glue list).
         assert_eq!(
             game.menu_buttons.first().map(|button| button.label),
-            Some("PLAY")
+            Some("CAMPAIGN")
         );
-        // PLAY → skirmish screen with the live race/opponent/map/difficulty.
-        game.activate_menu(MENU_ACT_PLAY);
-        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::SinglePlayer);
+        // CAMPAIGN → the chapter list; BACK returns to the main menu.
+        game.activate_menu(MENU_ACT_CAMPAIGN);
+        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::Campaign);
+        game.activate_menu(MENU_ACT_BACK);
+        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::Main);
+        // CUSTOM GAME → the skirmish map list with the live race/difficulty.
+        game.activate_menu(MENU_ACT_CUSTOM);
+        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::CustomGame);
+        // The custom-game page carries RACE / DIFFICULTY as tabs and the map
+        // registry as rows.
         assert!(
-            game.menu_buttons
+            game.menu_tabs
                 .iter()
                 .any(|button| button.label == "RACE" && button.sub == "HUMAN"),
-            "skirmish shows the race value: {:?}",
-            game.menu_buttons.iter().map(|b| (b.label, b.sub)).collect::<Vec<_>>()
+            "custom game shows the race value: {:?}",
+            game.menu_tabs
+                .iter()
+                .map(|b| (b.label, b.sub))
+                .collect::<Vec<_>>()
         );
         // RACE picker → ORC sets the choice and returns to the skirmish page.
         game.activate_menu(MENU_ACT_RACE);
         assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::RaceSelect);
         game.activate_menu(21); // race index 1 = ORC
-        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::SinglePlayer);
+        // The picker returns to the page it was opened from (the skirmish page),
+        // not a hardcoded SinglePlayer page.
+        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::CustomGame);
         assert_eq!(game.menu_flow.race, crate::hud::menu::RaceChoice::Orc);
         // BACK walks up to the main menu.
         game.activate_menu(MENU_ACT_BACK);
         assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::Main);
-        // START GAME runs the loading screen and reaches the battle.
+        // START GAME is a skirmish-page action, not a main-menu one: return to
+        // the skirmish page and start there (the old sequence pressed PLAY on
+        // Main and stayed on Main).
+        game.activate_menu(MENU_ACT_CUSTOM);
+        assert_eq!(game.menu_flow.page, crate::hud::menu::MenuPage::CustomGame);
         game.activate_menu(MENU_ACT_PLAY);
         game.activate_menu(MENU_ACT_PLAY);
         assert_eq!(game.screen, Screen::Loading, "loading screen owns the start");
@@ -10376,15 +11102,13 @@ mod tests {
     #[test]
     fn ui_boot_menu_never_interrupts_an_input_driven_session() {
         // Retail: a quiet install session opens on the main menu…
-        let mut quiet = game();
-        quiet.boot_menu = true;
+        let mut quiet = booting_game();
         quiet.update(1.0 / 30.0);
         assert_eq!(quiet.screen, Screen::MainMenu, "retail boot shows the menu");
         // …but a host that injects input before the first frame (headless
         // probes like gather_probe, device self-tests) drives the battle.
-        let mut driven = game();
+        let mut driven = booting_game();
         driven.resize(2414.0, 1080.0);
-        driven.boot_menu = true;
         let pos = Vec2::new(driven.viewport.x * 0.5, driven.layout.top_bar.y - 200.0);
         driven.pointer_down(pos);
         driven.pointer_up(pos);
@@ -10395,6 +11119,148 @@ mod tests {
             "input before the first frame skips the glue screens"
         );
         assert_eq!(driven.phase, Phase::Playing);
+    }
+
+    /// Forwards routed input into the game exactly like the Android host does.
+    struct TestSink<'a>(&'a mut Game);
+
+    impl wc3_input::session::InputSink for TestSink<'_> {
+        fn pointer_down(&mut self, at: Vec2) {
+            self.0.pointer_down(at);
+        }
+        fn pointer_move(&mut self, at: Vec2) {
+            self.0.pointer_move(at);
+        }
+        fn pointer_up(&mut self, at: Vec2) {
+            self.0.pointer_up(at);
+        }
+        fn pointer_cancel(&mut self) {
+            self.0.pointer_cancel();
+        }
+        fn pointer_resume_pan(&mut self, at: Vec2) {
+            self.0.pointer_resume_pan(at);
+        }
+        fn pinch_begin(&mut self, distance: f32, centre: Vec2) {
+            self.0.pinch_begin(distance, centre);
+        }
+        fn pinch_update(&mut self, distance: f32, centre: Vec2) {
+            self.0.pinch_update(distance, centre);
+        }
+        fn pinch_end(&mut self, two_finger_tap: Option<Vec2>) {
+            self.0.pinch_end();
+            let _ = two_finger_tap;
+        }
+        fn set_additive(&mut self, additive: bool) {
+            self.0.set_additive(additive);
+        }
+        fn key_char(&mut self, key: char, ctrl: bool) {
+            self.0.key_char(key, ctrl);
+        }
+        fn key_escape(&mut self, ctrl: bool) {
+            self.0.hotkey(wc3_input::Hotkey::Escape, ctrl);
+        }
+        fn cycle_subgroups(&mut self, reverse: bool) {
+            self.0.cycle_subgroups(reverse);
+        }
+    }
+
+    /// Device path: finger down/up through the real gesture router must fire the
+    /// glue entry under the finger, once, on the real device viewports. This is
+    /// the regression that made the whole menu dead on the phone: the finger
+    /// ended as `TouchEnd::Tap` and went into world orders, while activation
+    /// lived on the mouse-only press path.
+    #[test]
+    fn every_glue_rect_activates_once_from_a_finger_tap() {
+        for (w, h) in [(2414.0f32, 1080.0f32), (1080.0, 2414.0), (1280.0, 720.0)] {
+            let mut probe = game();
+            probe.open_main_menu();
+            probe.resize(w, h);
+            let entries: Vec<(Rect, u8)> = {
+                let view = probe.menu_view();
+                let layout = probe.mobile_hud.layout_menu(&view);
+                layout
+                    .buttons
+                    .iter()
+                    .zip(view.buttons.iter())
+                    .map(|(rect, button)| (*rect, button.action))
+                    .collect()
+            };
+            // CONTINUE only exists when a save is reachable; the retail
+            // entries are CAMPAIGN/CUSTOM GAME/LOAD GAME/OPTIONS/QUIT.
+            assert!(
+                entries.len() >= 5,
+                "{w}x{h}: main menu laid out {} entries",
+                entries.len()
+            );
+            for (rect, action) in entries {
+                let at = rect.centre();
+                assert!(
+                    rect.contains(at),
+                    "{w}x{h}: entry action={action} rect {rect:?} misses its own centre"
+                );
+                let mut game = game();
+                game.open_main_menu();
+                game.resize(w, h);
+                let before = game.log.len();
+                let mut input = wc3_input::session::InputState::new();
+                let mut sink = TestSink(&mut game);
+                input.apply(
+                    &mut sink,
+                    wc3_input::session::InputEvent::FingerDown { id: 0, pos: at },
+                );
+                input.apply(
+                    &mut sink,
+                    wc3_input::session::InputEvent::FingerUp { id: 0, pos: at },
+                );
+                let fired: Vec<&String> = game.log[before..]
+                    .iter()
+                    .filter(|line| line.starts_with("GAME_MENU action="))
+                    .collect();
+                assert_eq!(
+                    fired.len(),
+                    1,
+                    "{w}x{h}: tap on action={action} at {at:?} fired {fired:?}"
+                );
+                assert!(
+                    fired[0].contains(&format!("id={action}")),
+                    "{w}x{h}: tap at {at:?} fired the wrong entry: {}",
+                    fired[0]
+                );
+            }
+        }
+    }
+
+    /// A press that ends outside the entry it started on is a drag-off: it must
+    /// not activate, and the next tap must still work (state does not stick).
+    #[test]
+    fn glue_drag_off_cancels_and_releases_the_press() {
+        let mut game = game();
+        game.open_main_menu();
+        game.resize(2414.0, 1080.0);
+        let (rect, action) = {
+            let view = game.menu_view();
+            let layout = game.mobile_hud.layout_menu(&view);
+            let rect = layout.buttons[0];
+            (rect, view.buttons[0].action)
+        };
+        game.pointer_down(rect.centre());
+        let before = game.log.len();
+        game.pointer_up(Vec2::new(rect.x + rect.w + 400.0, rect.y + rect.h + 400.0));
+        assert!(
+            !game.log[before..]
+                .iter()
+                .any(|line| line.starts_with("GAME_MENU action=")),
+            "drag-off activated an entry"
+        );
+        assert!(game.menu_press.is_none(), "press survived a drag-off");
+        game.pointer_down(rect.centre());
+        game.pointer_up(rect.centre());
+        assert!(
+            game.log[before..]
+                .iter()
+                .any(|line| line.contains(&format!("GAME_MENU action=")) && line.contains(&format!("id={action}"))),
+            "a clean tap after a drag-off must still activate"
+        );
     }
 
 }
