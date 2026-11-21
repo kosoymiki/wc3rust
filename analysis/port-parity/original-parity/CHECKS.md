@@ -18,7 +18,7 @@ thing: that the output matches the shipped game where an oracle exists. Each che
 Rust tools are built once per crate (`scripts/h2-cargo build`) and executed directly;
 a crate that fails to build makes its checks FAIL — a stale binary is never accepted.
 
-## Checks (17 applicable)
+## Checks (19 applicable)
 
 | Layer | Check | Oracle | Observed 2026-11-21 |
 |---|---|---|---|
@@ -39,6 +39,8 @@ a crate that fails to build makes its checks FAIL — a stale binary is never ac
 | formats/map-contents | inner-files-vs-independent-mpq | `mpyq` container listing + SHA-256 vs `map_files` | 44 maps, 620 presence, 548 byte-identical |
 | formats/map-bytes | data-tree-vs-shipped-tree | `war3_data/Maps` vs `war3_full3/Maps` SHA-256 | 44 = 44, 0 mismatches |
 | guest/pe | headers-vs-independent-parser | independent PE32 reader vs `pe_inspect` | 15 PE files, sections+exports+imports 0 mismatches |
+| **mpq/real-archive** | retail-vs-stormlib-tree | `compare_oracle` retail `War3.mpq` vs the StormLib tree | 10 523/10 523 matched, 0 read_fail, 710 907 954 bytes |
+| **mpq/codec-census** | decode-all-file-codecs | `codec_census` on the retail archive | 10 523 files, 0 failures, 7 codec combinations |
 
 ## NOT_APPLICABLE (honest boundary, not a skipped check)
 
@@ -50,6 +52,17 @@ a crate that fails to build makes its checks FAIL — a stale binary is never ac
 
 `guest/pe` becomes NOT_APPLICABLE only when no `.exe`/`.dll` exists under `analysis/`;
 the current samples are the operator's own licensed files.
+
+`mpq/real-archive` and `mpq/codec-census` are NOT_APPLICABLE when no retail archive is
+found at `$WC3_MPQ` or `~/.local/share/wc3-install/War3.mpq` — a fresh clone stays green
+and the reason names the exact path to drop the extracted archive at.
+
+## Retail archive (RoC, 2026-11-22)
+
+* Installer: `.../Warcraft_install/{Warcraft III.mdf,THEFROZENTHRONE.mdf}` (Alcohol MDF),
+  sector stride 2448 B (2352+96), data at +16, `War3.mpq` at LBA 110071, 438 529 036 B.
+* `~/.local/share/wc3-install/War3.mpq`: `MPQ\x1a`, listfile 10 523, blocks 10 560.
+* Cost on this device: `compare_oracle` ~3m54s, `codec_census` ~1m35s (SHA-256/decode of 710 MB).
 
 ## Rules
 
