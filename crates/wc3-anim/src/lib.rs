@@ -140,39 +140,105 @@ pub fn node_local_matrix(pivot: Vec3, pose: &NodePose) -> Mat4 {
 /// Resolve each node's parent to an index, ignoring dangling ids and
 /// self-references (`objectId == parentId` means "no parent", see
 /// `donors/mdx-m3-viewer/src/viewer/handlers/mdx/genericobject.ts:51`).
-pub fn resolve_parents(nodes: &[Node], index_by_id: &[Option<usize>]) -> Vec<Option<usize>> {
+pub fn resolve_parents(nodes: &[Node], index_by_id: &NodeIndex) -> Vec<Option<usize>> {
     nodes
         .iter()
         .enumerate()
         .map(|(index, node)| {
             let parent = node.parent_id;
+            // Negative ids and a self-reference both mean "no parent"; a parent
+            // that is not in `nodes` is dangling and also resolves to none
+            // (never to a wrong node).
             if parent < 0 || parent as u32 == node.object_id {
                 return None;
             }
             index_by_id
-                .get(parent as usize)
-                .copied()
-                .flatten()
+                .get(parent as u32)
                 .filter(|&parent_index| parent_index != index)
         })
         .collect()
 }
 
-/// Dense `object_id -> node index` map; ids are small per model and this keeps
-/// per-frame lookups cheap.
-pub fn index_nodes_by_object_id(nodes: &[Node]) -> Vec<Option<usize>> {
-    let size = nodes
-        .iter()
-        .map(|node| node.object_id as usize + 1)
-        .max()
-        .unwrap_or(0);
-    let mut map = vec![None; size];
-    for (index, node) in nodes.iter().enumerate() {
-        if let Some(slot) = map.get_mut(node.object_id as usize) {
-            *slot = Some(index);
+/// `object_id -> node index` lookup with a bounded dense prefix and a sparse
+/// tail.
+///
+/// WC3 object ids are dense in every shipped model, and the previous
+/// `vec![None; max_id + 1]` relied on that without checking it. The id is a
+/// `u32` read from the file and nothing enforces density, so a small MDX with
+/// one node at `object_id = 0xFFFF_FFFE` asked for a 16 GiB allocation before
+/// the model was even posed (WC3-I-016). The dense prefix is capped at a small
+/// multiple of the real node count; larger ids live in a sorted tail, so a
+/// crafted id costs one entry instead of its numeric value. Duplicate ids keep
+/// the last node, matching the old map's overwrite order.
+#[derive(Debug, Clone, Default)]
+pub struct NodeIndex {
+    dense: Vec<Option<usize>>,
+    sparse: Vec<(u32, usize)>,
+}
+
+impl NodeIndex {
+    /// Dense slots per real node. Shipped skeletons have ids 0..bones+helpers
+    /// with small gaps (Footman helpers start at 25), so 8x plus a floor covers
+    /// every real model while keeping a crafted id from sizing the table.
+    const DENSE_FACTOR: usize = 8;
+    const DENSE_MIN: usize = 64;
+
+    pub fn get(&self, object_id: u32) -> Option<usize> {
+        let slot = object_id as usize;
+        if slot < self.dense.len() {
+            if let Some(found) = self.dense[slot] {
+                return Some(found);
+            }
+        }
+        self.sparse
+            .binary_search_by_key(&object_id, |(id, _)| *id)
+            .ok()
+            .map(|position| self.sparse[position].1)
+    }
+
+    /// Length of the dense prefix: bounded by the node count, never by the
+    /// largest id.
+    pub fn dense_len(&self) -> usize {
+        self.dense.len()
+    }
+
+    /// Number of ids stored in the sparse tail.
+    pub fn sparse_len(&self) -> usize {
+        self.sparse.len()
+    }
+
+    /// Number of mapped ids.
+    pub fn len(&self) -> usize {
+        self.dense.iter().filter(|slot| slot.is_some()).count() + self.sparse.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Build a [`NodeIndex`] for `nodes` in one pass.
+pub fn index_nodes_by_object_id(nodes: &[Node]) -> NodeIndex {
+    let dense_len = nodes
+        .len()
+        .saturating_mul(NodeIndex::DENSE_FACTOR)
+        .max(NodeIndex::DENSE_MIN);
+    let mut index = NodeIndex {
+        dense: vec![None; dense_len],
+        sparse: Vec::new(),
+    };
+    for (slot, node) in nodes.iter().enumerate() {
+        let id = node.object_id;
+        if (id as usize) < index.dense.len() {
+            index.dense[id as usize] = Some(slot);
+        } else {
+            match index.sparse.binary_search_by_key(&id, |(id, _)| *id) {
+                Ok(position) => index.sparse[position].1 = slot,
+                Err(position) => index.sparse.insert(position, (id, slot)),
+            }
         }
     }
-    map
+    index
 }
 
 /// Compose world matrices for `nodes` in depth order.
@@ -232,7 +298,7 @@ pub struct Skeleton {
     pub nodes: Vec<Node>,
     pub pivots: Vec<Vec3>,
     pub parents: Vec<Option<usize>>,
-    pub index_by_object_id: Vec<Option<usize>>,
+    pub index_by_object_id: NodeIndex,
     pub bone_count: usize,
     pub global_sequences: Vec<u32>,
 }
@@ -367,6 +433,37 @@ fn empty_node(object_id: u32) -> Node {
     }
 }
 
+/// Hard ceiling on [`Animator`] node slots.
+///
+/// The node array is indexed by MDX **object id** (skin matrix indices are
+/// those ids), so its length is `max_id + 1`; the id is a `u32` read from the
+/// file and nothing forces density. Shipped skeletons carry fewer than 100
+/// nodes, so 4096 slots (a few hundred KiB of `Node`) is far above any real
+/// model and turns a crafted id into a bounded pose whose out-of-range nodes
+/// stay empty. Skin references past the bound are dropped by
+/// [`GeosetSkin::drop_out_of_range_bones`].
+pub const MAX_ANIMATOR_SLOTS: usize = 4096;
+
+/// Node slots [`Animator::from_model`] exposes for `model`:
+/// `max(object_id) + 1`, at least `pivots.len()`, capped at
+/// [`MAX_ANIMATOR_SLOTS`]. `assets::build_mesh` validates skin indices against
+/// this same number, so the palette bound and the vertex data agree.
+pub fn animator_slot_count(model: &MdxModel) -> usize {
+    let max_id = model
+        .bones
+        .iter()
+        .map(|bone| bone.node.object_id)
+        .chain(model.helpers.iter().map(|node| node.object_id))
+        .chain(model.attachments.iter().map(|attachment| attachment.node.object_id))
+        .chain(model.events.iter().map(|node| node.object_id))
+        .max()
+        .unwrap_or(0) as usize;
+    max_id
+        .saturating_add(1)
+        .max(model.pivots.len())
+        .min(MAX_ANIMATOR_SLOTS)
+}
+
 impl Animator {
     /// Build the node array indexed by the MDX **node object id**, not by the
     /// order bones happen to appear in the BONE chunk. Geoset skin/matrix
@@ -374,30 +471,32 @@ impl Animator {
     /// and helpers with bones (Peasant, TownHall, most props) otherwise maps
     /// limb vertices to the wrong node and the mesh hangs in the air.
     pub fn from_model(model: &MdxModel) -> Self {
-        let max_id = model
-            .bones
-            .iter()
-            .map(|bone| bone.node.object_id)
-            .chain(model.helpers.iter().map(|node| node.object_id))
-            .chain(model.attachments.iter().map(|attachment| attachment.node.object_id))
-            .chain(model.events.iter().map(|node| node.object_id))
-            .max()
-            .unwrap_or(0) as usize;
         // Cover both the highest object id and every pivot so matrix indices
-        // and pivot lookup always stay in range (some models leave gaps).
-        let node_count = (max_id + 1).max(model.pivots.len());
+        // and pivot lookup always stay in range (some models leave gaps). The
+        // count is capped: the id is a `u32` from the file, and an uncapped
+        // `vec![empty_node; max_id + 1]` turned a tiny crafted MDX into a
+        // multi-gigabyte allocation before the first pose (WC3-I-016).
+        let node_count = animator_slot_count(model);
         let mut nodes: Vec<Node> = (0..node_count as u32).map(empty_node).collect();
         for bone in &model.bones {
-            nodes[bone.node.object_id as usize] = bone.node.clone();
+            if let Some(slot) = nodes.get_mut(bone.node.object_id as usize) {
+                *slot = bone.node.clone();
+            }
         }
         for helper in &model.helpers {
-            nodes[helper.object_id as usize] = helper.clone();
+            if let Some(slot) = nodes.get_mut(helper.object_id as usize) {
+                *slot = helper.clone();
+            }
         }
         for attachment in &model.attachments {
-            nodes[attachment.node.object_id as usize] = attachment.node.clone();
+            if let Some(slot) = nodes.get_mut(attachment.node.object_id as usize) {
+                *slot = attachment.node.clone();
+            }
         }
         for event in &model.events {
-            nodes[event.object_id as usize] = event.clone();
+            if let Some(slot) = nodes.get_mut(event.object_id as usize) {
+                *slot = event.clone();
+            }
         }
         Self {
             nodes,
@@ -637,16 +736,26 @@ pub struct GeosetSkin {
     /// `(bone index, weight)` per vertex.
     pub influences: Vec<Vec<(u16, f32)>>,
     pub max_influences: usize,
+    /// Vertices whose authored influence set exceeded the support profile and
+    /// was truncated (then renormalised). Callers log this once per model: a
+    /// non-zero value means the mesh is outside the shipped-corpus profile
+    /// (`MAX_INFLUENCES`), which used to be a silent truncation (WC3-I-015).
+    pub truncated_vertices: usize,
 }
 
 /// Maximum bone influences one vertex is evaluated with.
 ///
-/// The TFT engine evaluates a classic matrix group **whole**: `IMatrixGroup`
-/// (`CMatrixGroup`, 20 bytes `{first MATS index, count, group slot, -1, -1}`)
-/// feeds every matrix of the group into the skinning loop, and the measured
-/// corpus maximum is five (`Archer` geoset 0; r2 lane 405, `fcn.6f032c50`).
-/// The old cap of four silently dropped the fifth matrix and renormalised the
-/// rest, which detaches exactly those vertices from their limb.
+/// **Support profile, not a format invariant.** The TFT engine evaluates a
+/// classic matrix group **whole**: `IMatrixGroup` (`CMatrixGroup`, 20 bytes
+/// `{first MATS index, count, group slot, -1, -1}`) feeds every matrix of the
+/// group into the skinning loop. The measured corpus maximum is five (`Archer`
+/// geoset 0; r2 lane 405, `fcn.6f032c50`) — an empirical bound, and the MDX
+/// format itself allows a larger group. A group beyond this profile is
+/// truncated to the heaviest [`MAX_INFLUENCES`] (classic groups use equal
+/// weights, so the kept matrices are averaged 1/keep), the remaining weights
+/// are renormalised, and the vertex is counted in
+/// [`GeosetSkin::truncated_vertices`] so the load path can log it once
+/// (`GAME_SKIN_TRUNC`) instead of dropping influences silently (WC3-I-015).
 ///
 /// The mesh renderer keeps four slots in the GPU vertex format; a geoset whose
 /// group needs five is skinned on the CPU for that draw (see
@@ -668,6 +777,7 @@ impl GeosetSkin {
     pub fn from_geoset_with_limit(geoset: &Geoset, limit: usize) -> Self {
         let limit = limit.max(1);
         let vertex_count = geoset.vertices.len();
+        let mut truncated_vertices = 0usize;
         let mut influences = vec![Vec::new(); vertex_count];
         let packed_skin = geoset.skin.len() >= vertex_count * 8;
         if packed_skin {
@@ -685,6 +795,9 @@ impl GeosetSkin {
                 }
                 if total > 0.0 {
                     pairs.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    if pairs.len() > limit {
+                        truncated_vertices += 1;
+                    }
                     pairs.truncate(limit);
                     let kept: f32 = pairs.iter().map(|(_, weight)| *weight).sum();
                     if kept > 0.0 {
@@ -711,6 +824,9 @@ impl GeosetSkin {
                 if level == 0 {
                     continue;
                 }
+                if level > limit {
+                    truncated_vertices += 1;
+                }
                 // Clamp the group to the influence budget. Classic groups use
                 // equal weights, so keeping the first `keep` matrices and
                 // renormalising by `1 / keep` preserves the average the engine
@@ -719,6 +835,13 @@ impl GeosetSkin {
                 let weight = 1.0 / keep as f32;
                 for index in group_offset..group_offset + keep {
                     if let Some(&bone) = geoset.matrix_indices.get(index) {
+                        // `MATS` is u32; the influence slot is u16. A value
+                        // above u16::MAX must be dropped, not wrapped into a
+                        // valid-looking low index.
+                        if bone > u16::MAX as u32 {
+                            truncated_vertices += 1;
+                            continue;
+                        }
                         slot.push((bone as u16, weight));
                     }
                 }
@@ -728,7 +851,43 @@ impl GeosetSkin {
         Self {
             influences,
             max_influences,
+            truncated_vertices,
         }
+    }
+
+    /// Drop influences whose bone index is outside a model's palette and
+    /// renormalise the survivors. Returns the number of dropped `(bone,
+    /// weight)` pairs.
+    ///
+    /// The GPU vertex format carries `bone` indices straight into
+    /// `palette[base + bone]`. The MDX parser bounds the byte range, not the
+    /// *meaning* of an index, so a malformed `MATS`/`SKIN` array is only
+    /// caught here, once, before any upload: an out-of-range index is a
+    /// bounds-checked zero read at best (the vertex collapses) and undefined on
+    /// drivers without robustness (WC3-I-014). The CPU fallback and the GPU
+    /// path read the same clamped list, so both agree.
+    pub fn drop_out_of_range_bones(&mut self, bone_count: usize) -> usize {
+        let mut dropped = 0usize;
+        for list in &mut self.influences {
+            let before = list.len();
+            list.retain(|(bone, weight)| {
+                let keep = (*bone as usize) < bone_count && *weight > 0.0 && weight.is_finite();
+                if !keep {
+                    dropped += 1;
+                }
+                keep
+            });
+            if list.len() != before && !list.is_empty() {
+                let total: f32 = list.iter().map(|(_, weight)| *weight).sum();
+                if total > 0.0 {
+                    for (_, weight) in list.iter_mut() {
+                        *weight /= total;
+                    }
+                }
+            }
+        }
+        self.max_influences = self.influences.iter().map(Vec::len).max().unwrap_or(0);
+        dropped
     }
 
     /// Number of vertices that deform (have at least one valid bone).

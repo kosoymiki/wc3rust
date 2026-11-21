@@ -50,6 +50,11 @@ pub fn helper_plane(geoset: &Geoset) -> bool {
 ///
 /// `hidden` is the helper-plane mask in geoset order (`ModelRuntime::new`
 /// builds it); pass an empty slice to evaluate the extent/alpha rule alone.
+///
+/// The sequence is resolved inside `model.sequences` by `(start, name)`; a
+/// copied sequence with the same name resolves by name, because the extents
+/// still describe that animation. Only a name the model does not carry at all
+/// falls back to the static-geoset-alpha path.
 pub fn mesh_alphas(
     model: &MdxModel,
     hidden: &[bool],
@@ -57,9 +62,22 @@ pub fn mesh_alphas(
     time_ms: u32,
 ) -> Vec<f32> {
     let sequence_index = sequence.and_then(|sequence| {
-        model.sequences.iter().position(|candidate| {
-            candidate.start == sequence.start && candidate.name == sequence.name
-        })
+        model
+            .sequences
+            .iter()
+            .position(|candidate| {
+                candidate.start == sequence.start && candidate.name == sequence.name
+            })
+            // A reconstructed/copied `Sequence` (same animation, different
+            // interval word) must still address its per-sequence extents.
+            // Falling through to the no-sequence branch here would draw every
+            // geoset — the exact defect this rule exists to prevent.
+            .or_else(|| {
+                model
+                    .sequences
+                    .iter()
+                    .position(|candidate| candidate.name == sequence.name)
+            })
     });
     model
         .geosets
