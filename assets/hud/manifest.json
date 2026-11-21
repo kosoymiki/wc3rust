@@ -1,0 +1,1160 @@
+{
+  "format_version": 2,
+  "theme": "classic_fantasy",
+  "generated_by": "analysis/design/tools/build_pack.py",
+  "access_date": "2026-11-18",
+  "density": 3.0,
+  "reference": {
+    "landscape_px": [
+      2414,
+      1080
+    ],
+    "landscape_dp": [
+      805,
+      360
+    ],
+    "portrait_px": [
+      1080,
+      2414
+    ],
+    "portrait_dp": [
+      360,
+      805
+    ]
+  },
+  "safe_area_dp": {
+    "landscape": [
+      70,
+      40,
+      30,
+      32
+    ],
+    "portrait": [
+      8,
+      8,
+      32,
+      21
+    ]
+  },
+  "fonts": {
+    "nimrod": {
+      "file": "Fonts/NIM_____.ttf",
+      "source": "local:War3.mpq",
+      "sha256": "8301b818d2999bb7c71a5d7a61352690ee247e9a47c77d16bc8ba5e0cbda9521",
+      "coverage": [
+        "latin",
+        "cyrillic",
+        "digits",
+        "punctuation"
+      ],
+      "roles": [
+        "display",
+        "title",
+        "heading",
+        "body",
+        "label",
+        "compact",
+        "numeric"
+      ],
+      "note": "not bundled; the app reads the operator War3.mpq at runtime"
+    }
+  },
+  "nine_slice": {
+    "panel": {
+      "left": 64,
+      "top": 64,
+      "right": 64,
+      "bottom": 64,
+      "center": "stretch"
+    },
+    "button": {
+      "left": 32,
+      "top": 32,
+      "right": 32,
+      "bottom": 32,
+      "center": "stretch"
+    },
+    "tab": {
+      "left": 16,
+      "top": 16,
+      "right": 16,
+      "bottom": 16,
+      "center": "stretch"
+    },
+    "tooltip": {
+      "left": 16,
+      "top": 16,
+      "right": 16,
+      "bottom": 16,
+      "center": "stretch"
+    },
+    "command": {
+      "left": 16,
+      "top": 16,
+      "right": 16,
+      "bottom": 16,
+      "center": "stretch"
+    },
+    "minimap": {
+      "left": 32,
+      "top": 32,
+      "right": 32,
+      "bottom": 32,
+      "center": "stretch"
+    }
+  },
+  "states": {
+    "button": [
+      "normal",
+      "hover",
+      "pressed",
+      "disabled",
+      "selected"
+    ],
+    "tab": [
+      "normal",
+      "selected",
+      "pressed"
+    ],
+    "command": [
+      "normal",
+      "pressed",
+      "disabled",
+      "locked"
+    ],
+    "row": [
+      "normal",
+      "hover",
+      "pressed",
+      "disabled",
+      "locked"
+    ]
+  },
+  "atlases": {},
+  "assets": [
+    {
+      "id": "panel.menu",
+      "purpose": "Glue/menu/dialog 9-slice panel (stone frame, gold inner line, navy interior)",
+      "file": "panels/panel_9s.png",
+      "format": "png",
+      "w": 192,
+      "h": 192,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 64,
+        "top": 64,
+        "right": 64,
+        "bottom": 64,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          180,
+          120
+        ],
+        "typical": [
+          660,
+          282
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/EscMenu/Human/human-options-menu-border.blp",
+        "sha256": "3380e7d8f4008212a4578ac5738e89e296273f847777b65a1f25d32701087e23",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/EscMenu/Human/human-options-menu-border.blp",
+            "sha256": "3380e7d8f4008212a4578ac5738e89e296273f847777b65a1f25d32701087e23",
+            "rects": [
+              "seg5 TL",
+              "seg4 TR",
+              "seg6 BL",
+              "seg7 BR",
+              "seg0 L",
+              "seg1 R",
+              "seg0 rot CW T",
+              "seg1 rot CW B"
+            ]
+          }
+        ],
+        "transform": "8-segment border atlas; flat fill #00091A @226/255 sampled from UI/Widgets/EscMenu/Human/human-options-menu-background.blp",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "3e19659282a21ff8d5fa00a98f0894c1fad80662d12dc60ef4a1e367cbce116c"
+    },
+    {
+      "id": "button.normal",
+      "purpose": "Menu/row/nav button, normal",
+      "file": "buttons/button_normal_9s.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 32,
+        "top": 32,
+        "right": 32,
+        "bottom": 32,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          320,
+          52
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
+        "sha256": "e3e3fc30fcc8badf73b6cc9a905e3bdcef6037243c372e908c1846c06aa59fae",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
+            "sha256": "e3e3fc30fcc8badf73b6cc9a905e3bdcef6037243c372e908c1846c06aa59fae",
+            "rects": [
+              "8 segments of 32 px"
+            ]
+          }
+        ],
+        "transform": "8-segment border atlas; fill #00003A",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "486914f206db9c9484b95da48011a2826d2945f8b87a961d591e0f0e21a79b45"
+    },
+    {
+      "id": "button.hover",
+      "purpose": "Button hover (+18 % brightness)",
+      "file": "buttons/button_hover_9s.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 32,
+        "top": 32,
+        "right": 32,
+        "bottom": 32,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          320,
+          52
+        ]
+      },
+      "states": [
+        "hover"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
+        "sha256": "e3e3fc30fcc8badf73b6cc9a905e3bdcef6037243c372e908c1846c06aa59fae",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder.blp",
+            "sha256": "e3e3fc30fcc8badf73b6cc9a905e3bdcef6037243c372e908c1846c06aa59fae",
+            "rects": [
+              "8 segments"
+            ]
+          },
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Glues/GlueScreen-Button-KeyboardHighlight.blp",
+            "sha256": "85cdd6114df503558dec7da5e2bf5d1eab7f21c5724c47c2d16abf2cf9c28edc",
+            "rects": [
+              "full 128x32"
+            ]
+          }
+        ],
+        "transform": "normal atlas brightened 1.18 (hover state; keyboard highlight stays a draw-time overlay)",
+        "label": "extracted+derived",
+        "procedural_reference": null
+      },
+      "sha256": "09f7eae239ff996898f5ac6a992d27bfbd8d711eacf0f45783d1524c9e71ce0e"
+    },
+    {
+      "id": "button.pressed",
+      "purpose": "Button pressed / active tab",
+      "file": "buttons/button_pressed_9s.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 32,
+        "top": 32,
+        "right": 32,
+        "bottom": 32,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          320,
+          52
+        ]
+      },
+      "states": [
+        "pressed",
+        "selected"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder-Down.blp",
+        "sha256": "69414402aac62b910b060ba8c749ad6b368f2fa36288412b3b1f41b38815faaa",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder-Down.blp",
+            "sha256": "69414402aac62b910b060ba8c749ad6b368f2fa36288412b3b1f41b38815faaa",
+            "rects": [
+              "8 segments of 32 px"
+            ]
+          }
+        ],
+        "transform": "down border atlas; fill #00002A",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "3e0fec2f3c95eb5e7decd4fa38e0fb1e401f161cf568689ffe7cf9ba80cca460"
+    },
+    {
+      "id": "button.disabled",
+      "purpose": "Button disabled / locked row base",
+      "file": "buttons/button_disabled_9s.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 32,
+        "top": 32,
+        "right": 32,
+        "bottom": 32,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          320,
+          52
+        ]
+      },
+      "states": [
+        "disabled",
+        "locked"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder-Disabled.blp",
+        "sha256": "e668f81eddb27319ee7bdb8aceb14008d94790bc4e43f5987b6fa241c73f456f",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Glues/GlueScreen-Button1-BackdropBorder-Disabled.blp",
+            "sha256": "e668f81eddb27319ee7bdb8aceb14008d94790bc4e43f5987b6fa241c73f456f",
+            "rects": [
+              "8 segments of 32 px"
+            ]
+          }
+        ],
+        "transform": "disabled border atlas; fill #101018; saturation 0.6",
+        "label": "extracted+desaturated",
+        "procedural_reference": null
+      },
+      "sha256": "14aed6aa22164644359f33256fb949f5504af90b1e21ff90adae2be9f0345952"
+    },
+    {
+      "id": "tab.normal",
+      "purpose": "Glue tab, normal",
+      "file": "tabs/tab_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          64,
+          48
+        ],
+        "typical": [
+          108,
+          48
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+        "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+            "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          }
+        ],
+        "transform": "console button border; fill #14120E",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "0d8801e5f9013ac835fb3773702e431f3a7eddefd0b6070ae50ab263fc774b5e"
+    },
+    {
+      "id": "tab.active",
+      "purpose": "Glue tab, active/selected",
+      "file": "tabs/tab_active_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          64,
+          48
+        ],
+        "typical": [
+          108,
+          48
+        ]
+      },
+      "states": [
+        "selected",
+        "pressed"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/human-console-button-down.blp",
+        "sha256": "0281e50db3fce75135bb9e23132e9754250c5e0125cfc11bd8e2cba2ffd5f012",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Console/Human/human-console-button-down.blp",
+            "sha256": "0281e50db3fce75135bb9e23132e9754250c5e0125cfc11bd8e2cba2ffd5f012",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          }
+        ],
+        "transform": "down border; fill #221A0E",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "bf2f4998d3a87a13f58d34fe06cd4443ec548b13daa2db95c80860648c710c32"
+    },
+    {
+      "id": "tooltip.panel",
+      "purpose": "Tooltip frame (gold line on dark blue)",
+      "file": "tooltip/tooltip_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          120,
+          48
+        ],
+        "typical": [
+          280,
+          160
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/ToolTips/Human/human-tooltip-border.blp",
+        "sha256": "ed9b3e1a4b73eb10bfe202c4860e1c3977c5b9503203fd3c0381bc80d06f97f9",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/ToolTips/Human/human-tooltip-border.blp",
+            "sha256": "ed9b3e1a4b73eb10bfe202c4860e1c3977c5b9503203fd3c0381bc80d06f97f9",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          },
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/ToolTips/Human/human-tooltip-background.blp",
+            "sha256": "05180192b0c6871ee11840669755a599c668c0184fc86f64a99574629b44367e",
+            "rects": [
+              "full 64x64 fill sample"
+            ]
+          }
+        ],
+        "transform": "8-segment border atlas; fill #182231 @232/255",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "b1db039b6e6f1c4f6ee4664a7a7f2ab338726cb711d41b7097296a66e78fca4d"
+    },
+    {
+      "id": "command.normal",
+      "purpose": "Command-card cell, normal",
+      "file": "command/command_normal_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          48,
+          48
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+        "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+            "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          }
+        ],
+        "transform": "console button border; fill #050505",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "29367a63ff3064ce4072e8c12f68a590e11f2f04defcf6016696ba927cbf5d62"
+    },
+    {
+      "id": "command.pressed",
+      "purpose": "Command-card cell, pressed",
+      "file": "command/command_pressed_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          48,
+          48
+        ]
+      },
+      "states": [
+        "pressed"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/human-console-button-down.blp",
+        "sha256": "0281e50db3fce75135bb9e23132e9754250c5e0125cfc11bd8e2cba2ffd5f012",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Console/Human/human-console-button-down.blp",
+            "sha256": "0281e50db3fce75135bb9e23132e9754250c5e0125cfc11bd8e2cba2ffd5f012",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          }
+        ],
+        "transform": "down border; fill #020202",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "7235d2c12121835aefd99627af9a6fb84e4ac1e63947aad9d18405e5c58f685c"
+    },
+    {
+      "id": "command.disabled",
+      "purpose": "Command-card cell, disabled/cooldown base",
+      "file": "command/command_disabled_9s.png",
+      "format": "png",
+      "w": 48,
+      "h": 48,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 16,
+        "top": 16,
+        "right": 16,
+        "bottom": 16,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          48,
+          48
+        ],
+        "typical": [
+          48,
+          48
+        ]
+      },
+      "states": [
+        "disabled",
+        "locked"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+        "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Widgets/Console/Human/human-console-button-up.blp",
+            "sha256": "17cedeaa01165571257bce7685656b72da2ad43c14ede92029e20cf5cd26d192",
+            "rects": [
+              "8 segments of 16 px"
+            ]
+          }
+        ],
+        "transform": "normal border; fill #0A0A0A; saturation 0.35",
+        "label": "extracted+desaturated",
+        "procedural_reference": null
+      },
+      "sha256": "035c2b520eb675c8bfbac05589f757867330027f59d74cda8db1740c523a6802"
+    },
+    {
+      "id": "minimap.frame",
+      "purpose": "Minimap square frame (stone beam + gold inner line)",
+      "file": "minimap/minimap_frame_9s.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 32,
+        "top": 32,
+        "right": 32,
+        "bottom": 32,
+        "center": "stretch"
+      },
+      "render_dp": {
+        "min": [
+          112,
+          112
+        ],
+        "typical": [
+          112,
+          112
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Console/Human/HumanUITile02.blp",
+        "sha256": "9be09472ff218316396a2b29aaadb6e0029a208ce818663ee8838a30908b56cc",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Console/Human/HumanUITile02.blp",
+            "sha256": "9be09472ff218316396a2b29aaadb6e0029a208ce818663ee8838a30908b56cc",
+            "rects": [
+              "stone beam x200..456 y236..300",
+              "stone column x120..184 y300..364",
+              "corner x200..264 y236..300"
+            ]
+          }
+        ],
+        "transform": "stone beam/column from HumanUITile02 + 2 px gold inner line",
+        "label": "procedural reference v1",
+        "procedural_reference": "procedural reference v1"
+      },
+      "sha256": "09589fb7c9041b7fe3034c9a1ab75968a72b63ce35efae88d4f50dfd0cf59da6"
+    },
+    {
+      "id": "minimap.arch",
+      "purpose": "Retail minimap arch overlay (fixed image)",
+      "file": "minimap/minimap_arch.png",
+      "format": "png",
+      "w": 232,
+      "h": 312,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 0,
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "center": "none"
+      },
+      "render_dp": {
+        "min": [
+          112,
+          150
+        ],
+        "typical": [
+          112,
+          150
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Console/Human/HumanUITile01.blp",
+        "sha256": "fd62c4880fc6f15f5ac605beaed2f23197a3ea5ee0c10524793e2285e222269f",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Console/Human/HumanUITile01.blp",
+            "sha256": "fd62c4880fc6f15f5ac605beaed2f23197a3ea5ee0c10524793e2285e222269f",
+            "rects": [
+              "x420..512 y200..512"
+            ]
+          },
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Console/Human/HumanUITile02.blp",
+            "sha256": "9be09472ff218316396a2b29aaadb6e0029a208ce818663ee8838a30908b56cc",
+            "rects": [
+              "x0..140 y200..512"
+            ]
+          }
+        ],
+        "transform": "stitch two console tiles along the arch seam",
+        "label": "procedural reference v1",
+        "procedural_reference": "procedural reference v1"
+      },
+      "sha256": "ea2776803094580a8f80c5c47e5e5cab9c729888fd7e84fed15397038d5ff171"
+    },
+    {
+      "id": "portrait.frame",
+      "purpose": "Console portrait cutout (fixed image)",
+      "file": "portraits/portrait_frame.png",
+      "format": "png",
+      "w": 300,
+      "h": 284,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x (1 source px = 1 framebuffer px at density 3)",
+      "nine_slice": {
+        "left": 0,
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "center": "none"
+      },
+      "render_dp": {
+        "min": [
+          80,
+          76
+        ],
+        "typical": [
+          80,
+          76
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Console/Human/HumanUITile01.blp",
+        "sha256": "fd62c4880fc6f15f5ac605beaed2f23197a3ea5ee0c10524793e2285e222269f",
+        "sources": [
+          {
+            "repo": "local:War3.mpq",
+            "path": "UI/Console/Human/HumanUITile01.blp",
+            "sha256": "fd62c4880fc6f15f5ac605beaed2f23197a3ea5ee0c10524793e2285e222269f",
+            "rects": [
+              "x6..306 y224..508"
+            ]
+          }
+        ],
+        "transform": "console tile portrait cutout, alpha preserved",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "964644a81c15e5ea8794fadd3dfbde0acba56eed119b02e77af85b5ae9745c09"
+    },
+    {
+      "id": "resource.gold",
+      "purpose": "Gold icon",
+      "file": "resources/resource_gold_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Feedback/Resources/ResourceGold.blp",
+        "sha256": "a8e0f12d6a51f2bee6e0610f1e5755570d4512f6337c1fb5dfba6c4518cb0a44",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "a1e551ad6676d13cadb0f15a850faba5e2bb8fb911aa3d96b3e5d207a1e2c1b1"
+    },
+    {
+      "id": "resource.lumber",
+      "purpose": "Lumber icon",
+      "file": "resources/resource_lumber_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Feedback/Resources/ResourceLumber.blp",
+        "sha256": "ffa8529266dd9906cf1e5da75fe78a6aa1956610721c68c7887a9f03d8093c07",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "1e45c27bad677c08047ce49748542ba408f1c07cef6de428b7e491ea34853d1c"
+    },
+    {
+      "id": "resource.supply",
+      "purpose": "Food/supply icon",
+      "file": "resources/resource_supply_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Feedback/Resources/ResourceSupply.blp",
+        "sha256": "fff25c2e635f52fa3095bec87a51df28582bdf54e15614f915d3c344d056eb96",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "decd9fdffcc34f9e7c373579455aea817d304c0173f2829ab6bb2a586ceac4b9"
+    },
+    {
+      "id": "resource.upkeep",
+      "purpose": "Upkeep icon",
+      "file": "resources/resource_upkeep_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Feedback/Resources/ResourceUpkeep.blp",
+        "sha256": "f02615e2387b8d1c011d635af1c03ec8a86674f286b8d046365c2e712a6964fd",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "ac1d33311829d5e7e8324ec9b8fd0deddee29f651514be923b8059ef74f8675d"
+    },
+    {
+      "id": "resource.mana",
+      "purpose": "Mana stone icon",
+      "file": "resources/resource_mana_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Feedback/Resources/ResourceManaStone.blp",
+        "sha256": "45839292f27aab2c5261a3a9a27dcb359f620429a4f9a8a2305d3f20f0eae2c3",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "2075e74c6e3492743e9294b6990cefe330031d644d5aea95c8aee5e83c45ee01"
+    },
+    {
+      "id": "infocard.gold",
+      "purpose": "Unit-card gold cost icon",
+      "file": "resources/infocard_gold_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/infocard-gold.blp",
+        "sha256": "76702180878277816a5aa444f89020cd6f1388cfc15626c55473ccf91f0622be",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "10b5f4f2c3508e8b6c215bd6cbf157d90de5a1ed2604cffae3f08da4c31f132b"
+    },
+    {
+      "id": "infocard.supply",
+      "purpose": "Unit-card supply cost icon",
+      "file": "resources/infocard_supply_96.png",
+      "format": "png",
+      "w": 96,
+      "h": 96,
+      "alpha": true,
+      "color_space": "sRGB",
+      "scale": "3x",
+      "nine_slice": null,
+      "render_dp": {
+        "min": [
+          24,
+          24
+        ],
+        "typical": [
+          24,
+          24
+        ]
+      },
+      "states": [
+        "normal"
+      ],
+      "atlas": null,
+      "mips": false,
+      "provenance": {
+        "repo": "local:War3.mpq",
+        "path": "UI/Widgets/Console/Human/infocard-supply.blp",
+        "sha256": "fe75fce0a286deb76374ca0d0a5534a845f9cfb33ba2c58a431ee3c444a8caa1",
+        "sources": [],
+        "transform": "alpha bbox trim, square pad, LANCZOS to 96x96",
+        "label": "extracted",
+        "procedural_reference": null
+      },
+      "sha256": "d51d9adeddfaff52822b73e93579204961d99e21ae7514013cb68eac19130de2"
+    }
+  ]
+}

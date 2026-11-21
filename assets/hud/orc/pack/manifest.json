@@ -1,0 +1,1404 @@
+{
+  "access_date": "2026-11-18",
+  "assets": [
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        884,
+        2,
+        268,
+        310
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/panel.command_grid.png",
+      "fixed": true,
+      "format": "png",
+      "h": 310,
+      "id": "panel.command_grid",
+      "kind": "frame",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "70d84161af6cfed0fbf4c3aac102ec7cbb5c3a22a9d04253d7b86742d7766f23",
+      "provenance": {
+        "crop": [
+          579,
+          25,
+          268,
+          310
+        ],
+        "inset_reason": "3x3 command/inventory slots are baked into the art; any stretch moves the cell grid. Fixed 264x306.",
+        "qc": {
+          "alpha_coverage": 0.8771,
+          "edge_pixels": 39,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "panel.command_grid",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "70d84161af6cfed0fbf4c3aac102ec7cbb5c3a22a9d04253d7b86742d7766f23",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 268
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        544,
+        2,
+        338,
+        316
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/panel.selection.png",
+      "fixed": true,
+      "format": "png",
+      "h": 316,
+      "id": "panel.selection",
+      "kind": "frame",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "3264f10a936e1f255bbd01af18e33ad758c647a00bf871863a86fa6016382f8d",
+      "provenance": {
+        "crop": [
+          872,
+          20,
+          338,
+          316
+        ],
+        "inset_reason": "Top gem is centred in the stretch band and fir trees run the full side height; a 9-slice would distort both. Fixed 334x312.",
+        "qc": {
+          "alpha_coverage": 0.8915,
+          "edge_pixels": 65,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "panel.selection",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "3264f10a936e1f255bbd01af18e33ad758c647a00bf871863a86fa6016382f8d",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 338
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        2,
+        2,
+        271,
+        321
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/frame.portrait_orc.png",
+      "fixed": false,
+      "format": "png",
+      "h": 321,
+      "id": "frame.portrait_orc",
+      "kind": "portrait",
+      "mips": false,
+      "nine_slice": {
+        "axis": "vertical",
+        "bottom": 72,
+        "center": "vertical",
+        "left": 0,
+        "right": 0,
+        "top": 125,
+        "width_fixed": true
+      },
+      "pack_sha256": "3d3d7a2399d51f55436cc857f160924a30be7df87b6a3fec158e0b843e5f2e02",
+      "provenance": {
+        "crop": [
+          1240,
+          16,
+          271,
+          321
+        ],
+        "inset_reason": "Top cap y=0..125 holds the arch, gem and crown; bottom cap y=245..317 holds the rock base and lower gem; x=24..243 between y=125..245 is a straight two-column arch side, safe to stretch vertically. Width stays 267.",
+        "qc": {
+          "alpha_coverage": 0.7988,
+          "edge_pixels": 55,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "frame.portrait_orc",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "3d3d7a2399d51f55436cc857f160924a30be7df87b6a3fec158e0b843e5f2e02",
+      "states": [
+        "normal"
+      ],
+      "three_slice": {
+        "axis": "vertical",
+        "bottom": 72,
+        "top": 125,
+        "width_fixed": true
+      },
+      "w": 271
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        1072,
+        325,
+        554,
+        192
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/bar.resources.png",
+      "fixed": true,
+      "format": "png",
+      "h": 192,
+      "id": "bar.resources",
+      "kind": "bar",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "16a22ffbacf03fe3e16753e370a4971a2e534efd0481d3793c8476449db2d1bc",
+      "provenance": {
+        "crop": [
+          5,
+          83,
+          554,
+          192
+        ],
+        "inset_reason": "Three resource slots with baked gold/lumber/meat icons; stretching would move the icon-to-slot mapping. Fixed 550x188.",
+        "qc": {
+          "alpha_coverage": 0.6953,
+          "edge_pixels": 52,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "bar.resources",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "16a22ffbacf03fe3e16753e370a4971a2e534efd0481d3793c8476449db2d1bc",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 554
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        346,
+        325,
+        379,
+        225
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/panel.list.png",
+      "fixed": true,
+      "format": "png",
+      "h": 225,
+      "id": "panel.list",
+      "kind": "frame",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "9ba4464c886aca9a553979648385151c19c7fa4e5bcc4165520ad2d8aa3403cf",
+      "provenance": {
+        "crop": [
+          15,
+          381,
+          379,
+          225
+        ],
+        "inset_reason": "Left portrait column is an internal divider at x=95; a nine-slice centre would stretch it. Fixed 375x221.",
+        "qc": {
+          "alpha_coverage": 0.8749,
+          "edge_pixels": 31,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "panel.list",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "9ba4464c886aca9a553979648385151c19c7fa4e5bcc4165520ad2d8aa3403cf",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 379
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        1628,
+        325,
+        371,
+        183
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/tabs.strip6.png",
+      "fixed": true,
+      "format": "png",
+      "h": 183,
+      "id": "tabs.strip6",
+      "kind": "tabs",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "45cfa679e957bbd4ac4d64d113806d800fe4b8da603f789a820e576ed8359c8d",
+      "provenance": {
+        "crop": [
+          415,
+          413,
+          371,
+          183
+        ],
+        "inset_reason": "Six baked tab cells (measured; the brief said four); stretching breaks the cell count. Fixed 367x179.",
+        "qc": {
+          "alpha_coverage": 0.8055,
+          "edge_pixels": 36,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "tabs.strip6",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "45cfa679e957bbd4ac4d64d113806d800fe4b8da603f789a820e576ed8359c8d",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 371
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        727,
+        325,
+        343,
+        198
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/tabs.strip5.png",
+      "fixed": true,
+      "format": "png",
+      "h": 198,
+      "id": "tabs.strip5",
+      "kind": "tabs",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "b37ccda182394ab99be156b3fb3aba7cfccbf14bb935f7c7da7d119bfbda7969",
+      "provenance": {
+        "crop": [
+          808,
+          406,
+          343,
+          198
+        ],
+        "inset_reason": "Five baked tab cells (measured; the brief said three); stretching breaks the cell count. Fixed 339x194.",
+        "qc": {
+          "alpha_coverage": 0.7279,
+          "edge_pixels": 44,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "tabs.strip5",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "b37ccda182394ab99be156b3fb3aba7cfccbf14bb935f7c7da7d119bfbda7969",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 343
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        2,
+        325,
+        342,
+        239
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/panel.wide.png",
+      "fixed": false,
+      "format": "png",
+      "h": 239,
+      "id": "panel.wide",
+      "kind": "frame",
+      "mips": false,
+      "nine_slice": {
+        "axis": "vertical",
+        "bottom": 48,
+        "center": "vertical",
+        "left": 0,
+        "right": 0,
+        "top": 75,
+        "width_fixed": true
+      },
+      "pack_sha256": "73f41a8bfe7eb1788b3e6c9f95bc3bef616680275d35f475f31ddd2b702fb759",
+      "provenance": {
+        "crop": [
+          1182,
+          381,
+          342,
+          239
+        ],
+        "inset_reason": "Top cap y=0..75 holds the stone beam, gold flourish and centred gem; bottom cap y=187..235 holds the lower stone/gold band; x=50..288 between y=75..187 is the brown stone field, safe to stretch vertically. Width stays 338, so the gem never enters a stretch band.",
+        "qc": {
+          "alpha_coverage": 0.9108,
+          "edge_pixels": 22,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "panel.wide",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "73f41a8bfe7eb1788b3e6c9f95bc3bef616680275d35f475f31ddd2b702fb759",
+      "states": [
+        "normal"
+      ],
+      "three_slice": {
+        "axis": "vertical",
+        "bottom": 48,
+        "top": 75,
+        "width_fixed": true
+      },
+      "w": 342
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        1452,
+        2,
+        445,
+        277
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/banner.ornate.png",
+      "fixed": false,
+      "format": "png",
+      "h": 277,
+      "id": "banner.ornate",
+      "kind": "banner",
+      "mips": false,
+      "nine_slice": {
+        "axis": "vertical",
+        "bottom": 70,
+        "center": "vertical",
+        "left": 0,
+        "right": 0,
+        "top": 95,
+        "width_fixed": true
+      },
+      "pack_sha256": "abcd17517b128db3edc953015ccddc442059078f4747e79d56f2fc3515482e32",
+      "provenance": {
+        "crop": [
+          13,
+          668,
+          445,
+          277
+        ],
+        "inset_reason": "Top cap y=0..95 holds the crown, gem and upper scrollwork; bottom cap y=203..273 holds the gold base and green cloth; x=60..381 between y=95..203 is the stone field, safe to stretch vertically. Width stays 441.",
+        "qc": {
+          "alpha_coverage": 0.7038,
+          "edge_pixels": 48,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "banner.ornate",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "abcd17517b128db3edc953015ccddc442059078f4747e79d56f2fc3515482e32",
+      "states": [
+        "normal"
+      ],
+      "three_slice": {
+        "axis": "vertical",
+        "bottom": 70,
+        "top": 95,
+        "width_fixed": true
+      },
+      "w": 445
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        275,
+        2,
+        267,
+        319
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/panel.list_rows.png",
+      "fixed": true,
+      "format": "png",
+      "h": 319,
+      "id": "panel.list_rows",
+      "kind": "frame",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "624b9d51b6b40d7a06a98108f1cdc92328fbafa41d2a180a600450becb765f1b",
+      "provenance": {
+        "crop": [
+          487,
+          650,
+          267,
+          319
+        ],
+        "inset_reason": "Four baked row plates; any stretch changes the row count/spacing. Fixed 263x315.",
+        "qc": {
+          "alpha_coverage": 0.8719,
+          "edge_pixels": 24,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "panel.list_rows",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "624b9d51b6b40d7a06a98108f1cdc92328fbafa41d2a180a600450becb765f1b",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 267
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        1154,
+        2,
+        296,
+        287
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/dialog.confirm.png",
+      "fixed": true,
+      "format": "png",
+      "h": 287,
+      "id": "dialog.confirm",
+      "kind": "dialog",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "a79b6185c1221b4af43a9c298eb3cfd0c241485c86f7fb92f066079f87001368",
+      "provenance": {
+        "crop": [
+          801,
+          674,
+          296,
+          287
+        ],
+        "inset_reason": "Green/red action buttons are baked into the bottom band; stretching moves them. Fixed 292x283.",
+        "qc": {
+          "alpha_coverage": 0.8642,
+          "edge_pixels": 34,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination"
+      },
+      "purpose": "dialog.confirm",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "a79b6185c1221b4af43a9c298eb3cfd0c241485c86f7fb92f066079f87001368",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 296
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        354,
+        566,
+        85,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.gold.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.gold",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "b661ab5be1e67a36b28bfb8587a7758d93ebf98b830cd3b39cb4a8981936964f",
+      "provenance": {
+        "crop": [
+          1114,
+          749,
+          85,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination; split by column gaps; alpha bbox trim"
+      },
+      "purpose": "Round orc resource/action icon (gold)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "b661ab5be1e67a36b28bfb8587a7758d93ebf98b830cd3b39cb4a8981936964f",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 85
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        441,
+        566,
+        85,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.gold.disabled.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.gold.disabled",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "65ce2a844187a34e354fdd7282b4bad9340da0f6c550138b57fb518290a2f101",
+      "provenance": {
+        "crop": [
+          1114,
+          749,
+          85,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "state variant: 60 % saturation + 70 % brightness on the normal matte",
+        "variant_of": "icons.round.gold"
+      },
+      "purpose": "Procedural disabled variant of icons.round.gold (saturation 60 %, brightness 70 %)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "65ce2a844187a34e354fdd7282b4bad9340da0f6c550138b57fb518290a2f101",
+      "states": [
+        "disabled"
+      ],
+      "three_slice": null,
+      "w": 85
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        528,
+        566,
+        87,
+        108
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.lumber.png",
+      "fixed": true,
+      "format": "png",
+      "h": 108,
+      "id": "icons.round.lumber",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "d67fdb7cf4dac96d60fe1c18b893ee24d680771334443c23a6cb72d03dba123e",
+      "provenance": {
+        "crop": [
+          1197,
+          749,
+          87,
+          108
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination; split by column gaps; alpha bbox trim"
+      },
+      "purpose": "Round orc resource/action icon (lumber)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "d67fdb7cf4dac96d60fe1c18b893ee24d680771334443c23a6cb72d03dba123e",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 87
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        617,
+        566,
+        87,
+        108
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.lumber.disabled.png",
+      "fixed": true,
+      "format": "png",
+      "h": 108,
+      "id": "icons.round.lumber.disabled",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "1fffbd0c89513c493d425ed8338047c8118ca4ed53d9f82139829151c9eb2fe8",
+      "provenance": {
+        "crop": [
+          1197,
+          749,
+          87,
+          108
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "state variant: 60 % saturation + 70 % brightness on the normal matte",
+        "variant_of": "icons.round.lumber"
+      },
+      "purpose": "Procedural disabled variant of icons.round.lumber (saturation 60 %, brightness 70 %)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "1fffbd0c89513c493d425ed8338047c8118ca4ed53d9f82139829151c9eb2fe8",
+      "states": [
+        "disabled"
+      ],
+      "three_slice": null,
+      "w": 87
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        706,
+        566,
+        86,
+        108
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.meat.png",
+      "fixed": true,
+      "format": "png",
+      "h": 108,
+      "id": "icons.round.meat",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "bac8faf4404b73126407bbcdfa90ebf0d6b52fc9b034a8cb0223eea9ebe96147",
+      "provenance": {
+        "crop": [
+          1282,
+          749,
+          86,
+          108
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination; split by column gaps; alpha bbox trim"
+      },
+      "purpose": "Round orc resource/action icon (meat)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "bac8faf4404b73126407bbcdfa90ebf0d6b52fc9b034a8cb0223eea9ebe96147",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 86
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        794,
+        566,
+        86,
+        108
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.meat.disabled.png",
+      "fixed": true,
+      "format": "png",
+      "h": 108,
+      "id": "icons.round.meat.disabled",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "c2b1bdab9d5e8279c2954fbf95f283a4ee2b60c630aaa6eac9a709c88ca65fbc",
+      "provenance": {
+        "crop": [
+          1282,
+          749,
+          86,
+          108
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "state variant: 60 % saturation + 70 % brightness on the normal matte",
+        "variant_of": "icons.round.meat"
+      },
+      "purpose": "Procedural disabled variant of icons.round.meat (saturation 60 %, brightness 70 %)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "c2b1bdab9d5e8279c2954fbf95f283a4ee2b60c630aaa6eac9a709c88ca65fbc",
+      "states": [
+        "disabled"
+      ],
+      "three_slice": null,
+      "w": 86
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        2,
+        566,
+        87,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.attack.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.attack",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "0f1b9080a48126fde4657359255397e329464a523202b15851727ab78d4053a2",
+      "provenance": {
+        "crop": [
+          1366,
+          749,
+          87,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination; split by column gaps; alpha bbox trim"
+      },
+      "purpose": "Round orc resource/action icon (attack)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "0f1b9080a48126fde4657359255397e329464a523202b15851727ab78d4053a2",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 87
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        91,
+        566,
+        87,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.attack.disabled.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.attack.disabled",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "a330343f43bf27d198f465eb5ac556f0f079bf36dfb16f30c691c92a159b84be",
+      "provenance": {
+        "crop": [
+          1366,
+          749,
+          87,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "state variant: 60 % saturation + 70 % brightness on the normal matte",
+        "variant_of": "icons.round.attack"
+      },
+      "purpose": "Procedural disabled variant of icons.round.attack (saturation 60 %, brightness 70 %)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "a330343f43bf27d198f465eb5ac556f0f079bf36dfb16f30c691c92a159b84be",
+      "states": [
+        "disabled"
+      ],
+      "three_slice": null,
+      "w": 87
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        180,
+        566,
+        85,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.armor.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.armor",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "f5705f2b6875bcef3b856e6e15d653f6beb24899263205c9f9c0bdb50c4d4776",
+      "provenance": {
+        "crop": [
+          1451,
+          749,
+          85,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "matte: deg2 background fit, core close 3x3, hole fill, 3 px edge decontamination; split by column gaps; alpha bbox trim"
+      },
+      "purpose": "Round orc resource/action icon (armor)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "f5705f2b6875bcef3b856e6e15d653f6beb24899263205c9f9c0bdb50c4d4776",
+      "states": [
+        "normal"
+      ],
+      "three_slice": null,
+      "w": 85
+    },
+    {
+      "alpha": true,
+      "atlas": "ui",
+      "atlas_rect": [
+        267,
+        566,
+        85,
+        109
+      ],
+      "color_space": "sRGB",
+      "critical": true,
+      "file": "assets/icons.round.armor.disabled.png",
+      "fixed": true,
+      "format": "png",
+      "h": 109,
+      "id": "icons.round.armor.disabled",
+      "kind": "icon",
+      "mips": false,
+      "nine_slice": null,
+      "pack_sha256": "2c61a7c3a6d50bb720d9deb80e15041dc91152738813b98e924834adcb573cdc",
+      "provenance": {
+        "crop": [
+          1451,
+          749,
+          85,
+          109
+        ],
+        "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant.",
+        "qc": {
+          "alpha_coverage": 0.7661,
+          "edge_pixels": 29,
+          "gray_edge_pixels": 0,
+          "gray_edge_ratio": 0.0,
+          "soft_interior_pixels": 0,
+          "transparent_pixels": 0
+        },
+        "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+        "sheet_sha256": "eb1278ce66b9b8f9c437ac4f8b0c09d56ba1eb6d45d08fd1fc7cfe851c3530f5",
+        "transform": "state variant: 60 % saturation + 70 % brightness on the normal matte",
+        "variant_of": "icons.round.armor"
+      },
+      "purpose": "Procedural disabled variant of icons.round.armor (saturation 60 %, brightness 70 %)",
+      "scale": "3x (sheet source pixels; draw at dp x density)",
+      "sha256": "2c61a7c3a6d50bb720d9deb80e15041dc91152738813b98e924834adcb573cdc",
+      "states": [
+        "disabled"
+      ],
+      "three_slice": null,
+      "w": 85
+    }
+  ],
+  "atlases": {
+    "ui": {
+      "entries": [
+        {
+          "h": 310,
+          "id": "panel.command_grid",
+          "w": 268,
+          "x": 884,
+          "y": 2
+        },
+        {
+          "h": 316,
+          "id": "panel.selection",
+          "w": 338,
+          "x": 544,
+          "y": 2
+        },
+        {
+          "h": 321,
+          "id": "frame.portrait_orc",
+          "w": 271,
+          "x": 2,
+          "y": 2
+        },
+        {
+          "h": 192,
+          "id": "bar.resources",
+          "w": 554,
+          "x": 1072,
+          "y": 325
+        },
+        {
+          "h": 225,
+          "id": "panel.list",
+          "w": 379,
+          "x": 346,
+          "y": 325
+        },
+        {
+          "h": 183,
+          "id": "tabs.strip6",
+          "w": 371,
+          "x": 1628,
+          "y": 325
+        },
+        {
+          "h": 198,
+          "id": "tabs.strip5",
+          "w": 343,
+          "x": 727,
+          "y": 325
+        },
+        {
+          "h": 239,
+          "id": "panel.wide",
+          "w": 342,
+          "x": 2,
+          "y": 325
+        },
+        {
+          "h": 277,
+          "id": "banner.ornate",
+          "w": 445,
+          "x": 1452,
+          "y": 2
+        },
+        {
+          "h": 319,
+          "id": "panel.list_rows",
+          "w": 267,
+          "x": 275,
+          "y": 2
+        },
+        {
+          "h": 287,
+          "id": "dialog.confirm",
+          "w": 296,
+          "x": 1154,
+          "y": 2
+        },
+        {
+          "h": 109,
+          "id": "icons.round.gold",
+          "w": 85,
+          "x": 354,
+          "y": 566
+        },
+        {
+          "h": 109,
+          "id": "icons.round.gold.disabled",
+          "w": 85,
+          "x": 441,
+          "y": 566
+        },
+        {
+          "h": 108,
+          "id": "icons.round.lumber",
+          "w": 87,
+          "x": 528,
+          "y": 566
+        },
+        {
+          "h": 108,
+          "id": "icons.round.lumber.disabled",
+          "w": 87,
+          "x": 617,
+          "y": 566
+        },
+        {
+          "h": 108,
+          "id": "icons.round.meat",
+          "w": 86,
+          "x": 706,
+          "y": 566
+        },
+        {
+          "h": 108,
+          "id": "icons.round.meat.disabled",
+          "w": 86,
+          "x": 794,
+          "y": 566
+        },
+        {
+          "h": 109,
+          "id": "icons.round.attack",
+          "w": 87,
+          "x": 2,
+          "y": 566
+        },
+        {
+          "h": 109,
+          "id": "icons.round.attack.disabled",
+          "w": 87,
+          "x": 91,
+          "y": 566
+        },
+        {
+          "h": 109,
+          "id": "icons.round.armor",
+          "w": 85,
+          "x": 180,
+          "y": 566
+        },
+        {
+          "h": 109,
+          "id": "icons.round.armor.disabled",
+          "w": 85,
+          "x": 267,
+          "y": 566
+        }
+      ],
+      "file": "atlas/ui_atlas.png",
+      "gutter": 2,
+      "h": 2048,
+      "mips": false,
+      "padding": 2,
+      "sha256": "7670926d41362fc36955b2c24fe50dec0123c01a21a6afadbd69759f54568fb5",
+      "w": 2048
+    }
+  },
+  "density": 3.0,
+  "font_files": [
+    "primary_serif_cyrillic.ttf",
+    "actionbar_sans_cyrillic.ttf",
+    "numeric_tabular.ttf"
+  ],
+  "fonts": {
+    "nimrod": {
+      "bundled": false,
+      "coverage": [
+        "latin",
+        "cyrillic",
+        "digits",
+        "punctuation"
+      ],
+      "file": "Fonts/NIM_____.ttf",
+      "glyphs": [
+        "latin",
+        "cyrillic",
+        "digits",
+        "punctuation"
+      ],
+      "note": "not bundled; the app reads the operator War3.mpq at runtime",
+      "roles": [
+        "display",
+        "title",
+        "heading",
+        "body",
+        "label",
+        "compact",
+        "numeric"
+      ],
+      "sha256": "8301b818d2999bb7c71a5d7a61352690ee247e9a47c77d16bc8ba5e0cbda9521",
+      "source": "local:War3.mpq"
+    },
+    "numeric": {
+      "bundled": true,
+      "file": "fonts/numeric_tabular.ttf",
+      "glyphs": [
+        "latin",
+        "digits",
+        "punctuation"
+      ],
+      "roles": [
+        "numeric",
+        "compact"
+      ],
+      "sha256": "54bf827eb99404e8f430c330ad30f063334f637eba0109b6a18d4f566a8e9dd8"
+    },
+    "sans": {
+      "bundled": true,
+      "file": "fonts/actionbar_sans_cyrillic.ttf",
+      "glyphs": [
+        "latin",
+        "cyrillic",
+        "diacritics",
+        "digits",
+        "punctuation"
+      ],
+      "roles": [
+        "body",
+        "label",
+        "compact"
+      ],
+      "sha256": "6de96c09bf752e3774583eea6bc3fb0b60f1733c595f22a926c89219ba8ade43"
+    },
+    "serif": {
+      "bundled": true,
+      "file": "fonts/primary_serif_cyrillic.ttf",
+      "glyphs": [
+        "latin",
+        "cyrillic",
+        "diacritics",
+        "digits",
+        "punctuation"
+      ],
+      "roles": [
+        "display",
+        "title",
+        "heading",
+        "body"
+      ],
+      "sha256": "8cb29f7db250ebb2551a6ce2c1e0bfd5a0eb520e9e233370db0493e82e1f36f7"
+    }
+  },
+  "format_version": 2,
+  "generated_by": "wc3-hud-pack build (tools/hud-pack)",
+  "name": "wc3rust orc HUD sheet",
+  "nine_slice": {
+    "bleed_px": 1,
+    "center": "stretch",
+    "min_center_px": 1,
+    "padding_px": 2
+  },
+  "pack_build": {
+    "bleed": 1,
+    "entries": 21,
+    "padding": 2,
+    "page": [
+      2048,
+      2048
+    ],
+    "tool": "wc3-hud-pack"
+  },
+  "reference": {
+    "landscape_dp": [
+      805,
+      360
+    ],
+    "landscape_px": [
+      2414,
+      1080
+    ],
+    "portrait_dp": [
+      360,
+      805
+    ],
+    "portrait_px": [
+      1080,
+      2414
+    ]
+  },
+  "safe_area_dp": {
+    "landscape": [
+      70,
+      40,
+      30,
+      32
+    ],
+    "portrait": [
+      8,
+      8,
+      32,
+      21
+    ]
+  },
+  "states": {
+    "disabled": {
+      "brightness": 0.7,
+      "saturation": 0.6
+    },
+    "hover": {
+      "brightness": 1.18,
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    "normal": {
+      "brightness": 1.0,
+      "offset": [
+        0.0,
+        0.0
+      ]
+    },
+    "pressed": {
+      "brightness": 0.94,
+      "offset": [
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "style": "orc savanna: bone, stone, gold forge, green gems, moss, cloth",
+  "theme": "orc",
+  "version": "1.0.0"
+}

@@ -1,0 +1,15 @@
+[package]
+name = "wc3-hud-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HUD pack builder/validator and font coverage report (same library as the device loader)"
+
+[[bin]]
+name = "wc3-hud-pack"
+path = "src/main.rs"
+
+[dependencies]
+wc3-game = { path = "../../crates/wc3-game" }
+serde_json = "1"
+ab_glyph = "0.2"

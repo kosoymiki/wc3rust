@@ -1,0 +1,236 @@
+{
+  "theme": "orc",
+  "sheet": "/storage/emulated/0/Download/9a97e00c-f04f-47fb-9f62-118bca18e3c6.png",
+  "out": "assets/hud/orc",
+  "margin": 2,
+  "elements": [
+    {
+      "id": "panel.command_grid",
+      "name": "command_grid",
+      "kind": "frame",
+      "rect": [
+        581,
+        27,
+        264,
+        306
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "3x3 command/inventory slots are baked into the art; any stretch moves the cell grid. Fixed 264x306."
+    },
+    {
+      "id": "panel.selection",
+      "name": "selection",
+      "kind": "frame",
+      "rect": [
+        874,
+        22,
+        334,
+        312
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Top gem is centred in the stretch band and fir trees run the full side height; a 9-slice would distort both. Fixed 334x312."
+    },
+    {
+      "id": "frame.portrait_orc",
+      "name": "portrait_orc",
+      "kind": "portrait",
+      "rect": [
+        1242,
+        18,
+        267,
+        317
+      ],
+      "states": [
+        "normal"
+      ],
+      "three_slice": {
+        "axis": "vertical",
+        "top": 125,
+        "bottom": 72,
+        "width_fixed": true
+      },
+      "inset_reason": "Top cap y=0..125 holds the arch, gem and crown; bottom cap y=245..317 holds the rock base and lower gem; x=24..243 between y=125..245 is a straight two-column arch side, safe to stretch vertically. Width stays 267."
+    },
+    {
+      "id": "bar.resources",
+      "name": "resources",
+      "kind": "bar",
+      "rect": [
+        7,
+        85,
+        550,
+        188
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Three resource slots with baked gold/lumber/meat icons; stretching would move the icon-to-slot mapping. Fixed 550x188."
+    },
+    {
+      "id": "panel.list",
+      "name": "list",
+      "kind": "frame",
+      "rect": [
+        17,
+        383,
+        375,
+        221
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Left portrait column is an internal divider at x=95; a nine-slice centre would stretch it. Fixed 375x221."
+    },
+    {
+      "id": "tabs.strip6",
+      "name": "tabs_strip6",
+      "kind": "tabs",
+      "rect": [
+        417,
+        415,
+        367,
+        179
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Six baked tab cells (measured; the brief said four); stretching breaks the cell count. Fixed 367x179."
+    },
+    {
+      "id": "tabs.strip5",
+      "name": "tabs_strip5",
+      "kind": "tabs",
+      "rect": [
+        810,
+        408,
+        339,
+        194
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Five baked tab cells (measured; the brief said three); stretching breaks the cell count. Fixed 339x194."
+    },
+    {
+      "id": "panel.wide",
+      "name": "wide",
+      "kind": "frame",
+      "rect": [
+        1184,
+        383,
+        338,
+        235
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "inset_reason": "Top cap y=0..75 holds the stone beam, gold flourish and centred gem; bottom cap y=187..235 holds the lower stone/gold band; x=50..288 between y=75..187 is the brown stone field, safe to stretch vertically. Width stays 338, so the gem never enters a stretch band.",
+      "three_slice": {
+        "axis": "vertical",
+        "top": 75,
+        "bottom": 48,
+        "width_fixed": true
+      },
+      "fixed": false
+    },
+    {
+      "id": "banner.ornate",
+      "name": "banner",
+      "kind": "banner",
+      "rect": [
+        15,
+        670,
+        441,
+        273
+      ],
+      "states": [
+        "normal"
+      ],
+      "three_slice": {
+        "axis": "vertical",
+        "top": 95,
+        "bottom": 70,
+        "width_fixed": true
+      },
+      "inset_reason": "Top cap y=0..95 holds the crown, gem and upper scrollwork; bottom cap y=203..273 holds the gold base and green cloth; x=60..381 between y=95..203 is the stone field, safe to stretch vertically. Width stays 441."
+    },
+    {
+      "id": "panel.list_rows",
+      "name": "list_rows",
+      "kind": "frame",
+      "rect": [
+        489,
+        652,
+        263,
+        315
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Four baked row plates; any stretch changes the row count/spacing. Fixed 263x315."
+    },
+    {
+      "id": "dialog.confirm",
+      "name": "dialog",
+      "kind": "dialog",
+      "rect": [
+        803,
+        676,
+        292,
+        283
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "inset_reason": "Green/red action buttons are baked into the bottom band; stretching moves them. Fixed 292x283."
+    },
+    {
+      "id": "icons.round",
+      "name": "icon_row",
+      "kind": "icon_row",
+      "rect": [
+        1116,
+        751,
+        418,
+        105
+      ],
+      "states": [
+        "normal"
+      ],
+      "nine_slice": null,
+      "fixed": true,
+      "split": {
+        "ids": [
+          "gold",
+          "lumber",
+          "meat",
+          "attack",
+          "armor"
+        ],
+        "state": "normal"
+      },
+      "inset_reason": "Five round icons on one row; each is a fixed 64 dp icon, split into its own asset and disabled variant."
+    }
+  ]
+}
