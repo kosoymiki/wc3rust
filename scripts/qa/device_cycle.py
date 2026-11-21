@@ -121,6 +121,19 @@ def main(argv: list[str] | None = None) -> int:
     }
     display = None
     try:
+        # K-01: this script never installs, so the package on the device must
+        # already be byte-identical to the artifact named in this report.
+        installed_sha = device.installed_apk_sha256()
+        cycle["apk"]["installed_sha256"] = installed_sha
+        cycle["apk"]["install_matches_built"] = (
+            installed_sha is not None and installed_sha == cycle["apk"]["sha256"]
+        )
+        if not cycle["apk"]["install_matches_built"]:
+            raise QaError(
+                "installed base.apk does not match the built APK: "
+                f"installed={installed_sha} built={cycle['apk']['sha256']} "
+                "(install the built artifact before a device cycle)"
+            )
         launch = device.launch(apk=args.apk, install=False)
         display = launch["display"]
         w, h = display["w"], display["h"]
@@ -317,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         "",
         f"Timestamp: **{cycle['timestamp']}**",
         f"APK sha256: `{cycle['apk']['sha256']}`",
+        f"Installed base.apk sha256: `{cycle['apk'].get('installed_sha256')}` "
+        f"(match={cycle['apk'].get('install_matches_built')})",
         f"Status: **{cycle['status']}**",
         "",
         f"- Build: {cycle.get('steps', {}).get('build', {}).get('built')} "

@@ -560,13 +560,14 @@ def static_gates() -> list[dict]:
         {
             "id": "jass.frame_loop",
             "area": "triggers",
-            "status": "GAP" if not bridge_in_game else "PASS",
+            "status": "GAP" if not bridge_in_game else "STATIC",
+            "method": "static-source",
             "total": 1,
-            "pass": 1 if bridge_in_game else 0,
+            "pass": 0,
             "fail": 0,
             "gap": 0 if bridge_in_game else 1,
             "detail": (
-                "game.rs constructs JassBridge"
+                "static source check (not runtime): game.rs constructs JassBridge"
                 if bridge_in_game
                 else f"JassBridge exists ({bridge_calls} mentions, sim_bridge/tests only); game.rs never constructs it"
             ),
@@ -595,13 +596,14 @@ def static_gates() -> list[dict]:
         {
             "id": "hud.resources",
             "area": "ui",
-            "status": "PASS" if hud_res_ok else "FAIL",
+            "status": "STATIC" if hud_res_ok else "FAIL",
+            "method": "static-source",
             "total": 1,
-            "pass": 1 if hud_res_ok else 0,
+            "pass": 0,
             "fail": 0 if hud_res_ok else 1,
             "gap": 0,
             "detail": (
-                "HUD resource bar renders gold/lumber/supply pills from sim state "
+                "static source check (not runtime): HUD resource bar renders gold/lumber/supply pills from sim state "
                 f"({', '.join(f'{name}={count}' for name, count in resource_pills)})"
             ),
             "failures": []
@@ -622,13 +624,14 @@ def static_gates() -> list[dict]:
         {
             "id": "audio.wired",
             "area": "audio",
-            "status": "PASS" if audio_dep and audio_calls else "GAP",
+            "status": "STATIC" if (audio_dep and audio_calls) else "GAP",
+            "method": "static-source",
             "total": 1,
-            "pass": 1 if audio_dep and audio_calls else 0,
+            "pass": 0,
             "fail": 0,
             "gap": 0 if audio_dep and audio_calls else 1,
             "detail": (
-                f"game audio wired (dep={audio_dep}, refs={audio_calls})"
+                f"static source check (not runtime): game audio wired (dep={audio_dep}, refs={audio_calls})"
                 if audio_dep and audio_calls
                 else f"wc3-audio is not a wc3-game dependency (dep={audio_dep}, refs={audio_calls}); library works headless only"
             ),
@@ -648,6 +651,10 @@ def overall(gates: list[dict]) -> str:
         return "FAIL"
     if any(gate["status"] == "GAP" for gate in gates):
         return "PARTIAL"
+    # K-07: a static source check is not an executed gate, so a run whose
+    # remaining checks are static cannot claim PASS.
+    if any(gate["status"] == "STATIC" for gate in gates):
+        return "STATIC"
     return "PASS"
 
 
@@ -744,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
     gates = add_evidence_gates(raw["gates"])
     gates.extend(static_gates())
     matrix = matrix_state(gates)
-    summary = {key: sum(1 for gate in gates if gate["status"] == key) for key in ("PASS", "FAIL", "GAP", "SKIP")}
+    summary = {key: sum(1 for gate in gates if gate["status"] == key) for key in ("PASS", "FAIL", "GAP", "SKIP", "STATIC")}
     payload = {
         "schema": "wc3rust-parity-report-v1",
         "timestamp": iso_now(),
@@ -767,7 +774,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"PARITY {payload['status']} gates={len(gates)} "
-        f"pass={summary['PASS']} fail={summary['FAIL']} gap={summary['GAP']} skip={summary['SKIP']}"
+        f"pass={summary['PASS']} fail={summary['FAIL']} gap={summary['GAP']} "
+        f"skip={summary['SKIP']} static={summary['STATIC']}"
     )
     for gate in gates:
         print(

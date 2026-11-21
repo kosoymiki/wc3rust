@@ -1,0 +1,41 @@
+{
+  "schema": "wc3rust-build-deps-v1",
+  "note": "Prebuilt/native inputs the APK links against with no source in the repository (K-16). build-apk.sh refuses a mismatch: a fresh clone cannot reproduce the audited APK without these exact bytes. Update deliberately (and re-record the release evidence) after an intentional SDL/Termux upgrade.",
+  "files": {
+    "third_party/sdl3-android-build/libSDL3.so": {
+      "sha256": "d63caf9e2ce401815550f101d714dbb7d318e38588d3732744e9778069ac29c5",
+      "bytes": 2087792,
+      "required": true,
+      "provider": "SDL3 3.5.0 prebuilt for Android arm64 (donor commit 4ca1b1c per apps/android-native/src/lib.rs)"
+    },
+    "third_party/vulkan-loader/libvulkan.so": {
+      "sha256": "13d6b4eb5ea3ae6870425d8fe27f99ca88c21e2272cb7b23c94ea5caeca8cf4e",
+      "bytes": 601520,
+      "required": true,
+      "provider": "Khronos Vulkan loader for Android arm64 (fallback when target/release/libturnip_vendor.so is absent)"
+    },
+    "apps/android/debug.keystore": {
+      "sha256": "3042798b39b780ac246968b82f9122a7426dda0813d14a2fafff32619e21f698",
+      "bytes": 2650,
+      "required": true,
+      "provider": "debug signing key generated once (alias androiddebugkey). A fresh clone generates a different key, so the signed APK is not byte-reproducible without this exact keystore."
+    },
+    "$PREFIX/lib/libiconv.so": {
+      "sha256": "540df15e445f9117ce757dedf54fefd93c4db34ecf2caf06ef1cb397ac6fc940",
+      "bytes": 1083488,
+      "required": true,
+      "provider": "Termux libiconv (SDL3 dependency, copied into the APK)"
+    },
+    "$PREFIX/lib/libc++_shared.so": {
+      "sha256": "05bef9d3901910c3ff8ab450b03bc8b28383d363a2290f2f7b9aed7331ea6ff7",
+      "bytes": 1423696,
+      "required": true,
+      "provider": "Termux libc++_shared (SDL3 dependency, copied into the APK)"
+    },
+    "target/release/libturnip_vendor.so": {
+      "sha256": null,
+      "required": false,
+      "provider": "Optional Turnip shim built from crates/wc3-vulkan-loader when present; when set, build-apk.sh prefers it over third_party/vulkan-loader/libvulkan.so and verifies this hash."
+    }
+  }
+}

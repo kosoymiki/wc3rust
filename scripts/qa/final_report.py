@@ -14,16 +14,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.qa import identity  # noqa: E402
 PARITY = ROOT / "analysis" / "agent-qa" / "parity"
 OUT = ROOT / "analysis" / "agent-qa" / "final"
-APK = ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk"
+# The artifact path and its identity live in scripts/qa/identity.py so the
+# manifest, the APK file and the report cannot drift apart.
 
 TOP6 = ["models.per_def", "economy.lumber", "creeps.camps", "map.units.spawn", "jass.frame_loop"]
 EXTRA_QA = ["models.budget", "hud.resources", "hero.stats"]
@@ -34,16 +38,6 @@ def load(path: Path) -> dict:
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-
-
-def sha256(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def now() -> str:
@@ -110,7 +104,17 @@ def suite_gate(name: str, log: Path, pattern: str, category: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", default="round7-parity-verify")
+    parser.add_argument(
+        "--release-only",
+        action="store_true",
+        help="print the release identity chain (HEAD/dirty/apk/installed + statuses) and exit 1 on a mismatch",
+    )
     args = parser.parse_args()
+
+    if args.release_only:
+        release = identity.release_summary()
+        print(json.dumps(release, indent=2))
+        return 0 if release["verdict"] != "FAIL" else 1
 
     parity = load(PARITY / "report.json")
     r2 = load(ROOT / "analysis" / "agent-qa" / "r2" / "report.json")
@@ -226,20 +230,58 @@ def main() -> int:
         )
     )
 
-    apk_sha = sha256(APK)
+    release = identity.release_summary()
+    source = release["source_build"]
     gates.append(
         gate(
-            "apk.build.current_tree",
-            "PASS" if apk_sha else "FAIL",
-            f"APK built from current tree and installed: {str(apk_sha)[:12]}",
-            {"sha256": str(apk_sha), "size": str(APK.stat().st_size if APK.is_file() else 0)},
-            [],
-            ["build/android-p0/release/wc3rust-p0.apk"],
-            "JAVA_TOOL_OPTIONS='-Xmx512m' bash scripts/build-apk.sh",
-            0 if apk_sha else 1,
+            "apk.build.identity",
+            "PASS" if source["status"] == "PASS" else "FAIL",
+            (
+                f"APK {str(source['apk_sha256'])[:12]} matches HEAD {str(source['head'])[:12]} "
+                f"+ source digest {source['source_dirty_digest'][:12]} "
+                f"(dirty paths={source['dirty_count']})"
+                if source["status"] == "PASS"
+                else "APK is not bound to the current tree: " + "; ".join(source["reasons"])
+            ),
+            {
+                "head": str(source["head"]),
+                "dirty_count": str(source["dirty_count"]),
+                "source_dirty_digest": source["source_dirty_digest"],
+                "apk_sha256": str(source["apk_sha256"]),
+                "manifest_apk_sha256": str(source.get("manifest_apk_sha256")),
+                "manifest": source["manifest_path"],
+            },
+            list(source["reasons"]),
+            ["build/android-p0/release/build-manifest.json", "build/android-p0/release/wc3rust-p0.apk"],
+            "bash scripts/build-apk.sh",
+            0 if source["status"] == "PASS" else 1,
             "build",
         )
     )
+
+    # K-01: the acceptance statuses are separate facts, and each is only valid
+    # when the device evidence ran the artifact this report just verified.
+    for name, command in (
+        ("install_identity", "python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/release/wc3rust-p0.apk"),
+        ("first_frame", "python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/release/wc3rust-p0.apk"),
+        ("menu_visual", "python3 -m scripts.qa.suite --no-build --install"),
+        ("in_game_visual", "python3 scripts/qa/device_p0_cycle.py --apk build/android-p0/release/wc3rust-p0.apk"),
+        ("gameplay_smoke", "python3 -m scripts.qa.suite --no-build --install --fast"),
+    ):
+        entry = release["statuses"][name]
+        gates.append(
+            gate(
+                f"device.{name}",
+                entry["status"],
+                entry["detail"],
+                {"apk_sha256": str(source["apk_sha256"]), "installed_sha256": str(release.get("installed_sha256"))},
+                [] if entry["status"] != "FAIL" else [entry["detail"]],
+                entry.get("sources") or [],
+                command,
+                0 if entry["status"] == "PASS" else 1,
+                "device",
+            )
+        )
 
     if p0_not_run:
         attempts = p0_not_run.get("attempts") or []
@@ -335,24 +377,28 @@ def main() -> int:
         },
         "apk": {
             "path": "build/android-p0/release/wc3rust-p0.apk",
-            "sha256": apk_sha,
+            "sha256": release["apk_sha256"],
+            "installed_sha256": release.get("installed_sha256"),
+            "release_verdict": release["verdict"],
             "installed": (
                 ((p0_not_run.get("current_apk") or {}).get("installed"))
                 or ((cycle.get("package") or {}).get("last_update"))
                 or ((blocked.get("current_apk") or {}).get("installed") if blocked else None)
             ),
         },
+        # K-07: no static `rc: 0` list. Each row is parsed from a saved log by
+        # the gate above; this report never runs cargo itself.
         "commands": [
-            {"cmd": "cargo check --offline -p wc3-sim", "rc": 0},
-            {"cmd": "cargo build --release --offline -p wc3rust-android; cargo build --release --offline -p wc3-re --bin wc3re", "rc": 0},
-            {"cmd": "JAVA_TOOL_OPTIONS='-Xmx512m' bash scripts/build-apk.sh", "rc": 0},
-            {"cmd": "python3 scripts/qa/parity.py --skip-build", "rc": 1 if parity.get("status") != "PASS" else 0},
-            {"cmd": "cargo test --offline -p wc3-data", "rc": 0},
-            {"cmd": "cargo test --offline -p wc3-sim --lib", "rc": 0},
-            {"cmd": "cargo test --offline -p wc3-game --lib", "rc": 0},
-            {"cmd": "python3 scripts/qa/map_biome.py", "rc": 0},
-            {"cmd": "python3 scripts/qa/device_cycle.py", "rc": 1, "note": "blocked: secure keyguard"},
+            {
+                "evidence": entry["evidence"][0],
+                "rc": entry["rc"],
+                "detail": entry["detail"],
+                "note": "rc parsed from the saved log; final_report.py does not execute it",
+            }
+            for entry in gates
+            if entry["category"] in ("data", "sim", "game") and entry.get("evidence")
         ],
+        "release": release,
         "gates": gates,
         "summary": summary,
         "overall": "PASS" if summary.get("FAIL", 0) == 0 else "FAIL",
@@ -421,7 +467,19 @@ def main() -> int:
         + "\n\nFull status: `analysis/agent-qa/parity/report.json`; human report: "
         "`analysis/agent-qa/parity/ROUND7-QA.md`.\n"
     )
-    print(json.dumps({"overall": payload["overall"], "summary": summary, "device": payload["device"]}))
+    print(json.dumps({
+        "overall": payload["overall"],
+        "summary": summary,
+        "release": {
+            "verdict": release["verdict"],
+            "head": release["head"],
+            "dirty_count": release["dirty_count"],
+            "apk_sha256": release["apk_sha256"],
+            "installed_sha256": release.get("installed_sha256"),
+            "statuses": {name: entry["status"] for name, entry in release["statuses"].items()},
+        },
+        "device": payload["device"],
+    }))
     return 0 if payload["overall"] == "PASS" else 1
 
 

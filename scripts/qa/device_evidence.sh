@@ -49,6 +49,7 @@ fi
 su_() { su -c "$1"; }
 sha=$(sha256sum "$APK" | awk '{print $1}')
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+start_epoch=$(date +%s)
 
 install_out=$(su_ "pm install -r $(pwd)/$APK" 2>&1)
 install_rc=$?
@@ -61,6 +62,22 @@ json.dump({"schema": "wc3-device-run-v1", "status": "FAIL", "phase": "install",
            "error": out[-500:]}, open(path, "w"), indent=2)
 PY
     echo "DEVICE_INSTALL_FAILED" >&2
+    exit 1
+fi
+
+# K-01: the installed base.apk must be byte-identical to the artifact.
+installed_sha=$(su_ "sha256sum $(su_ "pm path $PKG" | sed -n 's/^package://p' | head -1)" | awk '{print $1}')
+if [ "$installed_sha" != "$sha" ]; then
+    python3 - "$RUN_JSON" "$sha" "$installed_sha" "$started" <<'PY'
+import json, sys, time
+path, sha, installed, started = sys.argv[1:5]
+json.dump({"schema": "wc3-device-run-v1", "status": "FAIL", "phase": "install_identity",
+           "apk_sha256": sha, "installed_sha256": installed, "started_at": started,
+           "generated_unix": int(time.time()),
+           "error": "installed base.apk differs from the built artifact"},
+          open(path, "w"), indent=2)
+PY
+    echo "DEVICE_INSTALL_IDENTITY_FAILED installed=$installed_sha built=$sha" >&2
     exit 1
 fi
 
@@ -80,7 +97,11 @@ log_dump=$(su_ "logcat -d -s wc3rust" 2>/dev/null || true)
 printf '%s\n' "$log_dump" | grep -E 'GAME_SCENARIO|GAME_READY|GAME_STATE|GAME_AUDIO_STATS|GAME_FIRST_FRAME|GAME_UI_FDF' > "$AUDIO_LOG"
 
 screenshot=""
-newest=$(ls -t /storage/emulated/0/Pictures/Screenshots/*.png /storage/emulated/0/Pictures/Screenshots/*.jpg 2>/dev/null | head -1 || true)
+# K-12: only a screenshot captured after this run started may be attached.
+# `ls -t | head -1` picked the newest image of any app, including an old run.
+newest=$(find /storage/emulated/0/Pictures/Screenshots -maxdepth 1 -type f \
+    \( -name '*.png' -o -name '*.jpg' \) -newermt "@$start_epoch" 2>/dev/null \
+    | sort | tail -1 || true)
 if [ -n "$newest" ] && [ -f "$newest" ]; then
     screenshot="$newest"
 fi
@@ -90,9 +111,9 @@ su_ "am start -W -n com.termux/com.termux.app.TermuxActivity" >/dev/null 2>&1 ||
 focus=$(su_ "dumpsys window" 2>/dev/null | grep mCurrentFocus | head -1 || true)
 
 python3 - "$RUN_JSON" "$AUDIO_LOG" "$sha" "$started" "$first_frame" "$screenshot" "$focus" \
-        "$install_rc" "$launch_rc" "$APK" <<'PY'
+        "$install_rc" "$launch_rc" "$APK" "$installed_sha" <<'PY'
 import json, sys, time
-path, audio_log, sha, started, first_frame, screenshot, focus, install_rc, launch_rc, apk = sys.argv[1:11]
+path, audio_log, sha, started, first_frame, screenshot, focus, install_rc, launch_rc, apk, installed = sys.argv[1:12]
 lines = [line for line in open(audio_log, encoding="utf-8", errors="replace").read().splitlines() if line.strip()]
 stats = [line for line in lines if "GAME_AUDIO_STATS" in line]
 underruns = []
@@ -109,6 +130,8 @@ payload = {
     "started_at": started,
     "apk": apk,
     "apk_sha256": sha,
+    "installed_sha256": installed,
+    "install_identity_match": installed == sha,
     "package": "org.wc3rust.p0",
     "install_rc": int(install_rc),
     "launch_rc": int(launch_rc),
@@ -116,6 +139,7 @@ payload = {
     "audio_stats_lines": len(stats),
     "underruns": underruns,
     "screenshot": screenshot or None,
+    "screenshot_fresh": bool(screenshot),
     "focus_after": focus,
     "log": audio_log,
     "lines_collected": len(lines),

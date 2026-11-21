@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Operator-bug device scenarios (slot-gated).
 
-Runs the six interaction scenarios the operator's bug list needs to be judged by
+Runs the ten interaction scenarios the operator's bug list needs to be judged by
 eye, in ONE app session, and writes screenshots + a JSON record:
 
   01-ready        launch, map/scenario lines
@@ -42,7 +42,7 @@ import numpy as np
 from PIL import Image
 
 from scripts.qa import analyze
-from scripts.qa.common import COMPONENT, PKG, QaError
+from scripts.qa.common import COMPONENT, PKG, QaError, rel
 from scripts.qa.device import Device
 
 ACCEPT = ROOT / "analysis" / "agent-qa" / "acceptance"
@@ -58,6 +58,22 @@ parse_game_hud = helpers.parse_game_hud
 world_rect = helpers.world_rect
 
 OUT = ROOT / "analysis" / "agent-qa" / "operator-bugs"
+
+
+def canonical_out(candidate: Path) -> Path:
+    """Always run against the canonical screenshot dir.
+
+    A relative ``--out`` used to pass the resolve() comparison and then leak a
+    relative path into ``relative_to(ROOT)`` (Path is not resolved), crashing at
+    the first screenshot (`ValueError: ... is not in the subpath of ...`,
+    observed in the 2026-11-21 11:56 device run). Return the absolute OUT.
+    """
+    try:
+        if candidate.resolve() == OUT.resolve():
+            return OUT
+    except OSError:
+        pass
+    return OUT
 
 
 def sha256(path: Path) -> str | None:
@@ -136,9 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apk", type=Path, default=ROOT / "build" / "android-p0" / "release" / "wc3rust-p0.apk")
     parser.add_argument("--out", type=Path, default=OUT)
     args = parser.parse_args(argv)
-    if args.out.resolve() != OUT:
-        args.out = OUT
-    out = args.out
+    out = canonical_out(args.out)
     shots = out / "screens"
     shots.mkdir(parents=True, exist_ok=True)
 
@@ -177,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
             device.screenshot(path, display)
             return path
 
-        def rel(path: Path) -> str:
-            return str(path.relative_to(ROOT))
+        # common.rel resolves both ROOT spellings (real dir and the
+        # `herofolends-rs -> wc3rust` symlink) and accepts relative paths.
 
         # 01 ready ---------------------------------------------------------
         ready = shot("01-ready.png")

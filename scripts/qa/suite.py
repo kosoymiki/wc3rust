@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import analyze, common
+from . import analyze, common, identity
 from .device import DEFAULT_APK, Device
 
 LATEST = common.ANALYSIS / "latest"
@@ -57,37 +57,71 @@ def run(args) -> dict:
     if args.build:
         print("[qa] build: cargo release + APK")
         rc1, tail1 = _run(
-            ["cargo", "build", "--release", "-p", "wc3rust-android"],
+            ["scripts/h2-cargo", "build", "--release", "-p", "wc3rust-android"],
             LATEST / "build-cargo.log",
             timeout=1800,
         )
         rc2, tail2 = _run(["bash", "scripts/build-apk.sh"], LATEST / "build-apk.log", timeout=600)
+        built = identity.verify_source_build()
         phases["build"] = {
-            "ok": rc1 == 0 and rc2 == 0,
+            "ok": rc1 == 0 and rc2 == 0 and built["status"] == "PASS",
             "cargo_rc": rc1,
             "apk_rc": rc2,
             "apk": common.rel(DEFAULT_APK) if DEFAULT_APK.exists() else None,
+            "apk_sha256": built["apk_sha256"],
+            "head": built["head"],
+            "source_dirty_digest": built["source_dirty_digest"],
+            "identity_ok": built["status"] == "PASS",
+            "identity_reasons": built["reasons"],
             "tail": (tail1[-1200:] if rc1 else "") + (tail2[-800:] if rc2 else ""),
         }
     else:
-        installed = "package:" in common.su(f"pm path {common.PKG}", timeout=20).stdout
+        # K-01: `--no-build` used to pass on file existence. It now requires the
+        # artifact to be bound to the current tree by build-manifest.json.
+        built = identity.verify_source_build()
         phases["build"] = {
-            "ok": DEFAULT_APK.exists() or installed,
+            "ok": built["status"] == "PASS",
             "skipped": True,
             "apk": common.rel(DEFAULT_APK) if DEFAULT_APK.exists() else None,
-            "installed_fallback": installed,
+            "apk_sha256": built["apk_sha256"],
+            "head": built["head"],
+            "source_dirty_digest": built["source_dirty_digest"],
+            "identity_ok": built["status"] == "PASS",
+            "identity_reasons": built["reasons"],
         }
 
     if not DEFAULT_APK.exists() and args.install:
         raise SystemExit("APK missing; build first")
 
     # -------------------------------------------------------------- install
+    built_sha = identity.sha256_file(DEFAULT_APK)
     if args.install:
         print("[qa] install")
+        # Device.install() verifies the installed base.apk sha256 and raises on
+        # a mismatch (K-01), so a stale package can no longer look installed.
         out = device.install(DEFAULT_APK)
-        phases["install"] = {"ok": "Success" in out, "output": out[-200:]}
+        installed_sha = device.installed_apk_sha256()
+        phases["install"] = {
+            "ok": installed_sha == built_sha,
+            "output": out[-200:],
+            "built_sha256": built_sha,
+            "installed_sha256": installed_sha,
+            "match": installed_sha == built_sha,
+        }
     else:
-        phases["install"] = {"ok": True, "skipped": True}
+        installed_sha = device.installed_apk_sha256()
+        phases["install"] = {
+            "ok": installed_sha is not None and installed_sha == built_sha,
+            "skipped": True,
+            "built_sha256": built_sha,
+            "installed_sha256": installed_sha,
+            "match": installed_sha == built_sha,
+        }
+        if not phases["install"]["ok"]:
+            raise SystemExit(
+                f"--no-install requires the built APK to already be installed: "
+                f"installed={installed_sha} built={built_sha}"
+            )
 
     # --------------------------------------------------------------- launch
     print("[qa] launch")
@@ -180,7 +214,7 @@ def run(args) -> dict:
             "GALLERY_LIMIT": "0",
         }
         rc, tail = _run(
-            ["cargo", "test", "--release", "-p", "wc3-game", "--test", "asset_gallery", "--", "--ignored", "--nocapture"],
+            ["scripts/h2-cargo", "test", "--release", "-p", "wc3-game", "--test", "asset_gallery", "--", "--ignored", "--nocapture"],
             LATEST / "gallery-render.log",
             env=env,
             timeout=7200,
@@ -212,6 +246,10 @@ def run(args) -> dict:
         "phases": phases,
         "device": {"display": display, "insets": insets, "density": display["density"]},
         "apk": common.rel(DEFAULT_APK),
+        "apk_sha256": built_sha,
+        "installed_sha256": installed_sha,
+        "head": built["head"],
+        "source_dirty_digest": built["source_dirty_digest"],
         "analyzed_at": common.now_iso(),
     }
     common.save_json(LATEST / "summary.json", summary)

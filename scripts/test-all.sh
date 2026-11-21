@@ -19,6 +19,15 @@
 #      tail of that log is printed.
 #   6. The summary is machine-readable (`analysis/test-all.jsonl`), one JSON
 #      object per job plus a final summary object.
+#   7. The acceptance basis is the Orc01 chapter (GOAL 2026-11-18): the gate
+#      runs `tests/gates/orc01-smoke.sh`, which boots `Maps\Campaign\Orc01.w3m`
+#      headless, ticks it 3000 times and checks the roster/quests/JASS/cutscene
+#      the mission actually produced. `--self-test` proves both that a failing
+#      member test and a deliberately broken Orc01 run turn the gate red.
+#   8. The main-menu layout is published by the game itself on every sync and
+#      resize; `tests/gates/menu-layout-gate.sh` boots it headless and requires
+#      >= 6 tappable entries whose declared rects contain their tap points
+#      (regression guard for the menu-dead-on-device defect).
 #
 # Usage:
 #   scripts/test-all.sh [options]
@@ -26,11 +35,17 @@
 #     --no-check            skip the workspace check
 #     --no-tests            skip the per-member test phase
 #     --no-targets          skip the Android target checks
+#     --no-orc01            skip the Orc01 acceptance smoke
+#     --no-menu             skip the main-menu layout gate
+#     --no-parity           skip the port-parity loop (also skipped by
+#                           --check-only, --no-tests and --only; every skip is
+#                           recorded in the JSONL with its reason)
 #     --only m1,m2          restrict the test phase to these members
 #     --timeout SECONDS     per-job timeout (default 1800)
 #     --list                print members/exclusions as JSON and exit
-#     --self-test           prove the gate fails on a deliberately failing test
-#                           placed in a crate the old subset never ran
+#     --self-test           prove the gate fails on (a) a deliberately failing
+#                           test placed in a crate the old subset never ran and
+#                           (b) a deliberately broken Orc01 run
 #
 # Exit status: 0 only when every executed job passed; 1 when a job failed;
 # 2 on bad usage/metadata; 3 when the shared filesystem cannot hold the next
@@ -43,7 +58,7 @@ cd "$ROOT"
 
 CARGO="${H2_CARGO:-$ROOT/scripts/h2-cargo}"
 LOG_DIR="$ROOT/analysis/test-all"
-SUMMARY_JSONL="$ROOT/analysis/test-all.jsonl"
+SUMMARY_JSONL="${H2_SUMMARY_JSONL:-$ROOT/analysis/test-all.jsonl}"
 TIMEOUT_S="${H2_TEST_ALL_TIMEOUT:-1800}"
 ULIMIT_KB="${H2_TEST_ULIMIT_KB:-4500000}"
 # Fail fast instead of spraying misleading member FAILs when the shared target
@@ -68,6 +83,13 @@ declare -A MEMBER_ULIMIT_KB=(
 declare -A MEMBER_TIMEOUT_S=(
   [wc3-game]="${H2_TEST_TIMEOUT_WC3_GAME_S:-4200}"
   [wc3-render]="${H2_TEST_TIMEOUT_WC3_RENDER_S:-2700}"
+  # The Orc01 smoke compiles the wc3-game example when sources changed and then
+  # runs 3000 ticks; 45 min covers a rebuild behind other lanes on the shared
+  # cargo slot (scripts/h2-cargo waits up to 900 s for the slot alone).
+  [orc01]="${H2_TEST_TIMEOUT_ORC01_S:-2700}"
+  # The menu gate compiles the small `menu_layout` example and boots an empty
+  # Game; 20 min covers a cold build behind other lanes on the cargo queue.
+  [menu]="${H2_TEST_TIMEOUT_MENU_S:-1200}"
 )
 
 # Documented, evidence-backed exclusions. Keep this list short: each entry must
@@ -86,22 +108,28 @@ declare -A EXCLUDE=(
 DO_CHECK=1
 DO_TESTS=1
 DO_TARGETS=1
+DO_ORC01=1
+DO_MENU=1
+DO_PARITY=1
 DO_SELF_TEST=0
 ONLY=""
 LIST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --check-only) DO_TESTS=0; DO_TARGETS=0 ;;
+    --check-only) DO_TESTS=0; DO_TARGETS=0; DO_ORC01=0; DO_MENU=0; DO_PARITY=0 ;;
     --no-check) DO_CHECK=0 ;;
-    --no-tests) DO_TESTS=0 ;;
+    --no-tests) DO_TESTS=0; DO_PARITY=0 ;;
     --no-targets) DO_TARGETS=0 ;;
+    --no-orc01) DO_ORC01=0 ;;
+    --no-menu) DO_MENU=0 ;;
+    --no-parity) DO_PARITY=0 ;;
     --only) shift; ONLY="${1:-}" ;;
     --only=*) ONLY="${1#--only=}" ;;
     --timeout) shift; TIMEOUT_S="${1:-$TIMEOUT_S}" ;;
     --timeout=*) TIMEOUT_S="${1#--timeout=}" ;;
     --list) LIST=1 ;;
     --self-test) DO_SELF_TEST=1 ;;
-    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "test-all: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -197,6 +225,14 @@ run_job() {
     verdict="fail"; FAILED=$((FAILED + 1))
     echo "FAIL $phase:$name timeout after ${job_timeout}s (log: ${log#$ROOT/})"
     tail -n 40 "$log" | sed 's/^/  | /'
+  elif [[ $rc -eq 3 ]]; then
+    # The job could not run at all (cargo slot congested -> h2-cargo rc 75, or
+    # another self-detected infrastructure abort). That is not a member failure.
+    echo "TEST_ALL_ABORT reason=job-abort phase=$phase job=$name (log: ${log#$ROOT/})"
+    tail -n 10 "$log" | sed 's/^/  | /'
+    json "$(printf '{"phase":"%s","job":"%s","rc":%d,"verdict":"abort","reason":"job-abort","log":"%s"}' \
+      "$phase" "$name" "$rc" "${log#$ROOT/}")"
+    exit 3
   else
     if grep -q "No space left on device" "$log" 2>/dev/null; then
       echo "TEST_ALL_ABORT reason=disk phase=$phase job=$name (log: ${log#$ROOT/})"
@@ -215,10 +251,44 @@ run_job() {
 
 # ---------------------------------------------------------------- self-test
 
+# A green gate is only trustworthy if it is proven to go red. Two probes:
+#   (a) a failing unit test in a crate the old hand-written subset never ran;
+#   (b) a deliberately broken Orc01 run (the GOAL 2026-11-18 acceptance basis).
+# Both must make the gate exit non-zero, and (b) must fail for the Orc01 reason,
+# not because some unrelated job happened to break.
 if [[ $DO_SELF_TEST -eq 1 ]]; then
-  # A green gate is only trustworthy if it catches a failure in a crate the old
-  # subset never ran. `wc3-bink` is exactly such a crate (absent from the old
-  # scripts/test-all.sh loop), so the probe goes there.
+  # Probe 0: the menu gate's parser and threshold must accept a valid layout
+  # block and reject a short one. The fixture uses the exact line format the
+  # game publishes; the real run is exercised by the `gate:menu` job.
+  menu_fixture="$LOG_DIR/self-test-menu-valid.log"
+  {
+    echo "GAME_MENU_LAYOUT screen=Main vp=2414x1080 entries=12"
+    for i in $(seq 0 11); do
+      echo "GAME_MENU_ENTRY group=main index=$i action=main_$i rect=$((100 + i * 150)),200,120,120 tap=$((160 + i * 150)),260 label=BUTTON$i"
+    done
+  } >"$menu_fixture"
+  MENU_LOG="$LOG_DIR/self-test-menu-pass.log" \
+    "$ROOT/tests/gates/menu-layout-gate.sh" --replay-log "$menu_fixture" \
+    >"$LOG_DIR/self-test-menu-pass.out" 2>&1
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "SELF_TEST_FAIL: the menu gate rejected a valid layout block"
+    tail -n 20 "$LOG_DIR/self-test-menu-pass.out" | sed 's/^/  | /'
+    exit 1
+  fi
+  short_fixture="$LOG_DIR/self-test-menu-short.log"
+  sed 's/entries=12/entries=2/' "$menu_fixture" >"$short_fixture"
+  MENU_LOG="$LOG_DIR/self-test-menu-short-run.log" \
+    "$ROOT/tests/gates/menu-layout-gate.sh" --replay-log "$short_fixture" \
+    >"$LOG_DIR/self-test-menu-short.out" 2>&1
+  rc=$?
+  if [[ $rc -eq 0 ]] || ! grep -q "MENU_GATE_FAIL" "$LOG_DIR/self-test-menu-short.out"; then
+    echo "SELF_TEST_FAIL: the menu gate accepted a 2-entry main menu"
+    tail -n 20 "$LOG_DIR/self-test-menu-short.out" | sed 's/^/  | /'
+    exit 1
+  fi
+  echo "SELF_TEST_PASS menu_gate: valid layout accepted, 2-entry menu rejected (rc=$rc)"
+
   probe_member="${H2_SELF_TEST_MEMBER:-wc3-bink}"
   probe_dir="$(member_dir "$probe_member")"
   if [[ -z "$probe_dir" ]]; then
@@ -226,7 +296,11 @@ if [[ $DO_SELF_TEST -eq 1 ]]; then
     exit 1
   fi
   probe="$probe_dir/tests/zz_aud030_self_test.rs"
-  mkdir -p "$(dirname "$probe")"
+  broken_root="$(mktemp -d "${TMPDIR:-/data/data/com.termux/files/usr/tmp}/wc3rust-orc01-broken.XXXXXX")"
+  mkdir -p "$(dirname "$probe")" "$broken_root/Maps/Campaign"
+  # A zero-byte Orc01.w3m is a broken install, not a crash we cause in code: the
+  # loader must refuse it, the smoke must report that, and the gate must fail.
+  : >"$broken_root/Maps/Campaign/Orc01.w3m"
   cat > "$probe" <<'EOF'
 // Injected by `scripts/test-all.sh --self-test` (AUD-030). It must make the
 // gate exit non-zero; the gate removes this file afterwards.
@@ -235,20 +309,49 @@ fn aud030_self_test_must_fail() {
     panic!("AUD-030 self-test: the gate must report this failure");
 }
 EOF
-  cleanup() { rm -f "$probe"; }
-  trap cleanup EXIT
-  set +e
-  "$0" --only "$probe_member" --no-check --no-targets --timeout 600 \
+  self_test_cleanup() { rm -f "$probe"; rm -rf "$broken_root"; }
+  trap self_test_cleanup EXIT
+
+  H2_SUMMARY_JSONL="$LOG_DIR/self-test-unit.jsonl" \
+    "$0" --only "$probe_member" --no-check --no-targets --no-orc01 --timeout 1800 \
     >"$LOG_DIR/self-test.log" 2>&1
   rc=$?
   rm -f "$probe"
-  trap - EXIT
   if [[ $rc -eq 0 ]]; then
     echo "SELF_TEST_FAIL: the gate reported success with a failing test in $probe_member"
     exit 1
   fi
-  echo "SELF_TEST_PASS: failing test in $probe_member made the gate exit $rc"
-  echo "  self-test gate log: ${LOG_DIR#$ROOT/}/self-test.log"
+  # A non-zero rc alone is not proof: a slot timeout or a script error also
+  # exits non-zero. The injected test name must appear in the member log and the
+  # member must be marked failed in the nested gate log.
+  if ! grep -q "aud030_self_test_must_fail" "$LOG_DIR/test-$probe_member.log" 2>/dev/null \
+    || ! grep -q "FAIL test:$probe_member" "$LOG_DIR/self-test.log"; then
+    echo "SELF_TEST_FAIL: the gate went red without running the injected test"
+    tail -n 20 "$LOG_DIR/self-test.log" | sed 's/^/  | /'
+    exit 1
+  fi
+  echo "SELF_TEST_PASS unit_test: failing test in $probe_member made the gate exit $rc"
+
+  H2_SUMMARY_JSONL="$LOG_DIR/self-test-orc01.jsonl" \
+    H2_ORC01_DATA_ROOT="$broken_root" H2_TEST_TIMEOUT_ORC01_S=600 \
+    ORC01_LOG="$LOG_DIR/self-test-orc01-run.log" \
+    "$0" --no-check --no-tests --no-targets --timeout 600 \
+    >"$LOG_DIR/self-test-orc01.log" 2>&1
+  rc=$?
+  rm -rf "$broken_root"
+  trap - EXIT
+  if [[ $rc -eq 0 ]]; then
+    echo "SELF_TEST_FAIL: the gate reported success with a broken Orc01 run"
+    tail -n 20 "$LOG_DIR/self-test-orc01.log" | sed 's/^/  | /'
+    exit 1
+  fi
+  if ! grep -q "ORC01_SMOKE_FAIL" "$LOG_DIR/self-test-orc01.log"; then
+    echo "SELF_TEST_FAIL: the gate failed, but not because of the broken Orc01 run"
+    tail -n 20 "$LOG_DIR/self-test-orc01.log" | sed 's/^/  | /'
+    exit 1
+  fi
+  echo "SELF_TEST_PASS orc01: deliberately broken Orc01 made the gate exit $rc"
+  echo "  self-test logs: ${LOG_DIR#$ROOT/}/self-test.log ${LOG_DIR#$ROOT/}/self-test-orc01.log"
   exit 0
 fi
 
@@ -291,6 +394,47 @@ if [[ $DO_TARGETS -eq 1 ]]; then
   done
 fi
 
+# ---------------------------------------------------------------- phase 4
+
+# Main-menu regression guard: the game publishes the rects it hit-tests, so a
+# menu that stops syncing (or loses activation) fails the gate even though the
+# renderer still draws buttons.
+if [[ $DO_MENU -eq 1 ]]; then
+  run_job gate menu "$ROOT/tests/gates/menu-layout-gate.sh"
+  menu_log="$LOG_DIR/gate-menu.log"
+  if [[ -f "$menu_log" ]] && menu_line="$(grep -m1 '^MENU_LAYOUT ' "$menu_log")"; then
+    menu_args=()
+    for kv in ${menu_line#MENU_LAYOUT }; do
+      menu_args+=(--arg "${kv%%=*}" "${kv#*=}")
+    done
+    json "$(jq -cn "${menu_args[@]}" \
+      '{phase:"gate",job:"menu",verdict:"metrics"} + $ARGS.named')"
+  fi
+else
+  json '{"phase":"gate","job":"menu","rc":null,"verdict":"skip","reason":"--no-menu/--check-only"}'
+fi
+
+# GOAL 2026-11-18: the acceptance basis is the first RoC orc chapter. The smoke
+# boots the real mission headless and ticks it; it is a gate job like any other,
+# so a broken Orc01 run exits the gate non-zero (proved by --self-test).
+if [[ $DO_ORC01 -eq 1 ]]; then
+  run_job gate orc01 "$ROOT/tests/gates/orc01-smoke.sh"
+  # Machine-readable Orc01 metrics: the smoke's canonical line is parsed into
+  # the same JSONL as the job verdicts, so the acceptance numbers (units/quests/
+  # ticks/cam/fades/subs) can be diffed across runs without scraping logs.
+  orc01_log="$LOG_DIR/gate-orc01.log"
+  if [[ -f "$orc01_log" ]] && orc01_line="$(grep -m1 '^ORC01 ' "$orc01_log")"; then
+    orc01_args=()
+    for kv in ${orc01_line#ORC01 }; do
+      orc01_args+=(--arg "${kv%%=*}" "${kv#*=}")
+    done
+    json "$(jq -cn "${orc01_args[@]}" \
+      '{phase:"gate",job:"orc01",verdict:"metrics"} + $ARGS.named')"
+  fi
+else
+  json '{"phase":"gate","job":"orc01","rc":null,"verdict":"skip","reason":"--no-orc01/--check-only"}'
+fi
+
 # ---------------------------------------------------------------- phase 2
 
 if [[ $DO_TESTS -eq 1 ]]; then
@@ -311,6 +455,32 @@ if [[ $DO_TESTS -eq 1 ]]; then
     run_job test "wc3-game#input_limits" \
       "$CARGO" test -p wc3-game --test input_limits --features movie_decoder
   fi
+fi
+
+# ---------------------------------------------------------------- port parity
+# The rust-anything loop across EVERY layer: each unit under analysis/port-parity
+# must replay N/N and pass its gate. Narrow runs (--check-only, --no-tests,
+# --only) and PORT_PARITY=0 skip the matrix, and the skip is recorded with its
+# reason so a green summary can never hide a phase that did not run.
+parity_reason=""
+if [[ $DO_PARITY -eq 0 ]]; then
+  parity_reason="--check-only/--no-tests/--no-parity"
+elif [[ -n "$ONLY" ]]; then
+  parity_reason="--only $ONLY"
+elif [[ "${PORT_PARITY:-1}" == "0" ]]; then
+  parity_reason="PORT_PARITY=0"
+fi
+if [[ -z "$parity_reason" ]]; then
+  if bash "$ROOT/scripts/port-parity-all.sh"; then
+    PASSED=$((PASSED + 1))
+    json '{"phase":"port_parity","verdict":"pass","rc":0}'
+  else
+    FAILED=$((FAILED + 1))
+    json '{"phase":"port_parity","verdict":"fail","rc":1}'
+    echo "PORT_PARITY_FAIL (see /data/data/com.termux/files/usr/tmp/port-parity-all-*.json)" >&2
+  fi
+else
+  json "$(jq -cn --arg r "$parity_reason" '{phase:"port_parity",verdict:"skip",rc:null,reason:$r}')"
 fi
 
 # ---------------------------------------------------------------- summary

@@ -20,6 +20,7 @@ mkdir -p "$OUT"
 INSTALL=1
 KEEP=0
 ALLOW_VENDOR=0
+RUN_STARTED=$(date +%s)
 for arg in "$@"; do
   case "$arg" in
     --no-install) INSTALL=0 ;;
@@ -35,6 +36,14 @@ if [[ "$INSTALL" == 1 ]]; then
   [[ -f "$APK" ]] || fail "APK missing: $APK"
   su -c "pm install -r '$APK'" >/dev/null || fail "pm install"
 fi
+
+# K-01: bind the run to bytes, not to a filename. The device must execute the
+# same base.apk this script names; a stale install fails here, loudly.
+APK_ID="$(python3 -m scripts.qa.device apk-sha --built "$APK")" \
+  || fail "installed package does not match built APK: $APK_ID"
+BUILT_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["built_sha256"])' "$APK_ID")"
+INSTALLED_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["installed_sha256"])' "$APK_ID")"
+note "APK sha=$BUILT_SHA installed=$INSTALLED_SHA"
 
 su -c "am force-stop $PKG" >/dev/null 2>&1
 su -c "logcat -c" >/dev/null 2>&1
@@ -64,11 +73,19 @@ if ! grep -qE 'P0_GPU_ADAPTER name="(Turnip|Mesa)|P0_GPU_ADAPTER .*driver="Mesa'
 fi
 
 shoot() {
-  local name="$1"
-  su -c "screencap -p /data/local/tmp/$name.png" >/dev/null 2>&1 || return 1
-  su -c "cp /data/local/tmp/$name.png '$OUT/$name.png'" >/dev/null 2>&1
-  su -c "chown u0_a394:u0_a394 '$OUT/$name.png'" >/dev/null 2>&1
-  python3 scripts/visual_check.py "$OUT/$name.png" || fail "visual check $name"
+  local name="$1" dest="$OUT/$name.png" mtime
+  # K-12: never let an old analysis/device-*.png stand in for this run. The
+  # destination is removed, each transfer step is checked, the PNG magic is
+  # verified and the mtime must be inside this run's window.
+  rm -f "$dest"
+  su -c "screencap -p /data/local/tmp/$name.png" >/dev/null 2>&1 || fail "screencap $name"
+  su -c "cat /data/local/tmp/$name.png" > "$dest" 2>/dev/null || fail "copy screenshot $name"
+  [[ -s "$dest" ]] || fail "screenshot $name is empty"
+  python3 -c 'import sys; sys.exit(0 if open(sys.argv[1], "rb").read(8) == b"\x89PNG\r\n\x1a\n" else 1)' "$dest" \
+    || fail "screenshot $name is not a PNG"
+  mtime=$(stat -c %Y "$dest")
+  [[ "$mtime" -ge "$RUN_STARTED" ]] || fail "screenshot $name is stale (mtime $mtime < run start $RUN_STARTED)"
+  python3 scripts/visual_check.py "$dest" || fail "visual check $name"
 }
 
 shoot device-1-start
@@ -153,4 +170,5 @@ grep -q "GAME_FATAL" "$LOG" && fail "fatal after gameplay"
 if [[ "$KEEP" == 0 ]]; then
   su -c "am force-stop $PKG" >/dev/null 2>&1
 fi
+echo "SELFTEST_APK sha=$BUILT_SHA installed=$INSTALLED_SHA"
 echo "SELFTEST_PASS fps=$fps screenshots=$OUT/device-{1..4}-*.png"

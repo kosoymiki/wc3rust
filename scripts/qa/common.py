@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# The repo is also reachable through the legacy `wc3rust` symlink; callers may
+# pass --out paths below either spelling. Keep a resolved alias so `rel()` can
+# express both as relative to the same root instead of raising ValueError.
+ROOT_RESOLVED = ROOT.resolve()
 ANALYSIS = ROOT / "analysis" / "agent-qa"
 PKG = "org.wc3rust.p0"
 ACTIVITY = "org.libsdl.app.SDLActivity"
@@ -69,10 +73,13 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 def rel(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(ROOT))
-    except ValueError:
-        return str(path)
+    resolved = path.resolve()
+    for base in (ROOT_RESOLVED, ROOT):
+        try:
+            return str(resolved.relative_to(base.resolve()))
+        except ValueError:
+            pass
+    return str(path)
 
 
 # --------------------------------------------------------------------------- image

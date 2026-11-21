@@ -8,20 +8,25 @@
 # those plus a rustc, available RAM (2.4 GB) is gone and the kernel OOM-kills
 # a process mid-run.
 #
-# Contract:
-#   * one cargo at a time across the whole device (flock, 0600 lock file);
+# Contract (2026-11-18, fix for "proceed without the slot" bypass):
+#   * FIFO ticket queue, one cargo at a time across the whole device;
+#   * the slot is never bypassed on timeout — the old `flock -w 900` fallback
+#     is what let four lanes compile concurrently and get the APK build
+#     OOM-killed (rc=137). `H2_CARGO_BYPASS=1` is the explicit emergency knob;
 #   * wait until MemAvailable >= MIN_AVAIL_KB before starting;
-#   * stale-lock recovery: if the lock is held but no cargo/rustc exists, break it;
+#   * dead tickets are pruned (pid in the ticket name is checked with kill -0);
 #   * heavy test runs are capped (RUST_TEST_THREADS) and never incremental.
 #
 # Usage: scripts/h2-cargo <cargo args...>   (identical to `cargo` otherwise)
 set -u
 LOCK=/data/data/com.termux/files/usr/tmp/h2-cargo.lock
+QUEUE=/data/data/com.termux/files/usr/tmp/h2-cargo.queue
 LOG=/data/data/com.termux/files/usr/tmp/h2-cargo.log
 MIN_AVAIL_KB=${H2_CARGO_MIN_AVAIL_KB:-3200000}   # ~3.2 GB
-WAIT_MAX_S=${H2_CARGO_WAIT_MAX_S:-900}
+WAIT_MAX_S=${H2_CARGO_WAIT_MAX_S:-7200}          # hard cap, never bypass
+BYPASS=${H2_CARGO_BYPASS:-0}
 
-mkdir -p "$(dirname "$LOCK")"
+mkdir -p "$(dirname "$LOCK")" "$QUEUE"
 : >> "$LOCK"; chmod 600 "$LOCK" 2>/dev/null || true
 
 avail_kb() { awk '/MemAvailable/{print $2}' /proc/meminfo; }
@@ -31,8 +36,8 @@ wait_memory() {
   while :; do
     local a; a=$(avail_kb)
     [ "$a" -ge "$MIN_AVAIL_KB" ] && return 0
-    [ "$waited" -ge "$WAIT_MAX_S" ] && {
-      echo "h2-cargo: memory still low after ${WAIT_MAX_S}s (avail=${a}kB < ${MIN_AVAIL_KB}kB), proceeding" >> "$LOG"
+    [ "$waited" -ge 900 ] && {
+      echo "h2-cargo: memory still low after 900s (avail=${a}kB < ${MIN_AVAIL_KB}kB), proceeding" >> "$LOG"
       return 0
     }
     echo "h2-cargo: waiting for memory avail=${a}kB < ${MIN_AVAIL_KB}kB" >> "$LOG"
@@ -40,20 +45,70 @@ wait_memory() {
   done
 }
 
-# Stale-lock recovery: a SIGKILLed cargo leaves the file locked only while a
-# process holds the fd; if nothing of ours runs, do not block forever.
-if ! command -v flock >/dev/null; then
-  echo "h2-cargo: flock missing; falling back to a pidfile spin" >&2
+# ---------------------------------------------------------------- FIFO queue
+# Ticket name sorts by creation time (nanosecond stamp) and carries the pid, so
+# a killed holder can be pruned instead of wedging the queue forever.
+# Priority: a critical-path job (the APK the operator installs) jumps the queue
+# by sorting before every normal ticket. Still one cargo at a time — priority
+# reorders waiters, it never allows a second compile.
+if [ "${H2_CARGO_PRIORITY:-0}" = "1" ]; then
+  TICKET="$QUEUE/0.$(date +%s%N).$$"
+else
+  TICKET="$QUEUE/$(date +%s%N).$$"
 fi
+: > "$TICKET"
+cleanup() { rm -f "$TICKET"; }
+# INT/TERM must leave a distinct status and stop this process instead of
+# falling through to `cargo` after the trap returns (observed: a wrapper that
+# kept waiting after SIGTERM). EXIT keeps the ticket cleanup for every path.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+prune_dead_tickets() {
+  local f pid
+  for f in "$QUEUE"/*; do
+    [ -e "$f" ] || continue
+    pid=${f##*.}
+    case "$pid" in (*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -f "$f"
+  done
+}
+
+queue_turn() {
+  local waited=0
+  while :; do
+    prune_dead_tickets
+    local first; first=$(ls -1 "$QUEUE" 2>/dev/null | sort | head -1)
+    [ "$first" = "${TICKET##*/}" ] && return 0
+    sleep 2; waited=$((waited + 2))
+    if [ "$waited" -ge "$WAIT_MAX_S" ]; then
+      echo "h2-cargo: FIFO wait exceeded ${WAIT_MAX_S}s ($*), giving up" >> "$LOG"
+      exit 75
+    fi
+  done
+}
 
 exec 9>>"$LOCK"
 if ! flock -n 9; then
-  echo "h2-cargo: waiting for the single cargo slot ($*)" >> "$LOG"
-  # Wait up to WAIT_MAX_S for the slot; afterwards proceed anyway so a wedged
-  # holder cannot block the whole device forever.
-  if ! flock -w "$WAIT_MAX_S" 9; then
-    echo "h2-cargo: slot busy >${WAIT_MAX_S}s, proceeding without it ($*)" >> "$LOG"
-  fi
+  echo "h2-cargo: queued ($*)" >> "$LOG"
+  queue_turn
+  # Our turn: the holder in front of us is releasing right now. Keep waiting
+  # for the kernel lock — a bypass here is what caused the OOM kills.
+  local_waited=0
+  while ! flock -w 60 9; do
+    local_waited=$((local_waited + 60))
+    echo "h2-cargo: slot still busy after ${local_waited}s ($*)" >> "$LOG"
+    if [ "$local_waited" -ge "$WAIT_MAX_S" ]; then
+      if [ "$BYPASS" = "1" ]; then
+        echo "h2-cargo: BYPASS=1 after ${local_waited}s ($*)" >> "$LOG"
+        break
+      fi
+      echo "h2-cargo: slot busy >${local_waited}s, refusing to bypass ($*)" >> "$LOG"
+      exit 75
+    fi
+  done
 fi
 
 wait_memory
