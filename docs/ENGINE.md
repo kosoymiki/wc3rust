@@ -118,11 +118,20 @@ gameplay reads only wc3-assetdb; no direct file I/O from sim/render
 ## 9. Verification
 
 ```bash
-# one crate at a time, memory-capped (do NOT run --workspace in-session)
-./scripts/safe-test.sh wc3-mpq
-./scripts/safe-test.sh wc3-formats
-./scripts/safe-test.sh wc3-sim
-# ... etc. Each log ends with SAFE_TEST_DONE crate=<name> rc=<0|1>
+# Workspace gate: member list from `cargo metadata`, single cargo slot via
+# scripts/h2-cargo, one member at a time, plus the Orc01 chapter, the main-menu
+# layout gate and the port-parity loop. JSONL evidence in analysis/test-all.jsonl.
+scripts/test-all.sh
+scripts/test-all.sh --check-only             # cargo check --workspace only
+scripts/test-all.sh --only wc3-mpq           # one member through the same runner
+PORT_PARITY=0 scripts/test-all.sh --check-only   # narrow run; parity skip is recorded
+
+# Reproducible APK: the native step records the exact input inventory, the
+# packaging step refuses a stale libmain.so and rewrites the ZIP with a fixed
+# timestamp.
+scripts/build-native.sh
+scripts/build-apk.sh --release               # build/android-p0/release/wc3rust-p0.apk
+scripts/build-apk.sh --debug                 # build/android-p0/debug/wc3rust-p0.apk
 ```
 
 Device evidence:
@@ -138,7 +147,9 @@ Device evidence:
 - BLP2 JPEG / unknown compression: typed `Unsupported`.
 - W3I only the header strings; random unit tables in `.doo` unsupported.
 - JASS native coverage is a core subset; full map scripts may fail parse/run.
-- Audio MP3 not wired; WAV complete.
+- Audio: WAV is complete; streamed MP3 music is decoded through
+  `wc3_audio::probe_mp3`/`play_mp3` and resolved from the shipped
+  `Sound\Music\mp3Music\*.mp3` themes (`crates/wc3-audio/tests/audio.rs`).
 
 
 ## 11. Playable game layer (`wc3-game`) — 2026-11-12

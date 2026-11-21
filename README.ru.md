@@ -15,7 +15,7 @@ Entertainment; проект не аффилирован с Blizzard. Подро�
 | Пункт | Значение |
 | --- | --- |
 | Язык | Rust 1.99.1, edition 2024 |
-| Workspace | 30 членов (`crates/`, `apps/`, `tools/`) |
+| Workspace | 32 члена (`crates/`, `apps/`, `tools/`) |
 | Платформа | Termux/Android aarch64 (основная), host Linux для тестов/инструментов |
 | Графика | SDL3 + wgpu 30 / Vulkan; Turnip через `crates/wc3-adrenotools` |
 | Android SDK | `aapt2`, `javac`, `d8`, `zipalign`, `apksigner`, `keytool`, `android.jar` (автопоиск в `$PREFIX/tmp/opencode/android-sdk/android-36/android.jar`) |
@@ -44,13 +44,36 @@ scripts/test-all.sh --check-only     # cargo check --workspace
 scripts/test-all.sh                  # check + проверки Android-таргетов + тесты по членам
 ```
 
-APK для Android — два шага, release-APK попадает в `build/android-p0/release/`:
+Полный запуск тем же заданием выполняет два приёмочных гейта и цикл port parity:
+`tests/gates/orc01-smoke.sh` (загружает `Maps\Campaign\Orc01.w3m` headless, прогоняет
+3000 тиков и проверяет состав отряда, квесты, JASS и катсцену, которые реально
+произвела миссия), `tests/gates/menu-layout-gate.sh` (>= 6 нажимаемых пунктов, чьи
+объявленные прямоугольники содержат свои точки нажатия) и `scripts/port-parity-all.sh`
+(каждый юнит в `analysis/port-parity/` должен отыграть N/N и пройти свой гейт).
+`--no-orc01`, `--no-menu`, `--no-parity` и `PORT_PARITY=0` существуют для узких
+отладочных прогонов; каждый пропуск фиксируется в `analysis/test-all.jsonl` как SKIP
+с причиной. `--check-only`, `--no-tests` и `--only` выключают цикл port parity по
+построению — компиляция или один член не доказывают матрицу слоёв. `--self-test`
+доказывает, что гейт краснеет на намеренно падающем тесте члена и на намеренно
+сломанном прогоне Orc01.
+
+APK для Android — `scripts/build-native.sh` записывает, из каких исходников получен
+`libmain.so`; `scripts/build-apk.sh` отказывается упаковывать устаревшую библиотеку:
 
 ```sh
-scripts/h2-cargo build --release -p wc3rust-android
-scripts/build-apk.sh --release
-# -> build/android-p0/release/wc3rust-p0.apk
+scripts/build-native.sh              # libmain.so + target/release/.libmain-inputs.json
+scripts/build-apk.sh --release       # -> build/android-p0/release/wc3rust-p0.apk
+scripts/build-apk.sh --debug         # -> build/android-p0/debug/wc3rust-p0.apk
 ```
+
+`build-native.sh` собирает через `scripts/h2-cargo` с правилами `--remap-path-prefix` из
+`.cargo/config.toml`, поэтому путь устройства не попадает в артефакт, и перечитывает
+инвентарь входов до и после компиляции (правка исходника во время сборки вызывает
+повтор вместо смешанной `.so`). `build-apk.sh` проверяет `scripts/build-deps.json`,
+штамп libmain (дайджест входов, remap-конфиг, sha256) и флаг `debuggable` в слитом
+манифесте, затем перезаписывает ZIP с `SOURCE_DATE_EPOCH = git log -1`, поэтому две
+сборки одного дерева байт-идентичны, и пишет `build/android-p0/<type>/build-manifest.json`
+с HEAD, дайджестом грязных исходников, дайджестами входов и sha256 APK.
 
 Установка и запуск на устройстве:
 
@@ -132,8 +155,9 @@ ICD Turnip поставляется отключённым (лежит в это
 | `crates/wc3-platform` | Платформенные сервисы, общие для Android и host |
 | `crates/wc3-re` | Слой ресурсов/VM/object data для инструментов реверс-инжиниринга |
 
-`crates/wc3-guest` (модель x86-32 гостя для исследовательского пути статической рекомпиляции) лежит
-на диске, но не входит в workspace.
+`crates/wc3-guest` (модель x86-32 гостя для исследовательского пути статической рекомпиляции) —
+член workspace и зависимость `wc3-re`; он компилируется вместе с workspace, но не входит в
+поставочный путь Android-поверхности.
 
 ### Приложения и инструменты
 

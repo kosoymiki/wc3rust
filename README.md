@@ -15,7 +15,7 @@ of Blizzard Entertainment; this project is not affiliated with Blizzard. See `do
 | Item | Value |
 | --- | --- |
 | Language | Rust 1.99.1, edition 2024 |
-| Workspace | 30 members (`crates/`, `apps/`, `tools/`) |
+| Workspace | 32 members (`crates/`, `apps/`, `tools/`) |
 | Platform | Termux/Android aarch64 (primary), host Linux for tests/tools |
 | Graphics | SDL3 + wgpu 30 / Vulkan; Turnip through `crates/wc3-adrenotools` |
 | Android SDK | `aapt2`, `javac`, `d8`, `zipalign`, `apksigner`, `keytool`, `android.jar` (auto-detected at `$PREFIX/tmp/opencode/android-sdk/android-36/android.jar`) |
@@ -44,13 +44,37 @@ scripts/test-all.sh --check-only     # cargo check --workspace
 scripts/test-all.sh                  # check + Android target checks + per-member tests
 ```
 
-Android APK — two steps, release APK lands in `build/android-p0/release/`:
+A full run also executes the two acceptance gates and the port-parity loop in the
+same job: `tests/gates/orc01-smoke.sh` (boots `Maps\Campaign\Orc01.w3m`
+headless, ticks it 3000 times, checks the roster/quests/JASS/cutscene the mission
+produced), `tests/gates/menu-layout-gate.sh` (>= 6 tappable entries whose
+declared rects contain their tap points) and `scripts/port-parity-all.sh`
+(every unit under `analysis/port-parity/` must replay N/N and pass its gate).
+`--no-orc01`, `--no-menu` and `--no-parity` exist for narrow debugging runs and
+every skip is recorded as SKIP with its reason in `analysis/test-all.jsonl`;
+`--check-only`, `--no-tests` and `--only` disable the port-parity loop by
+construction (a compile-only run or one member cannot prove the layer matrix).
+`--self-test` proves the gate turns red on a deliberately failing member test and
+on a deliberately broken Orc01 run.
+
+Android APK — `scripts/build-native.sh` records which sources produced
+`libmain.so`; `scripts/build-apk.sh` refuses a stale library:
 
 ```sh
-scripts/h2-cargo build --release -p wc3rust-android
-scripts/build-apk.sh --release
-# -> build/android-p0/release/wc3rust-p0.apk
+scripts/build-native.sh              # libmain.so + target/release/.libmain-inputs.json
+scripts/build-apk.sh --release       # -> build/android-p0/release/wc3rust-p0.apk
+scripts/build-apk.sh --debug         # -> build/android-p0/debug/wc3rust-p0.apk
 ```
+
+`build-native.sh` compiles through `scripts/h2-cargo` with the `--remap-path-prefix`
+rules from `.cargo/config.toml`, so no device path survives into the artifact, and
+it re-reads the input inventory before and after the compile (a lane that edits a
+source mid-build forces a retry instead of a mixed `.so`). `build-apk.sh` verifies
+`scripts/build-deps.json`, the libmain stamp (input digest, remap config, sha256),
+and the merged manifest's `debuggable` flag, then rewrites the ZIP with
+`SOURCE_DATE_EPOCH = git log -1` so two builds of the same tree are byte-identical
+and records `build/android-p0/<type>/build-manifest.json` with HEAD, the dirty
+source digest, input digests and the APK sha256.
 
 Install and launch on the device:
 
@@ -132,8 +156,9 @@ backgrounded.
 | `crates/wc3-platform` | Platform services shared by Android and host |
 | `crates/wc3-re` | Resource/VM/object-data layer used by the reverse-engineering tools |
 
-`crates/wc3-guest` (x86-32 guest model for the static-recompilation research path) is on disk but not
-a workspace member.
+`crates/wc3-guest` (x86-32 guest model for the static-recompilation research path) is a workspace
+member and a dependency of `wc3-re`; it compiles with the workspace but is not part of the shipping
+Android surface path.
 
 ### Apps and tools
 

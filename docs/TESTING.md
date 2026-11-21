@@ -196,6 +196,40 @@ black/white/pink/empty thumbnails. Contact sheets are written to
 `GALLERY_LIMIT=N` and `GALLERY_ONLY=models,icons,terrain` are smoke-run knobs.
 The gallery test is `#[ignore]` so it never slows the normal unit suite.
 
+## Workspace gate (`scripts/test-all.sh`)
+
+The device procedure above proves the shipped APK; `scripts/test-all.sh` proves the
+tree it was built from. One run executes, in order:
+
+| Phase | Command | Pass condition |
+|---|---|---|
+| workspace check | `cargo check --workspace` | rc=0 for every member from `cargo metadata` |
+| main menu | `tests/gates/menu-layout-gate.sh` | >= 6 tappable entries whose rects contain their tap points |
+| Orc01 chapter | `tests/gates/orc01-smoke.sh` | boots `Maps\Campaign\Orc01.w3m` headless, 3000 ticks, roster/quests/JASS/cutscene match |
+| per-member tests | `cargo test -p <member>` | rc=0, tests single-threaded behind the `h2-cargo` slot |
+| Android targets | `cargo check -p wc3rust-android --target <triple>` | rc=0, or SKIP with the missing linker named |
+| port parity | `scripts/port-parity-all.sh` | every unit under `analysis/port-parity/` replays N/N and passes `gate` |
+
+Every job writes its own log under `analysis/test-all/` and one JSON line to
+`analysis/test-all.jsonl`; a failure prints the tail of that job's log. Exit status
+is 0 only when every executed job passed, 1 on a job failure, 2 on bad
+usage/metadata, 3 when the filesystem cannot hold the next link step
+(`TEST_ALL_ABORT reason=disk`) — an aborted gate is not a member failure.
+
+Narrow debugging runs: `--only <member>`, `--no-check`, `--no-tests`,
+`--no-targets`, `--no-orc01`, `--no-menu`, `--no-parity`, and `PORT_PARITY=0`. A
+skipped phase is recorded as SKIP with its reason in the JSONL, never as a PASS;
+`--check-only`, `--no-tests` and `--only` turn the port-parity loop off by
+construction because a single member or a compile-only run cannot prove the layer
+matrix. `--self-test` proves the gate can fail: it plants a failing test in a crate
+the old hand-written subset never ran and a deliberately broken Orc01 run, and
+requires both to turn the gate red.
+
+The gate is single-slot by construction: `scripts/h2-cargo` serialises cargo
+through one flock and caps jobs at 2, so a full run queues behind any other lane's
+build. Expect minutes, not seconds, on this device; a run that prints nothing for a
+long time is waiting for the cargo slot, not hung.
+
 ## Reliability playbook
 
 - **Game backgrounded by the operator/notification** – the runner detects
