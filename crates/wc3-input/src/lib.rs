@@ -12,8 +12,10 @@
 
 use glam::{Mat4, Vec2, Vec3};
 
+pub mod gate;
 pub mod geometry;
 pub mod lifecycle;
+pub mod menu;
 pub mod orders;
 pub mod remap;
 pub mod sdl;
@@ -157,6 +159,8 @@ pub enum TouchEnd {
     /// stationary long press (tooltip/assign gesture) and `double` a second tap
     /// on the same button within the double-tap window.
     Button { index: usize, double: bool, hold: bool },
+    /// Minimap lift. `hold` is a stationary hold (order gesture) and is false
+    /// after any scrub, so panning the minimap never issues an order.
     Minimap { at: Vec2, hold: bool },
     Box { start: Vec2, end: Vec2 },
     Place { at: Vec2 },
@@ -388,9 +392,18 @@ impl TouchInput {
             return None;
         }
         let delta = pointer.last - point;
-        pointer.moved = true;
         pointer.last = point;
-        match pointer.zone {
+        // `moved` means "the finger left the tap-slop disc", not "a motion
+        // event arrived" (Android `ViewConfiguration.getScaledTouchSlop`).
+        // Every touch panel reports sub-slop jitter on a still finger; treating
+        // that as a drag cancelled world taps, placement taps and long-press
+        // tooltips, and scrubbed the minimap under a stationary thumb. The
+        // flag latches once the finger really travels.
+        if !pointer.moved && point.distance(pointer.down) > layout.slop(TAP_SLOP) {
+            pointer.moved = true;
+        }
+        let mut drag_started = false;
+        let movement = match pointer.zone {
             Zone::Button(index) => {
                 if pointer.pressed_button == Some(index)
                     && let Some(button) = layout.buttons.iter().find(|button| button.index == index)
@@ -402,16 +415,18 @@ impl TouchInput {
                 }
                 None
             }
-            Zone::Minimap => Some(TouchMove::Minimap(point)),
+            // A minimap scrub follows the finger only after the slop is
+            // crossed: a tap that jumps the camera must not also drag it by
+            // the panel's jitter first.
+            Zone::Minimap => pointer.moved.then_some(TouchMove::Minimap(point)),
             Zone::World => {
-                if pointer.mode == DragMode::Pending
-                    && point.distance(pointer.down) > layout.slop(TAP_SLOP)
-                {
+                if pointer.mode == DragMode::Pending && pointer.moved {
                     pointer.mode = if time - pointer.started >= BOX_HOLD_SECONDS {
                         DragMode::Box
                     } else {
                         DragMode::Pan
                     };
+                    drag_started = true;
                 }
                 if pointer.mode == DragMode::Pan {
                     Some(TouchMove::Pan(delta))
@@ -420,7 +435,14 @@ impl TouchInput {
                 }
             }
             Zone::Blocked | Zone::Place => None,
+        };
+        if drag_started {
+            // A drag is not a tap: it must not pair with the next tap into a
+            // spurious double-tap (Android's GestureDetector drops the pending
+            // double tap as soon as a scroll starts).
+            self.last_tap = None;
         }
+        movement
     }
 
     /// Finish the active pointer. `None` means no effect (a pan ended, a button
@@ -454,7 +476,10 @@ impl TouchInput {
             }
             Zone::Minimap => Some(TouchEnd::Minimap {
                 at: point,
-                hold: time - pointer.started >= MINIMAP_ORDER_HOLD_SECONDS,
+                // A hold is a *stationary* hold (the touch right-click/order
+                // gesture). Scrubbing the minimap and lifting must only move
+                // the camera, never issue an order for the army.
+                hold: !pointer.moved && time - pointer.started >= MINIMAP_ORDER_HOLD_SECONDS,
             }),
             Zone::Place => {
                 if pointer.moved {
@@ -501,8 +526,13 @@ impl TouchInput {
     }
 
     /// The second finger was lifted: keep panning with the finger that remains.
+    /// A live HUD gesture (button/panel/placement) keeps its pointer: the
+    /// remaining finger did not start a camera drag, it is the same press.
     pub fn resume_pan(&mut self, point: Vec2, time: f32) {
         self.pinch = None;
+        if self.hud_gesture() {
+            return;
+        }
         self.pointer = Some(PointerState {
             down: point,
             last: point,
@@ -515,7 +545,16 @@ impl TouchInput {
     }
 
     /// Start a two-finger gesture. `camera_distance` is the current zoom.
+    ///
+    /// A finger that already owns a HUD gesture (command button, console panel,
+    /// placement ghost) is **not** converted into a pinch: on a 2414 px wide
+    /// phone the resting thumb touches the glass constantly, and stealing the
+    /// press would swallow every command-card tap. The pinch starts from the
+    /// world/minimap only.
     pub fn pinch_begin(&mut self, distance: f32, centre: Vec2, camera_distance: f32) {
+        if self.hud_gesture() {
+            return;
+        }
         self.pointer = None;
         self.pinch = Some(PinchState {
             start_distance: distance.max(1.0),
@@ -523,6 +562,18 @@ impl TouchInput {
             last_centre: centre,
             moved: false,
         });
+    }
+
+    /// True while the live pointer owns a HUD gesture (command button, HUD
+    /// panel or the placement ghost). Those gestures are never turned into a
+    /// camera pinch and are never replaced by a promoted pan.
+    pub fn hud_gesture(&self) -> bool {
+        self.pointer.as_ref().is_some_and(|pointer| {
+            matches!(
+                pointer.zone,
+                Zone::Button(_) | Zone::Blocked | Zone::Place
+            )
+        })
     }
 
     /// Update pinch zoom and two-finger pan together.
@@ -976,10 +1027,26 @@ mod tests {
             input.long_press(LONG_PRESS_SECONDS + 0.1),
             Some(Vec2::new(640.0, 360.0))
         );
-        input.pointer_move(Vec2::new(645.0, 360.0), 0.6, &l);
-        assert_eq!(input.long_press(0.7), None, "movement cancels the tooltip");
-        assert_eq!(input.pointer_up(Vec2::new(645.0, 360.0), 0.8, &l), None);
-        assert_eq!(input.long_press(0.9), None, "release clears it");
+        // Panel jitter inside the tap-slop disc is not a drag: a finger that
+        // has not left the disc is still holding for the tooltip.
+        assert_eq!(input.pointer_move(Vec2::new(645.0, 360.0), 0.5, &l), None);
+        assert_eq!(
+            input.long_press(0.6),
+            Some(Vec2::new(640.0, 360.0)),
+            "sub-slop jitter keeps the tooltip"
+        );
+        // Leaving the disc is a drag and cancels it. The finger had already
+        // been held past BOX_HOLD_SECONDS, so the drag is a selection box.
+        assert_eq!(input.pointer_move(Vec2::new(700.0, 360.0), 0.7, &l), None);
+        assert_eq!(input.long_press(0.8), None, "movement cancels the tooltip");
+        assert_eq!(
+            input.pointer_up(Vec2::new(700.0, 360.0), 0.9, &l),
+            Some(TouchEnd::Box {
+                start: Vec2::new(640.0, 360.0),
+                end: Vec2::new(700.0, 360.0)
+            })
+        );
+        assert_eq!(input.long_press(1.0), None, "release clears it");
     }
 
     #[test]
@@ -1223,5 +1290,137 @@ mod tests {
         let point = world_to_minimap(world, rect, size);
         let back = minimap_to_world(point, rect, size);
         assert!(back.distance(world) < 1.0, "round trip {back:?}");
+    }
+
+    // ------------------------------------------------ touch-slop classification
+    //
+    // Device rule: a touch panel reports sub-slop jitter on a still finger
+    // (Android `ViewConfiguration.getScaledTouchSlop`). Everything below pins
+    // that jitter cannot change what the gesture means.
+
+    #[test]
+    fn ui_trace_sub_slop_jitter_is_still_a_tap_and_a_placement() {
+        let mut input = TouchInput::new();
+        let l = layout(&BUTTONS, &BLOCKED);
+        input.pointer_down(Vec2::new(640.0, 360.0), 0.0, &l);
+        assert_eq!(input.pointer_move(Vec2::new(643.0, 362.0), 0.03, &l), None);
+        assert_eq!(input.pointer_move(Vec2::new(646.0, 363.0), 0.06, &l), None);
+        assert_eq!(
+            input.pointer_up(Vec2::new(646.0, 363.0), 0.09, &l),
+            Some(TouchEnd::Tap { at: Vec2::new(646.0, 363.0), double: false }),
+            "6.7 px of jitter is a tap, not a drag"
+        );
+
+        // Same jitter in placement mode must place the building instead of
+        // cancelling the tap (`Place` used to cancel on any motion event).
+        let mut placing = TouchInput::new();
+        let place_layout = TouchLayout { placing: true, ..l };
+        assert_eq!(
+            placing.pointer_down(Vec2::new(700.0, 400.0), 1.0, &place_layout),
+            TouchStart::Place
+        );
+        assert_eq!(
+            placing.pointer_move(Vec2::new(703.0, 402.0), 1.04, &place_layout),
+            None
+        );
+        assert_eq!(
+            placing.pointer_up(Vec2::new(703.0, 402.0), 1.08, &place_layout),
+            Some(TouchEnd::Place { at: Vec2::new(703.0, 402.0) })
+        );
+    }
+
+    #[test]
+    fn ui_trace_drag_past_slop_clears_the_pending_double_tap() {
+        let mut input = TouchInput::new();
+        let l = layout(&BUTTONS, &BLOCKED);
+        input.pointer_down(Vec2::new(640.0, 360.0), 0.0, &l);
+        assert_eq!(
+            input.pointer_up(Vec2::new(640.0, 360.0), 0.05, &l),
+            Some(TouchEnd::Tap { at: Vec2::new(640.0, 360.0), double: false })
+        );
+        // A fast drag between the taps is a camera pan, not a tap: it must
+        // break the double-tap chain (Android drops it on the first scroll).
+        input.pointer_down(Vec2::new(640.0, 360.0), 0.10, &l);
+        assert_eq!(
+            input.pointer_move(Vec2::new(740.0, 360.0), 0.15, &l),
+            Some(TouchMove::Pan(Vec2::new(-100.0, 0.0)))
+        );
+        assert_eq!(input.pointer_up(Vec2::new(740.0, 360.0), 0.20, &l), None);
+        input.pointer_down(Vec2::new(642.0, 361.0), 0.25, &l);
+        assert_eq!(
+            input.pointer_up(Vec2::new(642.0, 361.0), 0.30, &l),
+            Some(TouchEnd::Tap { at: Vec2::new(642.0, 361.0), double: false }),
+            "a drag between the taps resets the double tap"
+        );
+    }
+
+    #[test]
+    fn ui_trace_hud_press_survives_a_resting_second_finger() {
+        let mut input = TouchInput::new();
+        let l = layout(&BUTTONS, &BLOCKED);
+        assert_eq!(
+            input.pointer_down(Vec2::new(940.0, 640.0), 0.0, &l),
+            TouchStart::Button(0)
+        );
+        // The other thumb rests on the glass: the platform reports a second
+        // finger and the host offers a pinch. The card press owns the pointer.
+        input.pinch_begin(300.0, Vec2::new(700.0, 500.0), 1500.0);
+        assert!(!input.is_pinching(), "a HUD press is not a pinch");
+        assert!(input.hud_gesture());
+        assert_eq!(input.pressed_button(), Some(0), "the press is still armed");
+        assert_eq!(input.pinch_update(320.0, Vec2::new(710.0, 500.0)), None);
+        // The finger that rests lifts first: promotion must not replace the
+        // button press with a camera pan.
+        input.resume_pan(Vec2::new(700.0, 500.0), 0.4);
+        assert_eq!(input.pressed_button(), Some(0));
+        assert!(input.hud_gesture(), "the button press still owns the pointer");
+        assert_eq!(
+            input.pointer_up(Vec2::new(940.0, 640.0), 0.6, &l),
+            Some(TouchEnd::Button { index: 0, double: false, hold: true }),
+            "the press resolves with its 0.6 s hold intact"
+        );
+
+        // A world gesture still pinches normally.
+        let mut world = TouchInput::new();
+        assert_eq!(
+            world.pointer_down(Vec2::new(640.0, 360.0), 0.0, &l),
+            TouchStart::World
+        );
+        world.pinch_begin(300.0, Vec2::new(640.0, 360.0), 1500.0);
+        assert!(world.is_pinching(), "world gestures zoom as before");
+        assert!(!world.hud_gesture());
+    }
+
+    #[test]
+    fn ui_trace_minimap_scrub_never_orders_and_jitter_never_scrubs() {
+        let mut input = TouchInput::new();
+        let l = layout(&BUTTONS, &BLOCKED);
+        // A minimap tap with 3 px of jitter: no scrub, and a stationary hold
+        // still issues the order (the hold is about standing still, not
+        // about the panel being noiseless).
+        assert_eq!(
+            input.pointer_down(Vec2::new(120.0, 170.0), 0.0, &l),
+            TouchStart::Minimap
+        );
+        assert_eq!(input.pointer_move(Vec2::new(123.0, 172.0), 0.05, &l), None);
+        assert_eq!(
+            input.pointer_up(Vec2::new(123.0, 172.0), 0.5, &l),
+            Some(TouchEnd::Minimap { at: Vec2::new(123.0, 172.0), hold: true })
+        );
+        // A real scrub follows the finger, and lifting after the hold window
+        // must not attack-move the army.
+        assert_eq!(
+            input.pointer_down(Vec2::new(120.0, 170.0), 1.0, &l),
+            TouchStart::Minimap
+        );
+        assert_eq!(
+            input.pointer_move(Vec2::new(180.0, 210.0), 1.1, &l),
+            Some(TouchMove::Minimap(Vec2::new(180.0, 210.0)))
+        );
+        assert_eq!(
+            input.pointer_up(Vec2::new(180.0, 210.0), 1.8, &l),
+            Some(TouchEnd::Minimap { at: Vec2::new(180.0, 210.0), hold: false }),
+            "a scrub is not an order gesture"
+        );
     }
 }

@@ -710,7 +710,7 @@ impl GameDatabase {
         // Distinct reachable ids across the three card lists, with the first
         // producer that exposes each (for the missing-list diagnostic).
         let mut reachable: BTreeMap<String, String> = BTreeMap::new();
-        let mut pushes = |ids: &[String], owner: &str, reachable: &mut BTreeMap<String, String>| {
+        let pushes = |ids: &[String], owner: &str, reachable: &mut BTreeMap<String, String>| {
             for id in ids {
                 reachable
                     .entry(id.clone())

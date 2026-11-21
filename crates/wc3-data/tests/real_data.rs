@@ -393,10 +393,22 @@ fn ability_levels_come_from_the_real_columns() {
 
     let tft_data = tft();
     let tft_blizzard = tft_data.ability("AHbz").expect("AHbz (TFT)");
-    // TFT has four level *columns* but the entry declares three levels.
-    assert_eq!(tft_blizzard.max_level(), 4);
+    // TFT ships four sheet-wide level column sets, but the row declares three
+    // learnable levels: the row's `levels` cell is authoritative, so the typed
+    // count is 3 and `level(4)` does not exist. The level-4 columns still carry
+    // filled values (the sheet repeats level 3 there); they stay reachable as
+    // raw cells, which is asserted below instead of being mistaken for a level.
+    assert_eq!(tft_blizzard.max_level(), 3);
     assert_eq!(tft_blizzard.declared_levels().unwrap(), Some(3));
-    assert_eq!(tft_blizzard.level(4).unwrap().unwrap().area, Some(200.0));
+    assert_eq!(tft_blizzard.level(4).unwrap(), None);
+    assert_eq!(
+        tft_data
+            .table(TableKind::AbilityData)
+            .expect("AbilityData table")
+            .text("AHbz", "Area4"),
+        Some("200"),
+        "raw level-4 column still readable"
+    );
     // TFT stores `DataA1..DataE4` = slot letter, level.
     assert_eq!(
         tft_blizzard.level(1).unwrap().unwrap().data,

@@ -4,9 +4,12 @@
 //! This is how the `DotF_v1.4.w3x` fixture in `tests/data_coverage.rs` was
 //! chosen: it has 137 wts strings, a custom unit `U000` (base `Ucrl`) whose
 //! `unam` is `TRIGSTR_013`, and matching overrides for an ability and an item.
+//! Without an argument the probe walks the maps that ship in this repository
+//! (`analysis/war3_map/Maps`, `analysis/war3x_local/Maps`); pass a directory to
+//! scan another corpus.
 //!
 //! ```text
-//! cargo run -p wc3-data --example wts_probe
+//! cargo run -p wc3-data --example wts_probe [-- DIR]
 //! ```
 
 use std::path::PathBuf;
@@ -16,11 +19,15 @@ use wc3_formats::map::map_mpq_base;
 use wc3_mpq::MpqArchive;
 
 fn main() {
-    let root = PathBuf::from(
-        "/data/data/com.termux/files/home/src/wc3rust/donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps",
-    );
+    let repo = PathBuf::from("/data/data/com.termux/files/home/src/wc3rust");
+    let mut stack: Vec<PathBuf> = match std::env::args().nth(1) {
+        Some(path) => vec![PathBuf::from(path)],
+        None => vec![
+            repo.join("analysis/war3_map/Maps"),
+            repo.join("analysis/war3x_local/Maps"),
+        ],
+    };
     let mut maps = Vec::new();
-    let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {

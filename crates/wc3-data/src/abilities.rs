@@ -394,8 +394,12 @@ impl<'a> AbilityView<'a> {
             .any(|value| value.eq_ignore_ascii_case(flag))
     }
 
-    /// Highest level for which level columns exist in this data root.
-    pub fn max_level(&self) -> u32 {
+    /// Highest level whose level columns exist in this data root.
+    ///
+    /// This is the *schema* bound (RoC ships `Cool1..3`, TFT `Cool1..4`); it is
+    /// not the number of levels a row defines. Use [`AbilityView::max_level`]
+    /// for the row's own value.
+    pub(crate) fn column_levels(&self) -> u32 {
         let Some(table) = self.table() else {
             return 0;
         };
@@ -412,6 +416,22 @@ impl<'a> AbilityView<'a> {
             }
         }
         levels
+    }
+
+    /// Number of levels this row defines.
+    ///
+    /// The sheet's own `levels` cell is authoritative and is what the game
+    /// uses: RoC `AbilityData.slk` has 357 rows at 1 level and 40 at 3; TFT has
+    /// 648 at 1, 6 at 2, 77 at 3, 14 at 4 and 18 engine pseudo-abilities at 0
+    /// (`Aatk`, `Amov`, …). Deriving the count from which level columns exist
+    /// over-reports every one-level ability (the columns are sheet-wide), so
+    /// the column probe is only the fallback for a sheet/override that has no
+    /// parseable `levels` cell.
+    pub fn max_level(&self) -> u32 {
+        match self.declared_levels() {
+            Ok(Some(declared)) if declared >= 0 => declared as u32,
+            _ => self.column_levels(),
+        }
     }
 
     /// Column names holding the `DataA`..`DataE` slots for `level`.

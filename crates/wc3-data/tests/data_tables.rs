@@ -317,11 +317,16 @@ fn combat_buffs_data() {
     }
 }
 
-/// `economy.lumber` — every doodad id placed on the shipped Ponds melee map
+/// `economy.lumber` — every doodad id placed on the shipped melee map
 /// resolves to a destructable/doodad def (after the map's own object-data
 /// overrides are applied) with model, pathing and, for destructables, life;
 /// trees that carry a `texFile` also expose the texture (others embed it in the
 /// MDX). Map overrides apply to the typed tables with entry counts.
+///
+/// Oracle: `analysis/war3_map/Maps/Melee.w3x` — the melee map shipped with this
+/// repository's extraction. The earlier War3Net `(2)Ponds_v1.4.w3x` donor
+/// fixture is not part of this checkout, so the test cannot silently depend on
+/// it; the map that is present is measured here.
 #[test]
 fn economy_lumber_doodad_defs() {
     use std::collections::BTreeSet;
@@ -330,20 +335,18 @@ fn economy_lumber_doodad_defs() {
     use wc3_mpq::MpqArchive;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let map = root.join(
-        "donors/War3Net/tests/War3Net.TestTools.UnitTesting/TestData/Maps/(2)Ponds_v1.4.w3x",
-    );
-    assert!(map.is_file(), "Ponds fixture missing: {}", map.display());
+    let map = root.join("analysis/war3_map/Maps/Melee.w3x");
+    assert!(map.is_file(), "melee map fixture missing: {}", map.display());
     let base = map_mpq_base(&map).expect("mpq base");
-    let archive = MpqArchive::open_at(&map, base).expect("open Ponds");
+    let archive = MpqArchive::open_at(&map, base).expect("open Melee");
     let doodads = parse_doodads(&archive.read("war3map.doo").expect("war3map.doo"))
         .expect("parse war3map.doo");
     let mut ids: BTreeSet<String> = BTreeSet::new();
     for doodad in &doodads {
         ids.insert(String::from_utf8_lossy(&doodad.type_id).trim_end_matches('\0').to_string());
     }
-    assert_eq!(doodads.len(), 5767, "placed doodads");
-    assert_eq!(ids.len(), 67, "distinct doodad ids");
+    assert_eq!(doodads.len(), 2902, "placed doodads");
+    assert_eq!(ids.len(), 80, "distinct doodad ids");
 
     // Apply the map's object data to the typed tables first: custom doodads
     // (`ZPf0`, `LTrt`) exist only in these overrides.
@@ -390,12 +393,13 @@ fn economy_lumber_doodad_defs() {
         .map(String::as_str)
         .filter(|name| object_files.contains(name))
         .collect();
-    assert!(map_files.is_empty(), "Ponds carries object data: {map_files:?}");
+    assert!(map_files.is_empty(), "Melee carries object data: {map_files:?}");
     assert!(applied.is_empty(), "no override files to apply");
     assert!(library.merges().is_empty(), "no merges on a clean map");
     let defs = library.defs();
     let mut unresolved = Vec::new();
     let mut no_texture = Vec::new();
+    let mut no_pathing = Vec::new();
     for id in &ids {
         if let Some(def) = defs.destructables.iter().find(|def| &def.id == id) {
             assert!(def.model.is_some(), "{id} destructable model");
@@ -407,27 +411,38 @@ fn economy_lumber_doodad_defs() {
             }
         } else if let Some(def) = defs.doodads.iter().find(|def| &def.id == id) {
             assert!(def.model.is_some(), "{id} doodad model");
-            assert!(def.path_texture.is_some(), "{id} doodad pathing");
+            match def.path_texture.as_deref() {
+                // `none` and `_` are the sheet's "no pathing blob" spellings;
+                // ambient props (fish, flowers, fly swarms) legitimately have
+                // none. Recorded, not asserted into a fake pathing texture.
+                None | Some("none") => no_pathing.push(id.clone()),
+                Some(_) => {}
+            }
         } else {
             unresolved.push(id.clone());
         }
     }
-    assert_eq!(
-        unresolved,
-        vec!["LTrt".to_string(), "ZPf0".to_string()],
-        "placed ids undefined in every shipped SLK (Ponds has no w3d to define them)"
-    );
-    assert_eq!(ids.len() - 2, 65, "65 of 67 ids resolve to a def");
+    assert_eq!(unresolved, Vec::<String>::new(), "every placed id is defined in the shipped SLKs");
     assert_eq!(
         no_texture,
+        vec!["LTba", "LTcr", "LTrc", "YTpb", "YTpc"],
+        "destructables whose texFile is `_` (texture embedded in the MDX)"
+    );
+    assert_eq!(
+        no_pathing,
         vec![
-            "LOcg", "LTba", "LTbr", "LTbs", "LTbx", "LTcr", "LTex", "LTrc"
+            "AOsr", "APct", "AWfs", "IWbg", "LOfl", "LOsm", "LOsp", "LOth", "LOtz", "LPfp",
+            "LPrs", "LPwh", "YOf3", "YOtf", "ZPfw", "ZPsh", "ZWbg", "ZWfs", "ZWsf", "ZWsw",
+            "ZZdt"
         ],
-        "destructables whose texture is embedded in the MDX"
+        "ambient doodads with pathTex `none`/`_`"
     );
     eprintln!(
-        "PONDS doodads={} ids={} resolved=65 unresolved={unresolved:?} embedded_texture={no_texture:?}",
+        "MELEE doodads={} ids={} resolved={} embedded_texture={} no_pathing={}",
         doodads.len(),
-        ids.len()
+        ids.len(),
+        ids.len() - unresolved.len(),
+        no_texture.len(),
+        no_pathing.len()
     );
 }

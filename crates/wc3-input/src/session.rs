@@ -180,6 +180,16 @@ impl PinchProgress {
     fn finish(self) -> Option<Vec2> {
         (!self.moved).then_some(self.last_centre)
     }
+
+    /// The pair driving the pinch changed (a third finger lifted, or the
+    /// leading finger left a three-finger pinch). Rebase on the surviving pair
+    /// so the next update does not report the centroid/distance discontinuity
+    /// as a camera pan or zoom jump. `moved` is preserved: a pinch that already
+    /// travelled must never be replayable as a two-finger tap.
+    fn rebase(&mut self, distance: f32, centre: Vec2) {
+        self.start_distance = distance.max(1.0);
+        self.last_centre = centre;
+    }
 }
 
 /// The gesture state machine the platform layer keeps across frames.
@@ -270,6 +280,11 @@ impl TouchRouter {
             if remaining < 2 {
                 let tap = self.pinch.take().and_then(PinchProgress::finish);
                 sink.pinch_end(tap);
+            } else if let Some(pinch) = self.pinch.as_mut() {
+                // Three or more fingers were down: the pair that drives the
+                // gesture is now a different pair, so rebase instead of
+                // emitting the discontinuity as pan/zoom.
+                pinch.rebase(self.fingers.distance(), self.fingers.pair_centroid());
             }
             if remaining == 1 {
                 sink.pointer_resume_pan(self.fingers.pair_centroid());
@@ -721,6 +736,34 @@ mod tests {
         assert_eq!(
             sink.events().last().unwrap(),
             "touch=pointer_up:320.0:100.0"
+        );
+    }
+
+    #[test]
+    fn ui_trace_lifting_one_finger_of_three_rebases_the_pinch_without_a_jump() {
+        let (mut router, mut sink) = router();
+        router.finger_down(&mut sink, 1, Vec2::new(100.0, 300.0));
+        router.finger_down(&mut sink, 2, Vec2::new(300.0, 300.0));
+        router.finger_down(&mut sink, 3, Vec2::new(300.0, 500.0));
+        router.finger_move(&mut sink, 1, Vec2::new(120.0, 300.0));
+        sink.clear();
+        // Lifting the leading finger leaves fingers 2+3 as the pinch pair.
+        router.finger_up(&mut sink, 1, Vec2::new(120.0, 300.0));
+        assert!(
+            sink.events().is_empty(),
+            "still two fingers down: no pinch end, no promoted pan"
+        );
+        let pinch = router.pinch.expect("the pinch continues on the new pair");
+        assert_eq!(pinch.start_distance, 200.0, "rebased on fingers 2+3");
+        assert_eq!(pinch.last_centre, Vec2::new(300.0, 400.0));
+        assert!(pinch.moved, "a pinch that already travelled stays travelled");
+        // The next motion must be measured from the new pair, not from the
+        // pair that left the glass (which reported a 100 px camera jump).
+        router.finger_move(&mut sink, 2, Vec2::new(320.0, 300.0));
+        assert_eq!(sink.events().len(), 1);
+        assert_eq!(
+            sink.events()[0], "touch=pinch_update:201.0:310.0:400.0",
+            "distance/centre are the surviving pair's, no discontinuity"
         );
     }
 

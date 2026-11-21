@@ -13,7 +13,6 @@
 //!   capped by `ReviveMaxFactor`/`HeroMaxReviveCostGold`, and
 //!   `revivalTime = originalTime * level * ReviveTimeFactor`.
 
-use crate::error::Result;
 use crate::GameDatabase;
 
 /// Attribute block of a hero plus the derived-stat constants read from the

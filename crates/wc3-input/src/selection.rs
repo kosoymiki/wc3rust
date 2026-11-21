@@ -120,9 +120,40 @@ pub fn box_selection(
     selection
 }
 
+/// Box select against the marquee the player actually drew, in screen space.
+///
+/// The two world points under a screen drag are not rectangle corners on the
+/// ground: under the perspective camera the covered ground quad is a
+/// trapezoid, so its axis-aligned world box is wider than the drawn marquee at
+/// the far edge and over-selects units the player did not box. WC3 tests the
+/// projection, so this is the rule for the marquee path; [`box_selection`]
+/// stays for callers that only have world positions.
+pub fn box_selection_screen(
+    units: &[UnitSnapshot],
+    player: u8,
+    min: Vec2,
+    max: Vec2,
+    additive: bool,
+    current: &[u32],
+) -> Vec<u32> {
+    let mut selection: Vec<u32> = if additive { current.to_vec() } else { Vec::new() };
+    for unit in units.iter().filter(|unit| {
+        unit.alive
+            && unit.owner == player
+            && !unit.building
+            && unit.screen.is_some_and(|screen| {
+                screen.x >= min.x && screen.x <= max.x && screen.y >= min.y && screen.y <= max.y
+            })
+    }) {
+        if !selection.contains(&unit.id) {
+            selection.push(unit.id);
+        }
+    }
+    selection
+}
+
 /// Merge a single pick (tap, long-press) into the selection.
-pub fn merge(current: &mut Vec<u32>, id: u32, mode: Mode) {
-    match mode {
+pub fn merge(current: &mut Vec<u32>, id: u32, mode: Mode) {    match mode {
         Mode::Replace => {
             current.clear();
             current.push(id);

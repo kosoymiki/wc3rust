@@ -7,10 +7,22 @@
 //! [`canonical`] exposes the complete `wc3-re::jass` engine (used by the install
 //! scanner and the 44-map execution sweep) under this crate, so game code has a
 //! single authoritative JASS implementation to target.
+//!
+//! # Unsupported calls are recorded, not swallowed
+//!
+//! A script may declare its own `native`; the host only implements the subset it
+//! models. The runtime never drops such a call silently: every call to a declared
+//! native without a host implementation is counted in
+//! [`JassRuntime::unimplemented`], returns the value its declared return type
+//! produces (not a type-less `Null`), and fails outright under
+//! [`JassRuntime::set_strict_natives`]. The same holds for trigger-action
+//! failures, which land in [`JassRuntime::errors`] (both were previously
+//! discarded with `let _ =`, which let a map "boot" while its trigger did
+//! nothing).
 
 pub mod canonical;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -687,6 +699,14 @@ pub struct JassRuntime {
     pub next_handle: u64,
     pub rng: u64,
     pub now: f64,
+    /// Declared natives (`native Foo takes … returns …`) the host does not
+    /// implement, with the number of calls made, in name order.
+    pub unimplemented: BTreeMap<String, u64>,
+    /// Trigger-action and timer-callback failures, in call order.
+    pub errors: Vec<String>,
+    /// When set, an unimplemented native is a hard error instead of a recorded
+    /// call that returns its declared type's default.
+    pub strict_natives: bool,
     natives: HashMap<&'static str, fn(&mut JassRuntime, &[Value]) -> Result<Value, String>>,
 }
 
@@ -702,6 +722,9 @@ impl JassRuntime {
             next_handle: 1,
             rng: seed | 1,
             now: 0.0,
+            unimplemented: BTreeMap::new(),
+            errors: Vec::new(),
+            strict_natives: false,
             natives: HashMap::new(),
         };
         runtime.register_natives();
@@ -892,7 +915,10 @@ impl JassRuntime {
                 let index = (a[0].as_int() as usize).saturating_sub(1);
                 if let Some(trigger) = rt.triggers.get(index).cloned() {
                     for action in trigger.actions {
-                        let _ = rt.call_function(&action, &[]);
+                        if let Err(error) = rt.call_function(&action, &[]) {
+                            rt.errors
+                                .push(format!("TriggerExecute action {action}: {error}"));
+                        }
                     }
                 }
                 Ok(Value::Null)
@@ -919,7 +945,7 @@ impl JassRuntime {
             .cloned()
             .ok_or_else(|| format!("unknown function {name}"))?;
         if function.native {
-            return Ok(Value::Null);
+            return self.unimplemented_native(name, &function);
         }
         let mut locals: HashMap<String, Value> = HashMap::new();
         for (index, (_, param)) in function.params.iter().enumerate() {
@@ -931,6 +957,45 @@ impl JassRuntime {
         let mut control = Control::Normal;
         let result = self.exec_block(&function.body, &mut locals, &mut control)?;
         Ok(result.unwrap_or(Value::Null))
+    }
+
+    /// A declared native the host has no handler for.
+    ///
+    /// Counted in [`Self::unimplemented`] and answered with its declared
+    /// return type's default, so the script continues with a correctly typed
+    /// value rather than a `null` that silently changes every comparison it
+    /// feeds. Under [`Self::set_strict_natives`] the call is an error instead,
+    /// which is how a caller proves that a run used only implemented natives.
+    fn unimplemented_native(&mut self, name: &str, function: &Function) -> Result<Value, String> {
+        *self.unimplemented.entry(name.to_string()).or_insert(0) += 1;
+        if self.strict_natives {
+            let params = function
+                .params
+                .iter()
+                .map(|(ty, name)| format!("{ty} {name}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unimplemented native {name} (takes {params} returns {})",
+                function.returns
+            ));
+        }
+        Ok(default_for_type(&function.returns))
+    }
+
+    /// Turns calls to unimplemented declared natives into hard errors.
+    pub fn set_strict_natives(&mut self, strict: bool) {
+        self.strict_natives = strict;
+    }
+
+    /// Total number of calls to natives the host does not implement.
+    pub fn unimplemented_calls(&self) -> u64 {
+        self.unimplemented.values().sum()
+    }
+
+    /// Drains the recorded trigger/timer failures (leaving the ledger empty).
+    pub fn take_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.errors)
     }
 
     fn exec_block(
@@ -1142,8 +1207,26 @@ impl JassRuntime {
             .flatten()
             .collect();
         for action in due {
-            let _ = self.call_function(&action, &[]);
+            if let Err(error) = self.call_function(&action, &[]) {
+                self.errors.push(format!("timer action {action}: {error}"));
+            }
         }
+    }
+}
+
+/// The value a JASS type produces when nothing assigns one.
+///
+/// A declared native with no host implementation answers with this instead of a
+/// type-less [`Value::Null`]: `integer`/`real`/`boolean`/`string` compare and
+/// print the way the language defines an empty result, and a handle is `null`.
+fn default_for_type(returns: &str) -> Value {
+    match returns.trim().to_ascii_lowercase().as_str() {
+        "boolean" => Value::Bool(false),
+        "integer" => Value::Int(0),
+        "real" => Value::Real(0.0),
+        "string" => Value::Str(String::new()),
+        "code" | "nothing" => Value::Null,
+        _ => Value::Handle(0),
     }
 }
 
@@ -1345,5 +1428,143 @@ mod tests {
         rt.run_function("main").expect("run");
         assert_eq!(rt.output, vec!["300.000"]);
         assert_eq!(rt.units.len(), 1);
+    }
+
+    /// A script may declare natives the host does not model (`GetWidgetLife` on a
+    /// bare VM). The call must be recorded and answer its declared type, never a
+    /// `null` that silently changes every comparison downstream.
+    const DECLARED_NATIVES: &str = r#"
+        native GetWidgetLife takes widget whichWidget returns real
+        native GetTileType takes integer x, integer y returns integer
+        native IsVisible takes nothing returns boolean
+        native GetLastCreatedUnit takes nothing returns unit
+        native ShowUnitHide takes unit whichUnit returns nothing
+
+        globals
+            real life = -1.0
+            integer tile = -1
+            boolean seen = true
+            integer last = -1
+        endglobals
+
+        function main takes nothing returns nothing
+            set life = GetWidgetLife(null)
+            set tile = GetTileType(1, 2)
+            set seen = IsVisible()
+            set last = GetLastCreatedUnit()
+            call ShowUnitHide(null)
+        endfunction
+    "#;
+
+    #[test]
+    fn unimplemented_native_is_recorded_with_typed_default() {
+        let program = parse(DECLARED_NATIVES).expect("parse");
+        let mut rt = JassRuntime::new(program, 1);
+        rt.run_function("main").expect("run");
+        let counts: Vec<(&str, u64)> = rt
+            .unimplemented
+            .iter()
+            .map(|(name, count)| (name.as_str(), *count))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                ("GetLastCreatedUnit", 1),
+                ("GetTileType", 1),
+                ("GetWidgetLife", 1),
+                ("IsVisible", 1),
+                ("ShowUnitHide", 1),
+            ],
+            "every declared-but-unimplemented native is counted"
+        );
+        assert_eq!(rt.unimplemented_calls(), 5);
+        assert_eq!(rt.globals.get("life"), Some(&Value::Real(0.0)));
+        assert_eq!(rt.globals.get("tile"), Some(&Value::Int(0)));
+        assert_eq!(rt.globals.get("seen"), Some(&Value::Bool(false)));
+        // A handle-returning native answers null, not a fabricated handle.
+        assert_eq!(rt.globals.get("last"), Some(&Value::Handle(0)));
+        assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+    }
+
+    #[test]
+    fn strict_natives_turn_unimplemented_into_an_error() {
+        let program = parse(DECLARED_NATIVES).expect("parse");
+        let mut rt = JassRuntime::new(program, 1);
+        rt.set_strict_natives(true);
+        let error = rt.run_function("main").expect_err("strict run must fail");
+        assert!(
+            error.contains("unimplemented native GetWidgetLife"),
+            "error names the native and its declared signature: {error}"
+        );
+        assert!(
+            error.contains("takes widget whichWidget returns real"),
+            "{error}"
+        );
+        assert_eq!(rt.unimplemented.get("GetWidgetLife"), Some(&1));
+    }
+
+    const FAILING_ACTION: &str = r#"
+        globals
+            trigger t
+            integer fired = 0
+        endglobals
+
+        function action takes nothing returns nothing
+            set fired = fired + 1
+            call NoSuchFunction()
+        endfunction
+
+        function main takes nothing returns nothing
+            set t = CreateTrigger()
+            call TriggerAddAction(t, function action)
+            call TriggerRegisterTimerEvent(t, 0.5, true)
+        endfunction
+    "#;
+
+    #[test]
+    fn timer_action_failure_is_recorded_not_dropped() {
+        let program = parse(FAILING_ACTION).expect("parse");
+        let mut rt = JassRuntime::new(program, 1);
+        rt.run_function("main").expect("main");
+        rt.tick(0.5);
+        assert_eq!(rt.globals.get("fired"), Some(&Value::Int(1)));
+        assert_eq!(rt.errors.len(), 1, "{:?}", rt.errors);
+        assert!(
+            rt.errors[0].starts_with("timer action action: unknown function NoSuchFunction"),
+            "{}",
+            rt.errors[0]
+        );
+        let drained = rt.take_errors();
+        assert_eq!(drained.len(), 1);
+        assert!(rt.errors.is_empty(), "take_errors drains the ledger");
+    }
+
+    #[test]
+    fn trigger_execute_failure_is_recorded_not_dropped() {
+        let script = r#"
+            globals
+                trigger t
+            endglobals
+
+            function action takes nothing returns nothing
+                call MissingInAction()
+            endfunction
+
+            function main takes nothing returns nothing
+                set t = CreateTrigger()
+                call TriggerAddAction(t, function action)
+                call TriggerExecute(t)
+            endfunction
+        "#;
+        let program = parse(script).expect("parse");
+        let mut rt = JassRuntime::new(program, 1);
+        rt.run_function("main").expect("main");
+        assert_eq!(rt.errors.len(), 1, "{:?}", rt.errors);
+        assert!(
+            rt.errors[0]
+                .starts_with("TriggerExecute action action: unknown function MissingInAction"),
+            "{}",
+            rt.errors[0]
+        );
     }
 }

@@ -5,8 +5,17 @@
 //! (camera moves, transmissions, scene text), and the triggers that sequence
 //! them. The retail campaign descriptor (`war3campaign.w3f` inside a `.w3n`)
 //! is not shipped in the data archives this installation carries — the mission
-//! maps under `Maps\Campaign\` are — so the model is built from what the maps
-//! themselves contain, and nothing is invented for a mission that is absent.
+//! maps under `Maps\Campaign\` and `Maps\FrozenThrone\Campaign\` are — so the
+//! model is built from what the maps themselves contain, and nothing is
+//! invented for a mission that is absent.
+//!
+//! Chapter names come from the same place the retail campaign screen reads
+//! them: `UI\CampaignStrings.txt` (RoC) and `UI\CampaignStrings_exp.txt` (TFT).
+//! Both formats shipped by the game are parsed — the per-section
+//! `TitleN`/`MissionN`/`FileN` arrays of the 1.0 tables and the
+//! `MissionN="header","name","map"` rows of the 1.07+ tables. A chapter the
+//! tables do not name falls back to its `war3map.w3i` name resolved through
+//! `war3map.wts`, and only then to [`title_from_id`].
 //!
 //! The parse is deliberately script-driven, not metadata-driven: `war3map.wts`
 //! holds the strings, and the quest/cinematic structure is exactly the call
@@ -78,6 +87,285 @@ impl MapSource {
     }
 }
 
+/// Chapter names read from the install's campaign string tables.
+///
+/// The retail campaign screen does not take a chapter name from the map file
+/// stem: `Maps\Campaign\Orc01.w3m` is "Чужие берега" (`UI\CampaignStrings.txt`)
+/// and `Maps\FrozenThrone\Campaign\HumanX01.w3x` is "Чужая работа"
+/// (`UI\CampaignStrings_exp.txt`). Both tables are shipped in the archives, so
+/// the names are read from them instead of being derived from the file id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CampaignTitles {
+    /// Lowercase map stem (`orc01`) → mission name.
+    missions: BTreeMap<String, String>,
+    /// Lowercase campaign section (`tutorial`, `human`, …) → campaign name.
+    campaigns: BTreeMap<String, String>,
+}
+
+impl CampaignTitles {
+    /// Display name of a chapter id or map path, when the tables name it.
+    ///
+    /// `_exp.txt` may localise the file name itself (the TFT night-elf finale
+    /// is `NightElfX08Финал.w3x` in the table and `NightElfX08Finale.w3x` in
+    /// the archive). When no exact key exists, a unique ASCII-prefix match
+    /// resolves that row without ever guessing between two chapters.
+    pub fn mission(&self, id: &str) -> Option<&str> {
+        let key = normalize_chapter_id(id);
+        if let Some(title) = self.missions.get(&key) {
+            return Some(title.as_str());
+        }
+        // Only a key with a localised suffix can match here; a pure-ASCII key
+        // that differs from the query is a different chapter, not a match.
+        let mut hits = self.missions.iter().filter(|(known, _)| {
+            let prefix = ascii_prefix(known);
+            !prefix.is_empty() && prefix.len() < known.len() && key.starts_with(prefix)
+        });
+        let first = hits.next()?;
+        hits.next().is_none().then_some(first.1.as_str())
+    }
+
+    /// Display name of a campaign section (`tutorial`, `human`, `undead`, …).
+    pub fn campaign(&self, section: &str) -> Option<&str> {
+        self.campaigns
+            .get(&section.trim().to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    /// Number of named missions.
+    pub fn len(&self) -> usize {
+        self.missions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.missions.is_empty()
+    }
+
+    /// Overlays a newer table (the locale archive wins over the base archive).
+    fn merge(&mut self, newer: CampaignTitles) {
+        self.missions.extend(newer.missions);
+        self.campaigns.extend(newer.campaigns);
+    }
+}
+
+/// Lowercase map stem (`Maps\Campaign\Orc01.w3m` → `orc01`).
+fn normalize_chapter_id(id: &str) -> String {
+    let file = id.rsplit(['\\', '/']).next().unwrap_or(id).trim();
+    let stem = match file.rsplit_once('.') {
+        Some((stem, extension))
+            if extension.eq_ignore_ascii_case("w3m") || extension.eq_ignore_ascii_case("w3x") =>
+        {
+            stem
+        }
+        _ => file,
+    };
+    stem.to_ascii_lowercase()
+}
+
+/// ASCII prefix of a key whose tail is localised (`nightelfx08финал` →
+/// `nightelfx08`).
+fn ascii_prefix(key: &str) -> &str {
+    let end = key.find(|ch: char| !ch.is_ascii()).unwrap_or(key.len());
+    &key[..end]
+}
+
+/// Value of one `key=value` line with its surrounding quotes removed.
+fn unquote(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Splits a campaign-table value into its quoted fields.
+///
+/// `"Глава 1","Чужие берега","Maps\Campaign\Orc01.w3m"` → three fields, with
+/// the commas inside `"Глава 7, часть 1"` kept inside the second field.
+fn quoted_fields(value: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in value.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                fields.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() || !fields.is_empty() {
+        fields.push(current.trim().to_string());
+    }
+    fields
+}
+
+/// Splits `Mission10` into `("mission", 10)`; other keys keep index `0`.
+fn split_key_index(key: &str) -> (&str, usize) {
+    let digits = key
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit())
+        .count();
+    if digits == 0 {
+        return (key, 0);
+    }
+    let split = key.len() - digits;
+    let index = key[split..].parse::<usize>().unwrap_or(0);
+    (&key[..split], index)
+}
+
+/// Parses both shipped campaign-table formats.
+///
+/// RoC 1.0 (`UI\CampaignStrings.txt` in `War3.mpq`) names the files in a
+/// `FileN` array and the missions in a parallel `MissionN` array:
+///
+/// ```text
+/// [Orc]
+/// Name="Вторжение на Калимдор"
+/// Mission0="Чужие берега"
+/// File0="Orc01"
+/// ```
+///
+/// The 1.07+ table (`UI\CampaignStrings_exp.txt`) puts header, name and map
+/// path on one line:
+///
+/// ```text
+/// Mission0="Глава 1","Наги","Maps\FrozenThrone\Campaign\NightElfX01.w3x"
+/// ```
+fn parse_campaign_strings(text: &str) -> CampaignTitles {
+    let mut titles = CampaignTitles::default();
+    let mut section = String::new();
+    let mut files: BTreeMap<usize, String> = BTreeMap::new();
+    let mut missions: BTreeMap<usize, String> = BTreeMap::new();
+    let flush = |titles: &mut CampaignTitles,
+                 files: &mut BTreeMap<usize, String>,
+                 missions: &mut BTreeMap<usize, String>| {
+        for (index, file) in files.iter() {
+            let Some(mission) = missions.get(index) else {
+                continue;
+            };
+            let id = normalize_chapter_id(file);
+            let name = mission.trim();
+            if !id.is_empty() && !name.is_empty() {
+                titles.missions.insert(id, name.to_string());
+            }
+        }
+        files.clear();
+        missions.clear();
+    };
+    for raw in text.lines() {
+        let line = raw.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            flush(&mut titles, &mut files, &mut missions);
+            section = line[1..line.len() - 1].trim().to_ascii_lowercase();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("Name") {
+            let name = unquote(value);
+            if !section.is_empty() && !name.is_empty() {
+                titles.campaigns.insert(section.clone(), name);
+            }
+            continue;
+        }
+        let (base, index) = split_key_index(key);
+        if base.eq_ignore_ascii_case("File") {
+            let file = unquote(value);
+            if !file.is_empty() {
+                files.insert(index, file);
+            }
+        } else if base.eq_ignore_ascii_case("Mission") {
+            let fields = quoted_fields(value);
+            match fields.as_slice() {
+                // 1.07+ rows carry the map path in the third field.
+                [_, name, map, ..] if !name.trim().is_empty() && !map.trim().is_empty() => {
+                    let id = normalize_chapter_id(map);
+                    if !id.is_empty() {
+                        titles.missions.insert(id, name.trim().to_string());
+                    }
+                }
+                // 1.0 rows are names only; `FileN` supplies the id.
+                [name, ..] if !name.trim().is_empty() => {
+                    missions.insert(index, name.trim().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    flush(&mut titles, &mut files, &mut missions);
+    titles
+}
+
+/// Reads every campaign table out of the mounted archives, later archives
+/// (the locale layer) winning over earlier ones.
+pub fn campaign_titles(archives: &[PathBuf]) -> CampaignTitles {
+    let mut titles = CampaignTitles::default();
+    for archive in archives {
+        let Ok(mpq) = wc3_mpq::MpqArchive::open(archive) else {
+            continue;
+        };
+        for wanted in ["UI\\CampaignStrings.txt", "UI\\CampaignStrings_exp.txt"] {
+            let entry = mpq
+                .listfile()
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(wanted))
+                .cloned()
+                .unwrap_or_else(|| wanted.to_string());
+            let Ok(bytes) = mpq.read(&entry) else {
+                continue;
+            };
+            titles.merge(parse_campaign_strings(&String::from_utf8_lossy(&bytes)));
+        }
+    }
+    titles
+}
+
+/// Applies the campaign tables, then the map's own `war3map.w3i` name, and
+/// leaves [`title_from_id`] as the last resort.
+fn apply_chapter_titles(chapters: &mut [Chapter], titles: &CampaignTitles) {
+    for chapter in chapters {
+        if let Some(title) = titles.mission(&chapter.id) {
+            chapter.title = title.to_string();
+        } else if let Some(title) = map_info_title(chapter) {
+            chapter.title = title;
+        }
+    }
+}
+
+/// `war3map.w3i` name of a chapter, resolved through its `war3map.wts`.
+fn map_info_title(chapter: &Chapter) -> Option<String> {
+    let map = chapter.resolved_map().ok()?;
+    let mpq = wc3_mpq::MpqArchive::open(&map).ok()?;
+    let info = wc3_formats::w3i::MapInfo::parse(&mpq.read("war3map.w3i").ok()?).ok()?;
+    let mut name = info.name.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    if let Ok(wts) = mpq.read("war3map.wts")
+        && let Ok(wts) = Wts::parse(&wts)
+    {
+        name = wts.resolve(&name);
+    }
+    let name = name.trim();
+    if name.is_empty()
+        || name.starts_with("TRIGSTR_")
+        || name.eq_ignore_ascii_case(&chapter.id)
+    {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 impl Chapter {
     /// The archive entry a mounted chapter came from (`Maps\Campaign\Human01.w3m`).
     pub fn archive_entry_path(&self) -> Option<&str> {
@@ -117,19 +405,34 @@ impl Campaign {
     /// the credits. A file that does not match the naming falls to the end,
     /// sorted, so nothing disappears from the list.
     pub fn from_map_dir(dir: impl AsRef<Path>) -> std::io::Result<Self> {
-        Self::from_sources(Some(dir.as_ref()), &[])
+        // A loose chapter still gets its retail name from the install's own
+        // campaign tables when the archives are present; the archive is not a
+        // chapter source here, only a title source.
+        Self::from_sources_with_titles(Some(dir.as_ref()), &[], &campaign_archives())
     }
 
     /// Builds the chapter list from the loose install files **and** the mounted
     /// archives: a chapter that exists in `Maps\Campaign\` of `War3.mpq` is part
     /// of the campaign even when its file was never copied out of the archive.
     ///
-    /// Order is the retail chapter order (see [`chapter_rank`]); a disk file
-    /// wins over the archive copy of the same chapter.
+    /// Order is the retail chapter order (see [`chapter_rank`]). The archive is
+    /// authoritative when it carries the chapter: the operator's install is the
+    /// MPQ, and a loose `.w3m` next to it is a development copy that must not
+    /// shadow the shipped map. `WC3RUST_CAMPAIGN_SOURCE=file` restores the old
+    /// loose-file-first behaviour for a debug session.
     pub fn from_sources(
         disk: Option<&Path>,
         archives: &[PathBuf],
     ) -> std::io::Result<Self> {
+        Self::from_sources_with_titles(disk, archives, archives)
+    }
+
+    fn from_sources_with_titles(
+        disk: Option<&Path>,
+        archives: &[PathBuf],
+        title_archives: &[PathBuf],
+    ) -> std::io::Result<Self> {
+        let prefer_disk = campaign_map_preference() == CampaignMapSource::File;
         let mut chapters = Vec::new();
         if let Some(dir) = disk {
             chapters.extend(Self::disk_chapters(dir)?);
@@ -144,22 +447,27 @@ impl Campaign {
         }
         for archive in archives {
             for (entry, id) in archive_campaign_entries(archive) {
-                if chapters
-                    .iter()
-                    .any(|known| known.id.eq_ignore_ascii_case(&id))
-                {
-                    continue;
-                }
-                chapters.push(Chapter {
+                let mounted = || Chapter {
                     title: title_from_id(&id),
                     interlude: is_interlude_id(&id),
-                    map: campaign_cache_dir().join(format!("{id}.w3m")),
-                    id,
+                    map: campaign_cache_map_path(entry_file_name(&entry)),
+                    id: id.clone(),
                     source: MapSource::Mount {
                         archive: archive.clone(),
-                        entry,
+                        entry: entry.clone(),
                     },
-                });
+                };
+                if let Some(known) = chapters
+                    .iter_mut()
+                    .find(|known| known.id.eq_ignore_ascii_case(&id))
+                {
+                    // The archive wins unless the caller asked for loose files.
+                    if !prefer_disk && known.source == MapSource::File {
+                        *known = mounted();
+                    }
+                    continue;
+                }
+                chapters.push(mounted());
             }
         }
         chapters.sort_by(|left, right| {
@@ -167,6 +475,10 @@ impl Campaign {
                 .cmp(&chapter_rank(&right.id))
                 .then_with(|| left.id.cmp(&right.id))
         });
+        // Real chapter names come from the install's own campaign tables; the
+        // file-id spelling is only the last resort when a chapter is absent
+        // from every shipped table and carries no `war3map.w3i` name.
+        apply_chapter_titles(&mut chapters, &campaign_titles(title_archives));
         Ok(Self {
             name: "Warcraft III: Reign of Chaos".to_string(),
             chapters,
@@ -238,6 +550,15 @@ fn race_order(id: &str) -> u8 {
     }
 }
 
+/// Campaign a chapter belongs to for the unlock chain.
+///
+/// RoC and TFT are separate campaigns within a race: `Human01` and `HumanX01`
+/// are each the first chapter of their own campaign, so starting TFT must not
+/// require the whole RoC human campaign to be cleared first.
+fn campaign_order(id: &str) -> u8 {
+    race_order(id) + if is_expansion_id(id) { 16 } else { 0 }
+}
+
 fn chapter_number(id: &str) -> u32 {
     let digits: String = id
         .chars()
@@ -247,10 +568,25 @@ fn chapter_number(id: &str) -> u32 {
     digits.parse().unwrap_or(99)
 }
 
-fn chapter_rank(id: &str) -> (u8, u32, bool) {
+/// `true` for a TFT chapter id (`HumanX01`, `OrcX01_02`, `NightElfX08Finale`).
+fn is_expansion_id(id: &str) -> bool {
+    let lowered = id.to_ascii_lowercase();
+    ["prologue", "human", "undead", "orc", "nightelf"]
+        .iter()
+        .any(|prefix| {
+            lowered
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('x'))
+        })
+}
+
+fn chapter_rank(id: &str) -> (u8, u8, u32, bool) {
     // Interludes follow the mission they close, so `Human02Interlude` sorts
-    // after `Human02` and before `Human03`.
+    // after `Human02` and before `Human03`. The RoC campaign precedes the TFT
+    // chapters of the same race: the base campaign is the authored order and
+    // the expansion is an addendum to it.
     (
+        u8::from(is_expansion_id(id)),
         race_order(id),
         chapter_number(id),
         id.to_ascii_lowercase().contains("interlude"),
@@ -296,6 +632,32 @@ pub fn chapter_group(id: &str) -> usize {
     }
 }
 
+/// Where a chapter's map bytes may come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampaignMapSource {
+    /// Loose `.w3m` wins over the archive (development override).
+    File,
+    /// The mounted archive is authoritative when it carries the chapter.
+    Mount,
+}
+
+/// Chapter source preference (`WC3RUST_CAMPAIGN_SOURCE=file|mpq`).
+///
+/// The default is the archive: the operator's install *is* the MPQ, and a loose
+/// copy next to it is a harness artefact. `file` keeps a debug session on the
+/// extracted tree without touching the archive.
+pub fn campaign_map_preference() -> CampaignMapSource {
+    match std::env::var("WC3RUST_CAMPAIGN_SOURCE") {
+        Ok(value) if value.eq_ignore_ascii_case("file") => CampaignMapSource::File,
+        Ok(value) if value.eq_ignore_ascii_case("mpq") => CampaignMapSource::Mount,
+        Ok(value) if !value.trim().is_empty() => {
+            crate::dev_log!("CAMPAIGN_SOURCE_IGNORED value={value} (use file|mpq)");
+            CampaignMapSource::Mount
+        }
+        _ => CampaignMapSource::Mount,
+    }
+}
+
 /// Directory the archive maps are extracted to (one file per chapter, reused).
 ///
 /// `WC3RUST_MAP_CACHE` overrides it; the default is the platform temp dir
@@ -307,8 +669,42 @@ pub fn campaign_cache_dir() -> PathBuf {
     std::env::temp_dir().join("wc3rust-maps")
 }
 
-/// Mounted archives that can carry `Maps\Campaign`, in mount priority
-/// (`War3.mpq` base, then `War3x.mpq` for the TFT chapters).
+/// Extraction target for an archive chapter (`<cache>/Maps/Campaign/<file>`).
+///
+/// The `Maps/Campaign` shape is not cosmetic: the game layer decides whether a
+/// loaded map runs as a campaign mission from its path
+/// (`game::map_file_is_campaign`), so a chapter extracted into a bare cache
+/// directory was classified as a melee map and its script never booted
+/// (`CAMPAIGN_LOAD … script=false`).
+pub fn campaign_cache_map_path(file_name: &str) -> PathBuf {
+    campaign_cache_dir()
+        .join("Maps")
+        .join("Campaign")
+        .join(file_name)
+}
+
+/// Mounts a chapter's engine, without the map: the game's `reset_scenario`
+/// enters the map afterwards, on the 32 MB script stack, and builds the bridge.
+fn campaign_engine(
+    map: &Path,
+    archive: Option<&Path>,
+) -> Result<wc3_re::engine::Engine, String> {
+    let root = archive
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .or_else(campaign_install_root)
+        .ok_or_else(|| "no install root for the chapter".to_string())?;
+    let mut config = wc3_re::engine::EngineConfig::new(&root);
+    config.seed = CAMPAIGN_SEED;
+    let mut engine = wc3_re::engine::Engine::boot(config).map_err(|error| error.to_string())?;
+    engine.config.map = Some(map.to_path_buf());
+    Ok(engine)
+}
+
+/// Mounted archives that can carry campaign chapters, in mount priority
+/// (`War3.mpq` base, then `War3x.mpq` for the TFT data, then the locale
+/// archive `War3xlocal.mpq`, which carries the TFT maps and the campaign
+/// string tables).
 pub fn campaign_archives() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut push = |path: PathBuf| {
@@ -327,11 +723,20 @@ pub fn campaign_archives() -> Vec<PathBuf> {
     push(manifest.join("../../analysis/agent-assets/wc3-install"));
     let mut found = Vec::new();
     for root in roots {
-        for name in ["War3.mpq", "War3x.mpq"] {
+        for name in ["War3.mpq", "War3x.mpq", "War3xlocal.mpq"] {
             if let Some(path) = archive_in_dir(&root, name)
                 && !found.iter().any(|known| known == &path)
             {
-                found.push(path);
+                // A candidate the process cannot read is not an install: it
+                // would win the mount and then fail every extraction (and hand
+                // the game an install root it cannot use).
+                match std::fs::File::open(&path) {
+                    Ok(_) => found.push(path),
+                    Err(error) => crate::dev_log!(
+                        "CAMPAIGN_ARCHIVE_UNREADABLE path={} {error}",
+                        path.display()
+                    ),
+                }
             }
         }
     }
@@ -354,8 +759,21 @@ fn archive_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// `Maps\Campaign\*.w3m|w3x` entries of a mounted archive, as
-/// `(entry, chapter id)` pairs, sorted by the retail chapter order.
+/// File name of an archive entry (`Maps\Campaign\Orc01.w3m` → `Orc01.w3m`).
+fn entry_file_name(entry: &str) -> &str {
+    entry
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("chapter.w3m")
+}
+
+/// `Maps\Campaign\*.w3m|w3x` and `Maps\FrozenThrone\Campaign\*.w3x` entries of
+/// a mounted archive, as `(entry, chapter id)` pairs, sorted by the retail
+/// chapter order.
+///
+/// RoC chapters live in `War3.mpq`; the TFT chapters are shipped in the locale
+/// archive `War3xlocal.mpq` under `Maps\FrozenThrone\Campaign\`.
 pub fn archive_campaign_entries(archive: &Path) -> Vec<(String, String)> {
     let Ok(mpq) = wc3_mpq::MpqArchive::open(archive) else {
         crate::dev_log!("CAMPAIGN_ARCHIVE_UNREADABLE path={}", archive.display());
@@ -364,7 +782,8 @@ pub fn archive_campaign_entries(archive: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for entry in mpq.listfile() {
         let lower = entry.to_ascii_lowercase().replace('/', "\\");
-        if !lower.starts_with("maps\\campaign\\") {
+        if !lower.starts_with("maps\\campaign\\") && !lower.starts_with("maps\\frozenthrone\\campaign\\")
+        {
             continue;
         }
         let is_map = lower.ends_with(".w3m") || lower.ends_with(".w3x");
@@ -400,14 +819,14 @@ pub fn extract_archive_entry(archive: &Path, entry: &str) -> Result<(PathBuf, us
     let bytes = mpq
         .read(entry)
         .map_err(|error| format!("read {entry} from {}: {error}", archive.display()))?;
-    let dir = campaign_cache_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("create {}: {error}", dir.display()))?;
     let stem = entry
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or("chapter.w3m");
-    let path = dir.join(stem);
+    let path = campaign_cache_map_path(stem);
+    let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("create {}: {error}", dir.display()))?;
     let temp = path.with_extension("w3m.part");
     std::fs::write(&temp, &bytes).map_err(|error| format!("write {}: {error}", temp.display()))?;
     std::fs::rename(&temp, &path)
@@ -1040,11 +1459,28 @@ pub const CAMPAIGN_SEED: u64 = 0x5EED_1234;
 /// `MAP_CONTROL_USER` in `common.j` (`ConvertMapControl(0)`).
 pub const MAP_CONTROL_USER: u32 = 0;
 
-/// Player slots the canonical sim carries (`Sim::resources: [i32; 2]`). A
-/// campaign map may seat the human on a higher slot; the campaign HUD binds to
-/// that map slot, and only a slot inside this range is handed to the sim's own
-/// order/score pipeline.
+/// Seats the **game layer's** own fixed arrays cover (`Game::score:
+/// [SeatScore; 2]` and the direct `sim.resources[self.player]` reads in
+/// `game.rs`). The sim itself now carries `wc3_sim::MAX_PLAYERS` (8) seats
+/// through [`wc3_sim::Sim::bind_human_seat`]; a mission above this width is
+/// bound in the sim and its local view is `Sim::local_player()`, while
+/// `Game::player` stays inside these arrays until the game layer switches its
+/// score/resource reads to the seat accessors.
 pub const SIM_PLAYER_SLOTS: usize = 2;
+
+/// Lane A (ledger 518) integration point: `Sim::bind_human_seat(seat)`.
+///
+/// The sim owns the per-seat arrays and now carries `wc3_sim::MAX_PLAYERS`
+/// seats; the call makes the mission seat the local player, stamps its sight
+/// and returns the seat's own gold/lumber bank. A seat outside
+/// `0..MAX_PLAYERS` is a hard `CampaignSeat` failure, not a silent
+/// `sim_bound=false`.
+fn bind_campaign_seat(
+    sim: &mut wc3_sim::Sim,
+    seat: u8,
+) -> Result<wc3_sim::SeatBinding, wc3_sim::SeatError> {
+    sim.bind_human_seat(seat)
+}
 
 /// FNV-1a 64 over the payload — the checksum `wc3-sim`'s `W3SV` save uses.
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -1356,6 +1792,30 @@ pub struct CampaignRegistry {
 }
 
 impl CampaignRegistry {
+    /// Chapters discovered from the loose install tree **and** the mounted
+    /// archives, in retail order, with the given progress.
+    ///
+    /// This is the discovery the game itself uses; it is public so a headless
+    /// harness can install its own registry (with its own save path) instead of
+    /// writing the operator's progress.
+    pub fn discover(progress: CampaignProgress) -> Result<Self, String> {
+        let dir = campaign_map_dir();
+        let archives = campaign_archives();
+        if dir.is_none() && archives.is_empty() {
+            return Err(format!(
+                "campaign maps not found: set {DATA_ROOT_ENV} (install root) or {CAMPAIGN_DIR_ENV}"
+            ));
+        }
+        let campaign = Campaign::from_sources(dir.as_deref(), &archives)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            campaign,
+            progress,
+            save_path: None,
+            last_save_error: None,
+        })
+    }
+
     /// Chapters from a directory of campaign maps plus the saved progress.
     pub fn from_map_dir(
         dir: impl AsRef<Path>,
@@ -1376,26 +1836,14 @@ impl CampaignRegistry {
     /// mounted `War3.mpq` / `War3x.mpq` (the device ships only two loose
     /// chapters and keeps the other 42 in the archive).
     pub fn open_default() -> Result<Self, String> {
-        let dir = campaign_map_dir();
-        let archives = campaign_archives();
-        if dir.is_none() && archives.is_empty() {
-            return Err(format!(
-                "campaign maps not found: set {DATA_ROOT_ENV} (install root) or {CAMPAIGN_DIR_ENV}"
-            ));
-        }
         let save_path = CampaignProgress::default_path();
         let progress = CampaignProgress::load(&save_path).unwrap_or_else(|error| {
             crate::dev_log!("CAMPAIGN_PROGRESS_RESET {error}");
             CampaignProgress::default()
         });
-        let campaign = Campaign::from_sources(dir.as_deref(), &archives)
-            .map_err(|error| error.to_string())?;
-        Ok(Self {
-            campaign,
-            progress,
-            save_path: Some(save_path),
-            last_save_error: None,
-        })
+        let mut registry = Self::discover(progress)?;
+        registry.save_path = Some(save_path);
+        Ok(registry)
     }
 
     pub fn len(&self) -> usize {
@@ -1434,10 +1882,9 @@ impl CampaignRegistry {
         if self.is_cleared(index) {
             return true;
         }
-        let race = race_order(&chapter.id);
+        let race = campaign_order(&chapter.id);
         let Some(first) = (0..self.len()).find(|candidate| {
-            self.chapter(*candidate)
-                .is_some_and(|known| race_order(&known.id) == race)
+            self.chapter(*candidate).is_some_and(|known| campaign_order(&known.id) == race)
         }) else {
             return false;
         };
@@ -1964,6 +2411,8 @@ pub struct CampaignSession {
     pub time: f64,
     /// End of the laid-out cutscene timeline (see `observe_cinematic_stream`).
     pub cine_clock: f64,
+    /// Mission time of the last beat consumed from `world.cinematic_log`.
+    pub last_beat_time: f64,
     /// Contract lines: CAMPAIGN_MISSION / QUEST / CAMPAIGN_DONE / MOVIE_MISSING.
     pub log: Vec<String>,
     observed_movies: usize,
@@ -2006,6 +2455,7 @@ impl CampaignSession {
             frames: 0,
             time: 0.0,
             cine_clock: 0.0,
+            last_beat_time: -1.0,
             log: Vec::new(),
             observed_movies: 0,
             observed_beats: 0,
@@ -2063,10 +2513,10 @@ impl CampaignSession {
         self.time = world.game_time;
         self.cutscene.observe(&world.camera_events);
         // The ordered cinematic stream: camera moves, fades and lines in script
-        // order. The headless VM has no coroutine suspension, so a whole cutscene
-        // runs inside one tick; the cutscene clock lays the beats out on the
-        // timeline using the durations the script itself declares
-        // (`CAMPAIGN_CINE_CLOCK=declared-durations`).
+        // order, stamped with the mission time the VM recorded when the script
+        // made the call. Beats that share one tick fall back to the durations
+        // the script declares, so a cutscene that never sleeps still lays out
+        // (`CAMPAIGN_CINE_CLOCK=tick-durations`).
         let fresh_subtitles = self.observe_cinematic_stream(world);
         if fresh_subtitles > 0 {
             let lines: Vec<(f64, String, f64, String)> = self
@@ -2142,7 +2592,18 @@ impl CampaignSession {
         while self.observed_beats < world.cinematic_log.len() {
             let beat = world.cinematic_log[self.observed_beats];
             self.observed_beats += 1;
-            let start = beat.t.max(self.cine_clock);
+            // Real mission time is the truth: the script's own
+            // `TriggerSleepAction`s space the beats across ticks, and the
+            // timestamps are what the player sees. The declared-duration clock
+            // only separates beats that share one tick (a script that never
+            // sleeps, which used to be the only case this VM could produce).
+            let same_tick = beat.t <= self.last_beat_time + 1e-9;
+            let start = if same_tick {
+                beat.t.max(self.cine_clock)
+            } else {
+                beat.t
+            };
+            self.last_beat_time = beat.t;
             match beat.kind {
                 wc3_re::jass::vm::CineBeatKind::Camera(index) => {
                     if self.last_camera_index.is_some_and(|last| index <= last) {
@@ -2267,6 +2728,15 @@ impl CampaignSession {
             log: self.log.clone(),
         }
     }
+}
+
+/// Installs `registry` as the process-wide campaign registry.
+///
+/// The running game reads the registry through [`campaign_registry`]; a headless
+/// harness (or a test) that must not write the operator's progress installs its
+/// own copy with a temporary `save_path` first.
+pub fn set_campaign_registry(registry: CampaignRegistry) {
+    sync_global_registry(&registry);
 }
 
 fn sync_global_registry(registry: &CampaignRegistry) {
@@ -2863,6 +3333,27 @@ fn human_slot(game: &crate::Game) -> Option<u8> {
         {
             return u8::try_from(index).ok();
         }
+        // The map's own start-location markers (`sloc`) belong to the seat the
+        // map was authored for, and the campaign intro's first camera shot looks
+        // at the protagonist. A roster count is the wrong signal: Human01's
+        // human owns 4 units and the enemy 27, so "the biggest army" answered
+        // seat 2 while the mission's human is seat 1 (measured: the opening only
+        // runs with `GetLocalPlayer() == Player(1)`).
+        let opening = world.camera_setups.values().find_map(|setup| setup.dest);
+        let mut markers: Vec<(f64, i32)> = world
+            .units
+            .values()
+            .filter(|unit| unit.id.eq_ignore_ascii_case("sloc") && (0..12).contains(&unit.owner))
+            .map(|unit| {
+                let distance =
+                    opening.map_or(0.0, |(x, y)| (unit.x - x).powi(2) + (unit.y - y).powi(2));
+                (distance, unit.owner)
+            })
+            .collect();
+        markers.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+        if let Some((_, owner)) = markers.first() {
+            return u8::try_from(*owner).ok();
+        }
     }
     let mut counts = [0usize; 16];
     for unit in game.sim.alive_units() {
@@ -2914,21 +3405,120 @@ impl crate::Game {
         // single-player wildcard mode makes every "local player" block the
         // human's block (see `World::local_player_any`).
         wc3_re::jass::vm::set_local_player_any_default(session.mission.human_slot().is_none());
-        let mpq = self
-            .assets
-            .debug
-            .iter()
-            .find_map(|line| line.strip_prefix("mpq="))
-            .map(PathBuf::from);
+        // The archive a mounted chapter came from *is* the install root: using
+        // the previous game's `mpq=` line made a chapter that was extracted to
+        // the cache depend on whatever map happened to be loaded before it.
+        let mpq = match &chapter.source {
+            MapSource::Mount { archive, .. } => Some(archive.clone()),
+            MapSource::File => self.assets.mpq_path().map(Path::to_path_buf),
+        };
         let assets = crate::assets::Assets::load(mpq.as_deref(), Some(&map));
         let mut fresh = crate::Game::new(assets, CAMPAIGN_SEED);
         fresh.enter_battle();
-        session.script_booted = fresh.engine.is_some();
+        // A chapter always owns its script. Two game-layer rules can suppress
+        // the boot for a chapter map:
+        //   * the melee-arena stem list (`game.rs:1331`, which names `Orc01`
+        //     and `Human04` — the two maps the device ships loose);
+        //   * the install-root probe, which only sees an install when the
+        //     archive is named by a `mpq=` debug line, while an install-shaped
+        //     root logs `storm_layers=` instead (`assets::open_asset_db`).
+        // Mount the chapter's engine here and let the game's own
+        // `reset_scenario` run the map: it enters the script on the 32 MB
+        // stack, creates the sim bridge and adopts the map's units. The two
+        // one-line fixes for the owners of `game.rs` are written up in
+        // `analysis/campaign/ORC01-MELEE-STEM-PATCH.md`.
+        if fresh.engine.is_none() {
+            fresh.melee = false;
+            match campaign_engine(&map, mpq.as_deref()) {
+                Ok(engine) => {
+                    fresh.engine = Some(engine);
+                    fresh.restart();
+                }
+                Err(error) => {
+                    session.note(format!(
+                        "CAMPAIGN_SCRIPT_BOOT_FAILED map={} {error}",
+                        map.display()
+                    ));
+                }
+            }
+        }
+        session.script_booted = fresh
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.runtime())
+            .is_some();
+        // The mission's human seat is bound before the provenance line, so the
+        // line states whether the sim actually got the seat. The wave-2 defect
+        // was a `sim_bound=false` warning emitted after a load that had already
+        // left the mission on the wrong owner.
+        let title = if chapter.title.trim().is_empty() {
+            session.mission.title.clone()
+        } else {
+            chapter.title.clone()
+        };
+        let mut sim_bound = false;
+        let mut sim_bound_units = 0usize;
+        let mut sim_bound_visible = 0usize;
+        if let Some(slot) = session.mission.human_slot().or_else(|| human_slot(&fresh)) {
+            session.human_slot = Some(slot);
+            // Lane A (ledger 518): the sim makes the seat the local player,
+            // stamps its sight and reports what it owns/sees. A seat outside
+            // the sim's `MAX_PLAYERS` is a hard mission-start failure: a
+            // campaign cannot run its hero's seat on a player the sim does not
+            // carry.
+            match bind_campaign_seat(&mut fresh.sim, slot) {
+                Ok(binding) => {
+                    sim_bound = true;
+                    sim_bound_units = binding.units;
+                    sim_bound_visible = binding.visible_units;
+                    // `Game::player` indexes the game layer's own two-seat
+                    // arrays (`score`, `sim.resources`); seats above that are
+                    // the sim's `local_player()` until the game layer switches
+                    // those reads to the seat accessors.
+                    if usize::from(slot) < SIM_PLAYER_SLOTS {
+                        fresh.player = slot;
+                    }
+                }
+                Err(error) => {
+                    let line = format!("CAMPAIGN_SEAT_UNBOUND idx={index} slot={slot} {error}");
+                    crate::dev_log!("{line}");
+                    return Err(line);
+                }
+            }
+            crate::dev_log!(
+                "CAMPAIGN_HUMAN_SLOT idx={index} name={} slot={slot} sim_bound={sim_bound} units={sim_bound_units} visible={sim_bound_visible}",
+                session.mission.id
+            );
+            // `GetLocalPlayer()` must answer the mission's human seat: Blizzard.j
+            // gates every `CameraSetupApplyForPlayer`, `SetCameraFieldForPlayer`
+            // and `TransmissionFromUnitWithNameBJ` block on
+            // `GetLocalPlayer() == whichPlayer`.
+            //
+            // Only a seat the *map* declares is answered exactly. A RoC map
+            // (`war3map.w3i` v18) carries no player records at all — Human01's
+            // parsed `players` is empty — so the seat is inferred, and narrowing
+            // the single-player wildcard to an inferred seat dropped every gated
+            // block the script reached *after* its first `TriggerSleepAction`
+            // (the opening played two camera shots and no transmission). The
+            // wildcard is the campaign's own rule: there is exactly one human,
+            // so the human's blocks are the local player's blocks.
+            if let Some(declared) = session.mission.human_slot() {
+                if let Some(runtime) = fresh
+                    .engine
+                    .as_mut()
+                    .and_then(|engine| engine.runtime.as_mut())
+                {
+                    runtime.set_local_player(u32::from(declared));
+                }
+            }
+        }
         // Provenance line the device harness greps: which chapter, from where,
-        // how many bytes, and what the boot actually produced.
+        // how many bytes, and what the boot actually produced. It goes through
+        // the session log as well as the platform log so the HUD and the
+        // evidence run read the same line.
         let bytes = std::fs::metadata(&map).map(|meta| meta.len()).unwrap_or(0);
-        crate::dev_log!(
-            "CAMPAIGN_LOAD source={} path={} bytes={} units={} quests={} script={}",
+        session.note(format!(
+            "CAMPAIGN_LOAD source={} path={} bytes={} units={} quests={} script={} title={} sim_bound={} seat_units={} seat_visible={}",
             chapter.source.as_str(),
             chapter
                 .archive_entry_path()
@@ -2938,30 +3528,11 @@ impl crate::Game {
             fresh.sim.alive_units().count(),
             session.mission.objectives.len(),
             session.script_booted,
-        );
-        if let Some(slot) = session.mission.human_slot().or_else(|| human_slot(&fresh)) {
-            session.human_slot = Some(slot);
-            let sim_bound = usize::from(slot) < SIM_PLAYER_SLOTS;
-            crate::dev_log!(
-                "CAMPAIGN_HUMAN_SLOT idx={index} name={} slot={slot} sim_bound={sim_bound}",
-                session.mission.id
-            );
-            if sim_bound {
-                fresh.player = slot;
-            }
-            // `GetLocalPlayer()` must answer the mission's human seat: Blizzard.j
-            // gates every `CameraSetupApplyForPlayer`, `SetCameraFieldForPlayer`
-            // and `TransmissionFromUnitWithNameBJ` block on
-            // `GetLocalPlayer() == whichPlayer`, so a hardcoded slot 0 silently
-            // dropped Human01's whole opening (its seat is 2).
-            if let Some(runtime) = fresh
-                .engine
-                .as_mut()
-                .and_then(|engine| engine.runtime.as_mut())
-            {
-                runtime.set_local_player(u32::from(slot));
-            }
-        }
+            title,
+            sim_bound,
+            sim_bound_units,
+            sim_bound_visible,
+        ));
         *self = fresh;
         if let Some(world) = campaign_world(self) {
             session.observe(world);
@@ -3248,5 +3819,258 @@ endfunction
         assert!(chapter_rank("Human09") < chapter_rank("Undead01"));
         assert!(chapter_rank("NightElf09") < chapter_rank("WarCraftIIICredits"));
         assert_eq!(title_from_id("Human02Interlude"), "Human 02 Interlude");
+    }
+
+    /// The shipped campaign tree (`analysis/war3_full3/Maps/Campaign`).
+    ///
+    /// All 44 RoC chapters ship as loose maps in the extracted install, so this
+    /// is the oracle for the campaign layer: the registry has to see exactly
+    /// these 44, in retail order, with no file dropped and none invented.
+    fn shipped_campaign_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../analysis/war3_full3/Maps/Campaign")
+    }
+
+    fn shipped_map_stems(dir: &Path) -> Vec<String> {
+        let mut stems: Vec<String> = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+                if !matches!(extension.as_str(), "w3m" | "w3x") {
+                    return None;
+                }
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .collect();
+        stems.sort();
+        stems
+    }
+
+    fn shipped_registry() -> CampaignRegistry {
+        let dir = shipped_campaign_dir();
+        assert!(
+            dir.is_dir(),
+            "shipped campaign tree missing at {}",
+            dir.display()
+        );
+        let mut registry = CampaignRegistry::from_map_dir(&dir, CampaignProgress::default())
+            .unwrap_or_else(|error| panic!("registry from {}: {error}", dir.display()));
+        // A headless sweep must never write the operator's progress file.
+        registry.save_path = None;
+        registry
+    }
+
+    #[test]
+    fn campaign_registry_lists_all_44_shipped_chapters() {
+        let dir = shipped_campaign_dir();
+        let stems = shipped_map_stems(&dir);
+        assert_eq!(stems.len(), 44, "the shipped Campaign tree holds 44 maps");
+        let registry = shipped_registry();
+        assert_eq!(registry.len(), 44, "44 chapters discovered");
+        assert_eq!(registry.len(), stems.len(), "44 = 44: no chapter dropped");
+        let mut ids: Vec<String> = registry
+            .rows()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 44, "chapter ids are unique");
+        ids.sort();
+        assert_eq!(ids, sorted, "no id appears twice");
+        // Every shipped file is a chapter, and every chapter is a shipped file.
+        let mut discovered: Vec<String> = registry
+            .rows()
+            .iter()
+            .map(|row| row.id.to_ascii_lowercase())
+            .collect();
+        discovered.sort();
+        let expected: Vec<String> = stems.iter().map(|id| id.to_ascii_lowercase()).collect();
+        assert_eq!(discovered, expected, "44 chapter files = 44 registry rows");
+
+        // Retail order: prologue first, the two credits reels last, each
+        // interlude directly after the mission it closes.
+        let rows = registry.rows();
+        assert_eq!(rows[0].id, "Prologue01");
+        let tail: Vec<&str> = rows[42..].iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(tail, vec!["BonusCredits", "WarCraftIIICredits"]);
+        let interludes: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.interlude)
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            interludes,
+            vec![
+                "Human02Interlude",
+                "Human05Interlude",
+                "Human06Interlude",
+                "Undead02Interlude",
+                "Undead05interlude",
+                "Orc02Interlude",
+                "Orc04Interlude",
+                "NightElf06Interlude",
+                "BonusCredits",
+                "WarCraftIIICredits",
+            ],
+            "8 interludes + 2 credits reels, in retail race order (Human, Undead, Orc, NightElf)"
+        );
+        for row in registry.rows() {
+            assert!(
+                is_chapter_id(&row.id),
+                "{} is a chapter id, not a melee map",
+                row.id
+            );
+            assert_eq!(
+                row.interlude,
+                is_interlude_id(&row.id),
+                "{} interlude flag matches its kind",
+                row.id
+            );
+            assert_eq!(
+                row.number,
+                if row.interlude {
+                    0
+                } else {
+                    chapter_number(&row.id)
+                },
+                "{} chapter number",
+                row.id
+            );
+        }
+    }
+
+    /// The campaign flow itself: the shipped chain is walked chapter by chapter.
+    ///
+    /// A fresh save unlocks the first mission of each campaign (the five RoC
+    /// campaigns plus the credits group); every victory unlocks exactly the next
+    /// chapter of that campaign, interludes included, and the 44th victory ends
+    /// the chain. That is the retail progression, proved on the shipped order.
+    #[test]
+    fn campaign_flow_clears_all_44_chapters_in_retail_order() {
+        let mut registry = shipped_registry();
+        assert_eq!(registry.len(), 44);
+        let fresh_rows = registry.rows();
+        let fresh: Vec<&str> = fresh_rows
+            .iter()
+            .filter(|row| row.state == ChapterState::Unlocked)
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            fresh,
+            vec![
+                "Prologue01",
+                "Human01",
+                "Undead01",
+                "Orc01",
+                "NightElf01",
+                "BonusCredits",
+                "WarCraftIIICredits",
+            ],
+            "one open mission per campaign at a fresh save; the credits reels are\
+             interludes of the Extra group, so they never gate"
+        );
+        assert_eq!(registry.first_unlocked(), Some(0));
+
+        let mut cleared = 0usize;
+        loop {
+            let Some(index) = registry.first_unlocked() else {
+                break;
+            };
+            let id = registry.chapter(index).expect("chapter").id.clone();
+            assert!(registry.is_unlocked(index), "{id} is playable");
+            let next = registry.complete(index);
+            cleared += 1;
+            let expected = (index + 1 < registry.len()).then_some(index + 1);
+            assert_eq!(
+                next, expected,
+                "clearing {id} (index {index}) opens exactly the next chapter"
+            );
+            if let Some(next) = next {
+                assert!(
+                    campaign_order(&registry.chapter(next).unwrap().id)
+                        >= campaign_order(&id),
+                    "the chain never walks backwards"
+                );
+            }
+            assert!(registry.is_cleared(index), "{id} persisted as cleared");
+            assert!(cleared <= 44, "the chain cannot clear more than 44 chapters");
+        }
+        assert_eq!(cleared, 44, "all 44 shipped chapters are reachable");
+        assert_eq!(registry.first_unlocked(), None, "the campaign is complete");
+        for row in registry.rows() {
+            assert_eq!(
+                row.state,
+                ChapterState::Cleared,
+                "{} is cleared at the end of the campaign",
+                row.id
+            );
+            assert!(
+                registry.next_after(row.index).is_none(),
+                "nothing unlocks after the campaign"
+            );
+        }
+    }
+
+    /// Every chapter resolves to a real map whose script the mission model can
+    /// read: 44/44 `war3map.j` scripts, each with its `war3map.w3i` metadata.
+    #[test]
+    fn campaign_every_chapter_parses_into_a_mission() {
+        let registry = shipped_registry();
+        assert_eq!(registry.len(), 44);
+        let mut parsed = 0usize;
+        let mut script_bytes = 0usize;
+        let mut objectives = 0usize;
+        let mut cutscenes = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for chapter in &registry.campaign.chapters {
+            let map = match chapter.resolved_map() {
+                Ok(map) => map,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", chapter.id));
+                    continue;
+                }
+            };
+            match Mission::parse(&map) {
+                Ok(mission) => {
+                    if mission.script_bytes == 0 {
+                        failures.push(format!("{}: empty war3map.j", chapter.id));
+                        continue;
+                    }
+                    if !mission.id.eq_ignore_ascii_case(&chapter.id) {
+                        failures.push(format!(
+                            "{}: parsed as {}",
+                            chapter.id, mission.id
+                        ));
+                        continue;
+                    }
+                    parsed += 1;
+                    script_bytes += mission.script_bytes;
+                    objectives += mission.objectives.len();
+                    cutscenes += mission.cinematics.len();
+                }
+                Err(error) => failures.push(format!("{}: {error}", chapter.id)),
+            }
+        }
+        assert!(failures.is_empty(), "44 chapter parse failures: {failures:?}");
+        assert_eq!(parsed, 44, "every shipped chapter is a mission");
+        assert!(
+            script_bytes > 44 * 1024,
+            "44 scripts carry real code ({script_bytes} bytes)"
+        );
+        assert!(
+            objectives >= 40,
+            "the missions declare their objectives ({objectives} quests)"
+        );
+        assert!(
+            cutscenes >= 20,
+            "the missions carry their cutscenes ({cutscenes} cinematics)"
+        );
+        println!(
+            "GATE campaign.chapter-parse PASS chapters={parsed} script_bytes={script_bytes} objectives={objectives} cinematics={cutscenes}"
+        );
     }
 }

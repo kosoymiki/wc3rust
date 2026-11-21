@@ -280,16 +280,23 @@ fn upgrade_research_entries_use_the_numbered_requires_encoding() {
 
 /// A map's `war3map.wts` + object data beat the profile text.
 ///
-/// The fixture is a TFT map (`Ucrl`, its prototype, exists only in the TFT
-/// sheet), so it runs against the TFT tree — whose profile text is absent. That
-/// makes the assertion stronger: the row has **no** profile name at all, and the
-/// name the card shows can only come from the map's own `.wts`.
+/// The original fixture is the War3Net `DotF_v1.4.w3x` (a TFT map: `Ucrl` exists
+/// only in the TFT sheet). That donor tree is not part of this checkout, so the
+/// test skips with an explicit message; the same override path is covered on the
+/// repository's extracted `war3_map/Human04` map by
+/// `base_contract::map_overrides_resolve_through_the_typed_lookup` (`uC01` =
+/// `TRIGSTR_087` → "Тимми", hp 330) and
+/// `real_data::object_data_merges_into_the_typed_tables`.
 #[test]
 fn wts_and_object_data_override_the_profile_text() {
     let Some(mut data) = load_dir("war3x_data") else { return };
     let map = repo_root().join(DOTF_MAP);
     if !map.is_file() {
-        eprintln!("skip: {} missing", map.display());
+        eprintln!(
+            "skip: {} missing (donor tree not in this checkout); \
+             war3_map/Human04 covers the same wts+object-data path",
+            map.display()
+        );
         return;
     }
     let base = map_mpq_base(&map).expect("map header");

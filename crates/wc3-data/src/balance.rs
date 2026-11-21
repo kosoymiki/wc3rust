@@ -50,15 +50,6 @@ impl FamilyAudit {
         });
     }
 
-    fn warn(&mut self, id: &str, field: &'static str, detail: impl Into<String>) {
-        self.issues.push(BalanceIssue {
-            severity: Severity::Warning,
-            id: id.to_string(),
-            field,
-            detail: detail.into(),
-        });
-    }
-
     /// Findings that make the row unusable.
     pub fn errors(&self) -> usize {
         self.issues
@@ -232,6 +223,14 @@ impl GameDatabase {
                 }
             };
             let declared = ability.max_level();
+            let columns = ability.column_levels();
+            if columns < declared {
+                record(
+                    Severity::Error,
+                    "AbilityData.levels",
+                    format!("declares {declared} levels but the sheet has {columns} level columns"),
+                );
+            }
             let levels = match ability.levels() {
                 Ok(levels) => levels,
                 Err(error) => {
@@ -239,13 +238,6 @@ impl GameDatabase {
                     Vec::new()
                 }
             };
-            if declared as usize != levels.len() {
-                record(
-                    Severity::Error,
-                    "AbilityData.levels",
-                    format!("declared {declared} levels, parsed {}", levels.len()),
-                );
-            }
             for level in &levels {
                 let suffix = level.level.to_string();
                 if let Some((field, detail)) = negative(level.mana_cost, "AbilityData.Cost") {

@@ -72,9 +72,14 @@ TFT root to the count report, `--listfile` enables archive path checks.
 * **A unit spans five sheets** (`UnitData`, `UnitBalance`, `UnitWeapons`,
   `UnitAbilities`, `unitUI`) joined by FourCC. RoC only has 316 weapon rows and
   324 ability-list rows for 466 units, so every optional sheet is `Option`.
-* **Ability levels** are discovered from the columns that exist: RoC writes
-  `Data11..Data34` (level, then slot) and three levels; TFT writes
-  `DataA1..DataE4` (slot letter, then level) and four.
+* **Ability levels** are discovered from the row, not from the sheet width: the
+  `levels` cell is authoritative (RoC: 357 rows at 1 level, 40 at 3; TFT: 18
+  engine pseudo-abilities at 0, 648 at 1, 6 at 2, 77 at 3, 14 at 4). The sheet
+  itself has three level column sets in RoC (`Data11..Data34`) and four in TFT
+  (`DataA1..DataE4`), and the extra columns can carry filled values the row does
+  not declare; `AbilityView::max_level` returns the row's count and
+  `AbilityView::column_levels` reports the schema width. The column probe is
+  only the fallback when a sheet/override has no parseable `levels` cell.
 * **Object data** merges over the shipped rows without mutating them: overlay
   values live in a shadow layer and win on read, so a map's `.w3u` can be applied
   and still audited. Unit object data may also edit `ItemData` (`isst`), which the

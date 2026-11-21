@@ -413,7 +413,7 @@ pub fn validate(data: &GameData) -> Report {
             let Some(ability) = data.ability(id) else {
                 continue;
             };
-            if ability.max_level() == 0 {
+            if ability.column_levels() == 0 {
                 without_levels += 1;
             }
         }
