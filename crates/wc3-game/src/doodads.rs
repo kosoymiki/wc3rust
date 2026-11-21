@@ -67,6 +67,30 @@ pub struct DoodadWorld {
     pub stats: DoodadStats,
 }
 
+/// Neutral material for a texture the archive could not decode.
+///
+/// The previous fallback was index `0`, which is the renderer's *white* stub:
+/// a doodad whose skin failed to decode was painted pure white (measured
+/// `247,247,247` over ~33 k pixels on the Orc01 frame). A dark earth tone keeps
+/// the silhouette readable and, unlike white, is obviously "art" rather than a
+/// hole in the pipeline.
+fn missing_texture() -> crate::assets::TextureImage {
+    const SIZE: u32 = 8;
+    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dark = ((x + y) % 2) == 0;
+            let value = if dark { 58 } else { 74 };
+            rgba.extend_from_slice(&[value, value - 10, value - 18, 255]);
+        }
+    }
+    crate::assets::TextureImage {
+        width: SIZE,
+        height: SIZE,
+        rgba,
+    }
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct DoodadStats {
     pub parsed: usize,
@@ -376,6 +400,10 @@ impl DoodadWorld {
         let mut model_cache: HashMap<(String, u32), Option<usize>> = HashMap::new();
         let mut texture_cache: HashMap<String, usize> = HashMap::new();
         texture_cache.insert("__white".to_string(), 0);
+        // Decode misses share one neutral material instead of the white stub.
+        let miss_index = world.textures.len();
+        world.textures.push(missing_texture());
+        let mut miss_logged: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         for doodad in &raw {
             let id = String::from_utf8_lossy(&doodad.id).into_owned();
@@ -438,14 +466,24 @@ impl DoodadWorld {
                                     texture_cache.insert(path, index);
                                     map_indices.push(index);
                                 }
-                                Err(_) => {
+                                Err(error) => {
                                     stats.texture_failures += 1;
-                                    map_indices.push(0);
+                                    if miss_logged.insert(path.clone()) {
+                                        crate::dev_log!(
+                                            "GAME_DOODAD_TEX_MISS path={path} reason=decode {error:?}"
+                                        );
+                                    }
+                                    map_indices.push(miss_index);
                                 }
                             },
                             Err(_) => {
                                 stats.texture_failures += 1;
-                                map_indices.push(0);
+                                if miss_logged.insert(path.clone()) {
+                                    crate::dev_log!(
+                                        "GAME_DOODAD_TEX_MISS path={path} reason=archive"
+                                    );
+                                }
+                                map_indices.push(miss_index);
                             }
                         }
                     }

@@ -135,10 +135,12 @@ pub fn build_menu(sim: &Sim, owner: u8) -> Vec<BuildOption> {
 /// was dropped and the reason: `unknown_def` = no row in the loaded object /
 /// destructable data (the id is not a melee entity for this install),
 /// `spawn_failed` = the def resolved but the sim refused the placement
-/// (footprint/supply/owner), `placed` = spawned once per record.
+/// (footprint/supply/owner), `placed` = spawned once per record, `items` =
+/// the record is an `ItemData` row and became a ground item.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SceneIdCount {
     pub placed: usize,
+    pub items: usize,
     pub unknown_def: usize,
     pub spawn_failed: usize,
 }
@@ -147,6 +149,9 @@ pub struct SceneIdCount {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MapSpawns {
     pub units: usize,
+    /// `war3mapUnits.doo` records that are items (`hlst`, `whwd`, …); they are
+    /// ground items in the sim, not units.
+    pub items: usize,
     pub destructables: usize,
     pub camps: usize,
     /// `sloc` start-location markers; not units and absent from the SLK.
@@ -217,19 +222,35 @@ pub fn spawn_map_scene(sim: &mut Sim, bundle: &MapBundle) -> MapSpawns {
             }
             let census = counts.unit_census.entry(def_id.clone()).or_default();
             if def_of(&def_id).is_none() {
+                // A `war3mapUnits.doo` record is not necessarily a unit: an
+                // item placed in the editor (`hlst`, `whwd`, `phea`, …) is a
+                // record too, and WC3 creates it as a ground item.  Only an id
+                // that is neither a def nor an item row is `unknown_def`.
+                if wc3_sim::data::item_def(&def_id).is_some() {
+                    if sim.spawn_item(&def_id, pos, 0).is_some() {
+                        census.items += 1;
+                        counts.items += 1;
+                    } else {
+                        census.spawn_failed += 1;
+                    }
+                    continue;
+                }
                 census.unknown_def += 1;
                 continue;
             }
-            let owner = if unit.player <= 1 {
+            // The sim now models 8 seats (`wc3_sim::MAX_PLAYERS`); squashing
+            // every player above 1 onto seat 2 is what made a campaign seat
+            // (Prologue01 = 4) spawn zero units and the world render black.
+            let owner = if (unit.player as usize) < wc3_sim::MAX_PLAYERS {
                 unit.player as u8
             } else {
-                2
+                wc3_sim::NEUTRAL_OWNER
             };
             match sim.spawn_def_exact(owner, &def_id, pos) {
                 Some(id) => {
                     census.placed += 1;
                     counts.units += 1;
-                    if owner == 2 {
+                    if owner == wc3_sim::NEUTRAL_OWNER {
                         neutrals.push((id, pos));
                     }
                 }
@@ -276,13 +297,14 @@ pub fn spawn_map_scene(sim: &mut Sim, bundle: &MapBundle) -> MapSpawns {
     // not become an entity. Printed once per scene load (device log sink and
     // headless stderr), so the counts below are auditable, not asserted.
     let unit_placed: usize = counts.unit_census.values().map(|c| c.placed).sum();
+    let unit_items: usize = counts.unit_census.values().map(|c| c.items).sum();
     let unit_unknown: usize = counts.unit_census.values().map(|c| c.unknown_def).sum();
     let unit_failed: usize = counts.unit_census.values().map(|c| c.spawn_failed).sum();
     let doodad_placed: usize = counts.doodad_census.values().map(|c| c.placed).sum();
     let doodad_unknown: usize = counts.doodad_census.values().map(|c| c.unknown_def).sum();
     let doodad_failed: usize = counts.doodad_census.values().map(|c| c.spawn_failed).sum();
     crate::dev_log!(
-        "GAME_SCENE_CENSUS map={} unit_records={} sloc={} mines={} unit_placed={} unit_unknown={} unit_spawn_failed={} unit_ids={} doodad_records={} doodad_placed={} doodad_no_data={} doodad_spawn_failed={} doodad_ids={}",
+        "GAME_SCENE_CENSUS map={} unit_records={} sloc={} mines={} unit_placed={} unit_items={} unit_unknown={} unit_spawn_failed={} unit_ids={} doodad_records={} doodad_placed={} doodad_no_data={} doodad_spawn_failed={} doodad_ids={}",
         bundle
             .info
             .as_ref()
@@ -292,6 +314,7 @@ pub fn spawn_map_scene(sim: &mut Sim, bundle: &MapBundle) -> MapSpawns {
         counts.start_locations,
         counts.gold_mines,
         unit_placed,
+        unit_items,
         unit_unknown,
         unit_failed,
         counts.unit_census.len(),
@@ -303,9 +326,10 @@ pub fn spawn_map_scene(sim: &mut Sim, bundle: &MapBundle) -> MapSpawns {
     );
     for (id, census) in &counts.unit_census {
         crate::dev_log!(
-            "GAME_SCENE_UNIT id={} placed={} unknown_def={} spawn_failed={} source=war3mapUnits.doo",
+            "GAME_SCENE_UNIT id={} placed={} items={} unknown_def={} spawn_failed={} source=war3mapUnits.doo",
             id,
             census.placed,
+            census.items,
             census.unknown_def,
             census.spawn_failed
         );
@@ -1075,18 +1099,36 @@ pub struct JassBridge {
     units: BTreeMap<u32, UnitId>,
     rev: BTreeMap<UnitId, u32>,
     mirror: BTreeMap<u32, Mirror>,
+    /// Script world → sim local map-space offset (see [`Self::set_origin`]).
+    origin: glam::Vec2,
 }
 
 impl JassBridge {
+    /// Ground-plane offset between the script's world coordinates and the
+    /// sim's local map space (`.w3e` origin). Script units are created with raw
+    /// world coordinates; without this the whole campaign army spawned shifted
+    /// by `origin` — a pile of interpenetrating models in a black corner of the
+    /// map (device frame 13:54).
+    pub fn set_origin(&mut self, origin: glam::Vec2) {
+        self.origin = origin;
+    }
+
     pub fn new(sim: Sim) -> Self {
-        // Players 0 and 1 drive the two sim factions; the neutral and unused
-        // melee slots map to owner 2 so map creeps are not adopted as the
-        // local player's units.
-        let mut owner_of_player = vec![2u8; 16];
-        owner_of_player[0] = 0;
-        owner_of_player[1] = 1;
+        // Every seat the sim models keeps its own index. A campaign mission can
+        // seat the human at Player(4); mapping that to neutral is exactly what
+        // made Prologue01 spawn zero player units (`seat_units=0`) and the world
+        // render black. Slots beyond `MAX_PLAYERS` stay neutral.
+        let mut owner_of_player = vec![wc3_sim::NEUTRAL_OWNER; 16];
+        for (seat, owner) in owner_of_player
+            .iter_mut()
+            .enumerate()
+            .take(wc3_sim::MAX_PLAYERS)
+        {
+            *owner = seat as u8;
+        }
         Self {
             sim,
+            origin: glam::Vec2::ZERO,
             owner_of_player,
             missing_units: Vec::new(),
             units: BTreeMap::new(),
@@ -1143,6 +1185,7 @@ impl JassBridge {
     /// Script-created units → sim.  Units whose rawcode is not in the roster
     /// are recorded in [`Self::missing_units`] and never invented.
     fn adopt(&mut self, world: &mut World) {
+        let mut adopted: Vec<Vec2> = Vec::new();
         let candidates: Vec<(u32, String, i32, f64, f64)> = world
             .units
             .iter()
@@ -1161,14 +1204,40 @@ impl JassBridge {
                 .get(owner.max(0) as usize)
                 .copied()
                 .unwrap_or(0);
-            if let Some(unit) = self
-                .sim
-                .spawn_def_exact(owner, &id, Vec2::new(x as f32, y as f32))
-            {
+            let pos = Vec2::new(x as f32 - self.origin.x, y as f32 - self.origin.y);
+            if let Some(unit) = self.sim.spawn_def_exact(owner, &id, pos) {
                 self.units.insert(handle, unit);
                 self.rev.insert(unit, handle);
+                adopted.push(pos);
             }
         }
+        self.log_adopted(&adopted);
+    }
+
+    /// One line per adopt batch: script units must be spread over the map, not
+    /// piled on one cell. `origin` is the world→local offset; a wrong origin is
+    /// visible here as a tiny spread or coordinates outside the grid.
+    fn log_adopted(&self, adopted: &[Vec2]) {
+        if adopted.is_empty() {
+            return;
+        }
+        let (mut xmin, mut xmax, mut ymin, mut ymax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for pos in adopted {
+            xmin = xmin.min(pos.x);
+            xmax = xmax.max(pos.x);
+            ymin = ymin.min(pos.y);
+            ymax = ymax.max(pos.y);
+        }
+        crate::dev_log!(
+            "GAME_SCRIPT_SPAWN units={} origin={:.1},{:.1} spread_x={:.0}..{:.0} spread_y={:.0}..{:.0}",
+            adopted.len(),
+            self.origin.x,
+            self.origin.y,
+            xmin,
+            xmax,
+            ymin,
+            ymax
+        );
     }
 
     /// Applies script-side mutations (positions/HP/mana/alive/owner) to the
@@ -1354,8 +1423,9 @@ impl JassBridge {
                 .or_insert_with(ScriptUnit::default);
             entry.id = def_id.to_string();
             entry.owner = owner as i32;
-            entry.x = x as f64;
-            entry.y = y as f64;
+            // Back to script world coordinates: the sim holds local map space.
+            entry.x = x as f64 + self.origin.x as f64;
+            entry.y = y as f64 + self.origin.y as f64;
             entry.facing = facing as f64;
             entry.hp = hp as f64;
             entry.max_hp = max_hp as f64;

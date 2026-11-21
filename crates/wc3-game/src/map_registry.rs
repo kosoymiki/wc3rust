@@ -42,8 +42,13 @@ pub const LOAD_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 pub struct MapCensus {
     /// Stable slug derived from the file stem (`2-echoisles`).
     pub id: String,
-    /// Repo-relative path (`donors/maps/melee/(2)EchoIsles.w3x`).
+    /// Repo-relative path (`donors/maps/melee/(2)EchoIsles.w3x`), install-relative
+    /// path for a loose install map, or `<entry>` for an archive chapter.
     pub file: String,
+    /// Where the container came from: `donors`, `install:<root>`,
+    /// `mpq:<archive>|<entry>`. [`resolved_path`] turns an entry back into the
+    /// path the loader opens.
+    pub origin: String,
     /// Container extension, `w3x` (TFT) or `w3m` (RoC).
     pub format: String,
     /// `war3map.w3i` title, or the file stem when the map has no w3i.
@@ -253,6 +258,7 @@ impl Registry {
                 json!({
                     "id": map.id,
                     "file": map.file,
+                    "origin": map.origin,
                     "format": map.format,
                     "name": map.name,
                     "author": map.author,
@@ -321,6 +327,16 @@ impl Registry {
 /// Census one map container through the canonical [`wc3_re::mapfiles::MapBundle`]
 /// parser. Does not build a `Game`; [`verify_playable`] runs the real load path.
 pub fn census(map_path: &Path, repo_root: &Path) -> Result<MapCensus, String> {
+    census_with_origin(map_path, repo_root, "donors")
+}
+
+/// [`census`] with an explicit provenance label (see [`MapCensus::origin`]).
+/// `base` is the directory `/` root the stored `file` path is relative to.
+pub fn census_with_origin(
+    map_path: &Path,
+    base: &Path,
+    origin: &str,
+) -> Result<MapCensus, String> {
     let bytes =
         fs::read(map_path).map_err(|err| format!("read {}: {err}", map_path.display()))?;
     let size_bytes = bytes.len() as u64;
@@ -402,7 +418,8 @@ pub fn census(map_path: &Path, repo_root: &Path) -> Result<MapCensus, String> {
 
     Ok(MapCensus {
         id,
-        file: repo_relative(map_path, repo_root),
+        file: relative_to(map_path, base),
+        origin: origin.to_string(),
         format,
         name,
         author,
@@ -537,6 +554,221 @@ pub fn build(map_dir: &Path, repo_root: &Path, generated: &str) -> Registry {
     registry
 }
 
+/// Registry file generated from the device/desktop install (melee `Maps/` plus
+/// every campaign chapter inside the mounted archives).
+pub const INSTALL_REGISTRY_PATH: &str = "analysis/maps/REGISTRY-INSTALL.json";
+
+/// Repo path of [`INSTALL_REGISTRY_PATH`].
+pub fn install_registry_path() -> PathBuf {
+    Registry::repo_root().join(INSTALL_REGISTRY_PATH)
+}
+
+/// The path [`MapCensus::file`] / [`MapCensus::origin`] resolve to.
+///
+/// `donors` entries are repo-relative, `install:<root>` entries are relative to
+/// that root, and `mpq:<archive>|<entry>` entries live in the extraction cache
+/// ([`chapter_cache_path`], deterministic per archive + entry).
+pub fn resolved_path(map: &MapCensus) -> PathBuf {
+    if let Some(root) = map.origin.strip_prefix("install:") {
+        return Path::new(root).join(&map.file);
+    }
+    if let Some(rest) = map.origin.strip_prefix("mpq:") {
+        let (archive, entry) = rest.split_once('|').unwrap_or((rest, ""));
+        return chapter_cache_path(Path::new(archive), entry);
+    }
+    Registry::repo_root().join(&map.file)
+}
+
+/// Real player count of one map container: `sloc` start locations in
+/// `war3mapUnits.doo`, floored at 1 (a campaign chapter places the player
+/// through its script, so 0 recorded slots still means one player).
+///
+/// Header-only: `MapBundle::open` reads the container, the doo, `w3e` and the
+/// script, and does not build a scene. The map list calls this per row instead
+/// of showing a constant.
+pub fn players_for_file(path: &Path) -> Result<u8, String> {
+    let bundle = wc3_re::mapfiles::MapBundle::open(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let starts = bundle
+        .units
+        .as_ref()
+        .map(|units| {
+            units
+                .iter()
+                .filter(|unit| &unit.type_id == b"sloc")
+                .count()
+        })
+        .unwrap_or(0);
+    Ok(starts.clamp(1, u8::MAX as usize) as u8)
+}
+
+/// Every `.w3m`/`.w3x` under `dir`, recursively, sorted.
+pub fn local_maps(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > 6 {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth + 1, out);
+                continue;
+            }
+            let extension = path
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            if extension == "w3m" || extension == "w3x" {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 0, &mut out);
+    out.sort();
+    out
+}
+
+/// Case-insensitive `name` lookup in `root` (Android data dirs are
+/// case-sensitive; retail installs are not).
+pub fn install_archive(root: &Path, name: &str) -> Option<PathBuf> {
+    let direct = root.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    fs::read_dir(root).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        (path.is_file()
+            && path
+                .file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.eq_ignore_ascii_case(name)))
+        .then_some(path)
+    })
+}
+
+/// Map entries inside one archive: every listfile name ending in `.w3m`/`.w3x`
+/// (RoC `Maps\Campaign\*.w3m`, TFT `Maps\FrozenThrone\Campaign\*.w3x`), sorted.
+pub fn archive_map_entries(archive: &Path) -> Vec<String> {
+    let Ok(mpq) = wc3_mpq::MpqArchive::open(archive) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = mpq
+        .listfile()
+        .iter()
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".w3m") || lower.ends_with(".w3x")
+        })
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// Extraction-cache path of one archive map: deterministic per
+/// `(archive file stem, entry file name)`, under [`crate::campaign::campaign_cache_dir`].
+pub fn chapter_cache_path(archive: &Path, entry: &str) -> PathBuf {
+    let archive_stem = archive
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| "archive".to_string());
+    let file = entry
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|file| !file.is_empty())
+        .unwrap_or("chapter.w3m");
+    crate::campaign::campaign_cache_dir()
+        .join("registry")
+        .join(format!("{archive_stem}-{file}"))
+}
+
+/// Read one map entry out of `archive` into [`chapter_cache_path`] (temp file +
+/// rename, so a killed run never leaves a half map).
+pub fn extract_archive_map(archive: &Path, entry: &str) -> Result<PathBuf, String> {
+    let mpq = wc3_mpq::MpqArchive::open(archive)
+        .map_err(|error| format!("open {}: {error}", archive.display()))?;
+    let bytes = mpq
+        .read(entry)
+        .map_err(|error| format!("read {entry} from {}: {error}", archive.display()))?;
+    let path = chapter_cache_path(archive, entry);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("mkdir {}: {error}", parent.display()))?;
+    }
+    let temp = path.with_extension("w3m.part");
+    fs::write(&temp, &bytes).map_err(|error| format!("write {}: {error}", temp.display()))?;
+    fs::rename(&temp, &path).map_err(|error| format!("rename {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// Census every map of one install: the loose `Maps/` tree plus every campaign
+/// chapter inside the mounted archives (`War3.mpq` RoC chapters, `War3xlocal.mpq`
+/// TFT chapters). Header-only — [`verify_playable`] is deliberately not run for
+/// a whole install here; the per-map acceptance test loads the play proof.
+pub fn build_install(install_root: &Path, generated: &str) -> Registry {
+    let mut registry = Registry {
+        generated: generated.to_string(),
+        source: format!("install {}", install_root.display()),
+        native_index: Vec::new(),
+        maps: Vec::new(),
+        rejected: Vec::new(),
+    };
+    let install_origin = format!("install:{}", install_root.display());
+    for path in local_maps(&install_root.join("Maps")) {
+        push_census(&mut registry, &path, install_root, &install_origin);
+    }
+    for name in ["War3.mpq", "War3x.mpq", "War3xlocal.mpq"] {
+        let Some(archive) = install_archive(install_root, name) else {
+            continue;
+        };
+        for entry in archive_map_entries(&archive) {
+            match extract_archive_map(&archive, &entry) {
+                Ok(path) => {
+                    let origin = format!("mpq:{}|{}", archive.display(), entry);
+                    let base = path.parent().unwrap_or_else(|| Path::new("."));
+                    push_census(&mut registry, &path, base, &origin);
+                }
+                Err(error) => registry.rejected.push(RejectedMap {
+                    file: format!("{}|{}", archive.display(), entry),
+                    error,
+                }),
+            }
+        }
+    }
+    // `loads` is the 300-tick play proof of the curated registry; an install
+    // census is header-only by design, so say so per entry instead of leaving a
+    // bare `loads=false` that reads like a failure.
+    for map in &mut registry.maps {
+        map.notes.push(
+            "install registry: header census (terrain + units); the play proof is the lane-509 test"
+                .to_string(),
+        );
+    }
+    registry
+}
+
+/// Census one container into `registry` (deduplicated id, rejected on error).
+fn push_census(registry: &mut Registry, path: &Path, base: &Path, origin: &str) {
+    match census_with_origin(path, base, origin) {
+        Ok(mut entry) => {
+            let base_id = entry.id.clone();
+            let mut slot = 1usize;
+            while registry.maps.iter().any(|map| map.id == entry.id) {
+                slot += 1;
+                entry.id = format!("{base_id}-{slot}");
+            }
+            registry.maps.push(entry);
+        }
+        Err(error) => registry.rejected.push(RejectedMap {
+            file: relative_to(path, base),
+            error,
+        }),
+    }
+}
+
 /// Write the registry JSON, creating the parent directory.
 pub fn write_registry(registry: &Registry, path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -608,7 +840,12 @@ pub fn slug(path: &Path) -> String {
 
 /// Path relative to the repo root with forward slashes (JSON-stable).
 pub fn repo_relative(path: &Path, repo_root: &Path) -> String {
-    path.strip_prefix(repo_root)
+    relative_to(path, repo_root)
+}
+
+/// `path` relative to `base` when it is below it; the path itself otherwise.
+fn relative_to(path: &Path, base: &Path) -> String {
+    path.strip_prefix(base)
         .unwrap_or(path)
         .components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -700,6 +937,7 @@ fn parse_census(entry: &Value, natives: &[String]) -> Result<MapCensus, String> 
     Ok(MapCensus {
         id,
         file: text_field(entry, "file"),
+        origin: text_field(entry, "origin"),
         format: text_field(entry, "format"),
         name: text_field(entry, "name"),
         author: text_field(entry, "author"),
@@ -878,6 +1116,7 @@ mod tests {
         registry.maps.push(MapCensus {
             id: "2-test".to_string(),
             file: "donors/maps/melee/(2)Test.w3x".to_string(),
+            origin: "donors".to_string(),
             format: "w3x".to_string(),
             name: "Test".to_string(),
             author: "Blizzard".to_string(),

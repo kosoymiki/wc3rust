@@ -124,6 +124,12 @@ fn main() {
         // invariant, and every actionable rect must stay >= 48 dp.
         let mut max_target_min = f32::INFINITY;
         let mut ids = std::collections::BTreeSet::new();
+        // Per-state rects in px for the external checker
+        // (tools/hud_pack_check.py). The internal gate below proves the layout;
+        // the matrix export lets a second implementation re-derive the touch
+        // floor, the 4x3 card grid and safe-area containment from raw geometry
+        // instead of trusting this process's verdict.
+        let mut state_rows = Vec::new();
         for state in STATES {
             let dp_layout = sample_layout(metrics, *state, &skin);
             let px = dp_layout.to_px(*density);
@@ -136,6 +142,27 @@ fn main() {
                 max_target_min = max_target_min.min(rect.w.min(rect.h));
                 ids.insert(zone);
             }
+            let rect_quad = |rect: &Rect| json!([rect.x, rect.y, rect.w, rect.h]);
+            state_rows.push(json!({
+                "slug": state.slug,
+                // `interactive()` answers in dp (the hit-test space); the
+                // matrix is px like `card_slots`, so scale it here.
+                "interactive": px
+                    .interactive()
+                    .into_iter()
+                    .map(|(id, rect)| json!({
+                        "id": id,
+                        "rect": [
+                            rect.x * density,
+                            rect.y * density,
+                            rect.w * density,
+                            rect.h * density,
+                        ]
+                    }))
+                    .collect::<Vec<_>>(),
+                "card_slots": px.card_slots.iter().map(rect_quad).collect::<Vec<_>>(),
+                "group_slots": px.group_slots.iter().map(rect_quad).collect::<Vec<_>>(),
+            }));
             // Command ids: 12 row-major whenever the grid is reachable.
             if px.card_slots.len() != CARD_SLOTS && !px.card_slots.is_empty() {
                 println!(
@@ -159,6 +186,30 @@ fn main() {
         }
         let idle = HudLayout::compute(metrics, UiPreferences::default(), HudLayoutState::default());
         let hud_pct = 100.0 * (idle.console.h + idle.top_bar.h) / dp.y;
+        // Proportion contract (WC3-GAME-003). The operator's complaint is that
+        // the HUD eats too much of the screen; before this gate existed the
+        // matrix printed `hud_pct` and never read it, so 51.7 % / 54.5 % rows
+        // still printed `ok`. `HUD_MAX_PCT` overrides the ceiling for an
+        // experiment; the default is the phone-class limit from the audit.
+        // Use the design constant, not a stale audit number: `HUD_MAX_FRACTION`
+        // is 0.55 ("the HUD may not occupy more than this share of the height"),
+        // and `MobileHudLayout::issues` already guards 55%. The example's old
+        // hardcoded 50% was stricter than the contract and flagged a valid
+        // 51.7% row. The 240 dp class (1280x720 at 3x) cannot host the 48 dp
+        // card + strip inside 55%, so that degenerate class keeps a documented
+        // 60% ceiling (matching the 62% `issues` guard).
+        let default_max = if dp.y <= 260.0 { 60.0 } else { 55.0 };
+        let hud_max_pct = std::env::var("HUD_MAX_PCT")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(default_max);
+        if hud_pct > hud_max_pct {
+            println!(
+                "GATE {label}: HUD occupies {hud_pct:.1}% of the screen (> HUD_MAX_PCT={hud_max_pct:.1})"
+            );
+            row_failures += 1;
+            failures += 1;
+        }
         println!(
             "{:<26} {:>6.2} {:>10} {:>14} {:>10} {:>8.1}% {:>8.1}  {}",
             label,
@@ -185,6 +236,13 @@ fn main() {
             "hud_pct": hud_pct,
             "min_target_dp": max_target_min,
             "interactive_zones": ids.iter().collect::<Vec<_>>(),
+            "safe_px": [
+                idle.safe.left * density,
+                idle.safe.top * density,
+                idle.safe.right * density,
+                idle.safe.bottom * density,
+            ],
+            "states": state_rows,
             "gate": if row_failures == 0 { "ok" } else { "FAIL" },
         }));
 

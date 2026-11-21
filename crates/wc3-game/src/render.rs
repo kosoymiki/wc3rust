@@ -32,7 +32,7 @@ use wc3_render::scene::{
 };
 use wc3_render::texture::TextureImage as GpuTexture;
 use wc3_render::texture::TextureSource;
-use wc3_render::fog::{FogMask, FogRenderer};
+use wc3_render::fog::{FogMask, FogMaskCache, FogRenderer};
 use wc3_render::{Counters, MeshRenderer, UiRenderer};
 
 use crate::assets::{Assets, TextureImage};
@@ -273,7 +273,17 @@ pub struct Renderer {
     clock: std::time::Instant,
     depth: Option<wgpu::TextureView>,
     fog: FogRenderer,
-    fog_mask: Option<FogMask>,
+    /// Resident mask plus the change gate: the blur/upload/bind path runs only
+    /// when the simulation's visibility state actually changed
+    /// (WC3-RENDER-002). `None` = no veil requested.
+    fog_masks: FogMaskCache,
+    /// The resident mask is newer than the uploaded texture.
+    fog_needs_upload: bool,
+    /// Depth-texture generation: a resize replaces the view the fog bind group
+    /// samples, so the bind group is recreated with it.
+    depth_epoch: u64,
+    /// Mask uploads since construction (device evidence for the change gate).
+    fog_uploads: u64,
     /// Model index -> unit kind, for the one-shot skinning log.
     model_kinds: Vec<String>,
     /// Clock hour for the day/night grade (`None` = advance with real time).
@@ -478,7 +488,10 @@ impl Renderer {
             clock: std::time::Instant::now(),
             depth: None,
             fog: FogRenderer::new(device, format),
-            fog_mask: None,
+            fog_masks: FogMaskCache::new(),
+            fog_needs_upload: false,
+            depth_epoch: 0,
+            fog_uploads: 0,
             model_kinds,
             skin_logged: false,
             day_night: wc3_render::daynight::DayNightState::new(),
@@ -530,6 +543,7 @@ impl Renderer {
             view_formats: &[],
         });
         self.depth = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.depth_epoch = self.depth_epoch.wrapping_add(1);
     }
 
     /// Counters of the last recorded frame (draws, upload bytes, binds, …).
@@ -639,7 +653,36 @@ impl Renderer {
     /// samples it through the depth buffer, so the mask follows terrain height,
     /// covers units and doodads standing on the cell, and stays under the HUD.
     pub fn set_fog(&mut self, sim: &wc3_sim::Sim, player: u8) {
-        self.fog_mask = Some(fog_mask_from_sim(sim, player));
+        self.set_fog_mask(fog_mask_from_sim(sim, player));
+    }
+
+    /// Hand the veil an explicit mask.
+    ///
+    /// `set_fog` derives the mask from a player's simulation grid; evidence
+    /// frames also need *uniform* masks (all visible / all explored / all
+    /// unexplored) to measure the three state ratios on one camera.
+    ///
+    /// The mask is stored only when it differs from the resident one: sampling
+    /// the simulation grid is cheap at the capped size (0.1–0.2 ms), but the
+    /// 25-tap blur, the texture upload and the bind-group allocation behind it
+    /// run only on an actual visibility change (WC3-RENDER-002).
+    pub fn set_fog_mask(&mut self, mask: FogMask) {
+        if self.fog_masks.accept(&mask) {
+            self.fog_needs_upload = true;
+        }
+    }
+
+    /// Remove the veil for the next frame (the world pass runs unved).
+    pub fn clear_fog(&mut self) {
+        self.fog_masks.clear();
+        self.fog_needs_upload = false;
+        self.fog.clear();
+    }
+
+    /// Mask uploads since the renderer was built: 1 on the first frame, then
+    /// one per visibility change (not one per frame).
+    pub fn fog_uploads(&self) -> u64 {
+        self.fog_uploads
     }
 
     pub fn render(
@@ -904,29 +947,44 @@ impl Renderer {
         // `H2_FOW=off` skips the veil; the minimap keeps reading the same sim
         // grid either way.
         if wc3_render::fog::enabled() {
-            if let (Some(mask), Some(depth)) = (self.fog_mask.as_ref(), self.depth.as_ref()) {
+            if let (Some(mask), Some(depth)) = (self.fog_masks.resident(), self.depth.as_ref()) {
                 // `GAME_FOW unexplored=… explored=… visible=…` once per distinct
                 // histogram: device evidence that the three states exist.
                 let histogram = mask.histogram();
                 if self.logged_fow != Some(histogram) {
                     self.logged_fow = Some(histogram);
                     crate::dev_log!(
-                        "GAME_FOW unexplored={} explored={} visible={} cells={} cell_size={:.0}",
+                        "GAME_FOW unexplored={} explored={} visible={} cells={} cell_size={:.0} uploads={}",
                         histogram.0,
                         histogram.1,
                         histogram.2,
-                        mask.width * mask.height,
-                        mask.cell_size
+                        mask.cell_count(),
+                        mask.cell_size(),
+                        self.fog_uploads
                     );
                 }
-                self.fog.prepare(
-                    device,
-                    queue,
-                    mask,
-                    scene.view_proj.inverse(),
-                    scene.viewport,
-                    depth,
-                );
+                if self.fog_needs_upload {
+                    self.fog.prepare(
+                        device,
+                        queue,
+                        mask,
+                        scene.view_proj.inverse(),
+                        scene.viewport,
+                        depth,
+                        self.depth_epoch,
+                    );
+                    self.fog_needs_upload = false;
+                    self.fog_uploads = self.fog_uploads.saturating_add(1);
+                } else {
+                    // Unchanged mask: only the 96 B uniform (the inverse
+                    // view-projection moves every frame; the mask does not).
+                    self.fog.update_params(
+                        queue,
+                        scene.view_proj.inverse(),
+                        scene.viewport,
+                        mask,
+                    );
+                }
                 note_pass(2);
                 let _scope = PassScope::new(device, PASS_FOW);
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1211,42 +1269,56 @@ fn build_doodad_geometry(
         }
     }
 
-    // Soft blob shadows ground the trees/rocks: a triangle fan with a dark
-    // centre and transparent rim, one merged decal draw for the whole map.
+    // Soft blob shadows ground the trees/rocks: a three-ring fan (opaque core,
+    // a plateau out to 60 % of the radius, then a fade to zero). A single
+    // centre-to-rim fan has alpha 0 exactly where the blob becomes visible
+    // outside the footprint, which is why the first version measured as "no
+    // shadow" on the frame — the unit path learned the same lesson
+    // (`mesh.rs::push_ground_shadow`).
     let shadow_index_start = indices.len() as u32;
-    let segments = 14u32;
+    let segments = 20u32;
     for instance in &doodads.instances {
         let model = &doodads.models[instance.model];
-        let radius = model.footprint * instance.scale * 0.42;
+        let radius = model.footprint * instance.scale * 0.46;
         if radius < 6.0 {
             continue;
         }
         let centre = instance.world.transform_point3(Vec3::ZERO);
         let y = centre.y + 2.0;
         let base = vertices.len() as u32;
-        vertices.push(MeshVertex::colored(
-            [centre.x, y, centre.z],
-            Vec3::Y,
-            [0.5, 0.5],
-            [0.02, 0.03, 0.04, 0.30],
-        ));
-        for segment in 0..=segments {
-            let angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+        let push = |vertices: &mut Vec<MeshVertex>, x: f32, z: f32, alpha: f32| {
             vertices.push(MeshVertex::colored(
-                [
-                    centre.x + angle.cos() * radius,
-                    y,
-                    centre.z + angle.sin() * radius,
-                ],
+                [x, y, z],
                 Vec3::Y,
                 [0.5, 0.5],
-                [0.02, 0.03, 0.04, 0.0],
+                [0.02, 0.03, 0.04, alpha],
             ));
+        };
+        push(&mut vertices, centre.x, centre.z, 0.34);
+        for (ring, alpha) in [(0.60f32, 0.27f32), (1.0, 0.0)] {
+            for segment in 0..=segments {
+                let angle = segment as f32 / segments as f32 * std::f32::consts::TAU;
+                push(
+                    &mut vertices,
+                    centre.x + angle.cos() * radius * ring,
+                    centre.z + angle.sin() * radius * ring,
+                    alpha,
+                );
+            }
         }
+        // Core fan, then the plateau ring, then the outer fade.
         for segment in 0..segments {
             indices.push(base);
             indices.push(base + 1 + segment);
             indices.push(base + 2 + segment);
+        }
+        let plateau = base + segments + 2;
+        for segment in 0..segments {
+            let inner_a = base + 1 + segment;
+            let inner_b = base + 2 + segment;
+            let outer_a = plateau + segment;
+            let outer_b = plateau + 1 + segment;
+            indices.extend_from_slice(&[inner_a, outer_a, inner_b, inner_b, outer_a, outer_b]);
         }
     }
     if indices.len() as u32 > shadow_index_start {
@@ -1269,28 +1341,48 @@ fn build_doodad_geometry(
 /// `2` visible. [`Renderer::set_fog`] feeds the 3D veil from this, and the
 /// minimap (`Game::minimap_fog_cells`) reads the same `is_visible`/`is_explored`
 /// predicates, so the world and the HUD can never disagree about visibility.
+///
+/// Sampling budget: the pathing grid is one cell per 128-unit terrain tile
+/// (`Game::new` replaces the default grid with `TERRAIN_TILE_SIZE`), so it is
+/// at most 256x256 on a real WC3 map. The >=256 branch is retained because the
+/// renderer is also built for synthetic/oversized grids, and it must keep the
+/// mask bounded there: **ceiling** division so `fog_w, fog_h <= 256` for every
+/// grid size. The previous truncating division (`width / 256`) left widths
+/// 257..=511 at stride 1 and produced a 511x511 mask (4x the budget), and 4000
+/// at stride 15 produced 267x267 (WC3-RENDER-001).
 pub fn fog_mask_from_sim(sim: &wc3_sim::Sim, player: u8) -> FogMask {
-    let width = sim.grid.width;
-    let height = sim.grid.height;
-    // The pathing grid is the WPM (4-unit cells): 4096x4096 on a 128x128 map,
-    // i.e. 16.7M cells. Building the mask (and then the box blur) over all of
-    // them every frame froze the render thread (device 2026-11-17: tick=684,
-    // fps=0, SDLThread inside `wc3_render::fog::darkness_grid`). Fog of war is a
-    // visual field, not a pathing query: sample it at <=256 cells per side and
-    // scale the world cell size by the stride so the mapping stays exact.
-    let stride = (width.max(height) / 256).max(1);
+    let width = sim.grid.width.max(1);
+    let height = sim.grid.height.max(1);
+    // Ceiling stride: `ceil(max_side / 256)`, so `ceil(side / stride) <= 256`
+    // for every side. Rounding up keeps the mask covering the whole grid with
+    // no gap: cell x spans `[x*stride, (x+1)*stride)` pathing cells and the
+    // published `cell_size * stride` matches that span exactly.
+    //
+    // Sampling phase (WC3-I-012): the CPU samples the **block centre**
+    // `(x + 0.5) * stride * cell_size`, the same world point the shader maps to
+    // texel x (`floor(world / (cell_size * stride)) == x`). The previous corner
+    // sample `(x*stride + 0.5) * cell_size` biased every multi-cell block by
+    // half a stride, so the CPU state and the texture it filled described
+    // different world areas.
+    let stride = width.max(height).div_ceil(256).max(1);
     let fog_w = width.div_ceil(stride).max(1);
     let fog_h = height.div_ceil(stride).max(1);
+    debug_assert!(
+        fog_w <= 256 && fog_h <= 256,
+        "fog mask must stay <=256 cells per side: grid={width}x{height} stride={stride} -> {fog_w}x{fog_h}"
+    );
     let cell_size = sim.grid.cell_size;
     let mut cells = Vec::with_capacity((fog_w * fog_h) as usize);
     for y in 0..fog_h {
         for x in 0..fog_w {
-            let sx = (x * stride).min(width - 1);
-            let sy = (y * stride).min(height - 1);
-            let pos = wc3_sim::Vec2::new(
-                (sx as f32 + 0.5) * cell_size,
-                (sy as f32 + 0.5) * cell_size,
-            );
+            // Block centre in pathing-cell units, clamped to the centre of the
+            // last real cell: `is_visible`/`is_explored` floor it to the cell
+            // that contains it, which is exactly mask cell `x` for a full
+            // block and `width-1` for a partial last block (the only cells the
+            // block actually covers).
+            let sample_x = ((x as f32 + 0.5) * stride as f32).min(width as f32 - 0.5);
+            let sample_y = ((y as f32 + 0.5) * stride as f32).min(height as f32 - 0.5);
+            let pos = wc3_sim::Vec2::new(sample_x * cell_size, sample_y * cell_size);
             cells.push(if sim.is_visible(player, pos) {
                 2
             } else if sim.is_explored(player, pos) {
@@ -1471,6 +1563,33 @@ fn render_scene_with_skin_hour(
     )
 }
 
+/// Same frame as [`render_scene_to_rgba_with_lighting`], plus the frame
+/// counters.
+///
+/// The world-render evidence lane needs draws/triangles for the *same* capture
+/// the PNG comes from, not a second frame that could differ.
+pub fn render_scene_with_lighting_counters(
+    assets: &Assets,
+    font_atlas: &TextureImage,
+    minimap: Option<&TextureImage>,
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    lighting: FrameLighting<'_>,
+) -> Result<(Vec<u8>, Counters), String> {
+    render_scene_with_skin_lighting(
+        assets,
+        font_atlas,
+        minimap,
+        scene,
+        width,
+        height,
+        RenderOptions::default(),
+        None,
+        lighting,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_scene_with_skin_lighting(
     assets: &Assets,
@@ -1505,7 +1624,7 @@ fn render_scene_with_skin_lighting(
         renderer.set_identity_light(identity);
     }
     if let Some(fog) = lighting.fog {
-        renderer.fog_mask = Some(fog.clone());
+        renderer.set_fog_mask(fog.clone());
     }
     renderer.resize(&headless.device, headless.width, headless.height);
     headless.render(&mut renderer, scene, options);
@@ -1768,6 +1887,74 @@ mod tests {
         map.exists().then_some((mpq, map))
     }
 
+    /// The acceptance map first (Orc01), then the melee fallback.
+    fn acceptance_fixtures() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mpq = [
+            root.join("analysis/agent-assets/wc3-install/War3x.mpq"),
+            std::path::PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3x.mpq"),
+            std::path::PathBuf::from("/data/data/com.termux/files/usr/tmp/opencode/wc3_iso/War3.mpq"),
+        ]
+        .into_iter()
+        .find(|path| path.exists())?;
+        let map = root.join("analysis/war3_full3/Maps/Campaign/Orc01.w3m");
+        map.exists().then_some((mpq, map))
+    }
+
+    /// `render.doodad.shadow-profile`: the doodad ground shadow must be a
+    /// three-ring blob, not a plain centre-to-rim fan.
+    ///
+    /// A centre→rim fan reaches alpha 0 exactly at the rim, i.e. precisely where
+    /// the blob becomes visible outside the model footprint, so the whole decal
+    /// measured as "no shadow" (the unit path already learned this: a plateau
+    /// ring keeps a visible core). The test reads the merged static batch the
+    /// renderer actually uploads.
+    #[test]
+    fn render_doodad_shadow_profile() {
+        let Some((mpq, map)) = acceptance_fixtures().or_else(fixtures) else {
+            crate::dev_log!("SKIP render.doodad.shadow-profile: install/map missing");
+            return;
+        };
+        let assets = Assets::load(Some(&mpq), Some(&map));
+        let doodads = crate::doodads::DoodadWorld::load(&assets);
+        let (vertices, indices, specs) = build_doodad_geometry(&doodads, assets.textures.len());
+        assert!(!specs.is_empty(), "doodad batch is empty");
+        let shadow = specs
+            .iter()
+            .find(|spec| spec.group == 2 && spec.blend == 2)
+            .expect("no shadow decal spec in the doodad batch");
+        let start = shadow.index_start as usize;
+        let end = start + shadow.index_count as usize;
+        let used: std::collections::BTreeSet<u32> = indices[start..end].iter().copied().collect();
+        // Centre vertices carry the strongest alpha; a plateau ring keeps a
+        // non-zero alpha out to ~60 % of the radius; the rim is zero.
+        let mut centre_alpha = 0.0f32;
+        let mut plateau = 0usize;
+        for index in &used {
+            let alpha = vertices[*index as usize].color[3] as f32 / u16::MAX as f32;
+            if alpha >= 0.30 {
+                centre_alpha = centre_alpha.max(alpha);
+            } else if alpha > 0.05 {
+                plateau += 1;
+            }
+        }
+        println!(
+            "DOODAD_SHADOW specs={} shadow_tris={} used_vertices={} max_alpha={centre_alpha:.2} \
+             plateau_vertices={plateau}",
+            specs.len(),
+            shadow.index_count / 3,
+            used.len()
+        );
+        assert!(
+            centre_alpha >= 0.30,
+            "shadow core alpha {centre_alpha:.2} < 0.30: the decal is invisible"
+        );
+        assert!(
+            plateau > 0,
+            "no plateau-ring vertices: a centre→rim fan has zero alpha where it is visible"
+        );
+    }
+
     /// `render.skinning.upload-contract`: the GPU upload consumes exactly the
     /// compact influence list (`CompactMesh::bones`) — same pairs, same
     /// weights, at most four — so the upload path and the runtime skinning
@@ -1990,16 +2177,17 @@ mod tests {
     /// inside the usable rect (no overlap with the gesture bars/cutout).
     #[test]
     fn rendering_native_scale_math() {
+        // The compatibility view carries no scale formula and no geometry: the
+        // one authority is the live mobile layout, which writes both after each
+        // rebuild (WC3-GAME-003).
         let native = crate::hud::HudLayout::new(glam::Vec2::new(2414.0, 1080.0));
-        assert!((native.scale - 1.0).abs() < 1e-6, "native scale {}", native.scale);
-        let hd = crate::hud::HudLayout::new(glam::Vec2::new(1280.0, 720.0));
-        assert!((hd.scale - 720.0 / 1080.0).abs() < 1e-6, "hd scale {}", hd.scale);
-        let small = crate::hud::HudLayout::new(glam::Vec2::new(320.0, 240.0));
-        assert!((small.scale - 0.62).abs() < 1e-6, "small scale {}", small.scale);
-        let large = crate::hud::HudLayout::new(glam::Vec2::new(4320.0, 2160.0));
-        assert!((large.scale - 2.0).abs() < 1e-6, "large scale {}", large.scale);
-        let portrait = crate::hud::HudLayout::new(glam::Vec2::new(1080.0, 2414.0));
-        assert!((portrait.scale - 1.0).abs() < 1e-6, "portrait scale {}", portrait.scale);
+        assert!(
+            (native.scale - 1.0).abs() < 1e-6,
+            "neutral scale before a rebuild: {}",
+            native.scale
+        );
+        assert_eq!(native.command.w, 0.0, "no command rect before a rebuild");
+        assert_eq!(native.top_bar.h, 0.0, "no console rect before a rebuild");
 
         let Some((mpq, map)) = fixtures() else {
             crate::dev_log!("SKIP rendering.native: fixtures missing");
@@ -2008,6 +2196,12 @@ mod tests {
         let assets = Assets::load(Some(&mpq), Some(&map));
         let mut game = crate::game::Game::new(assets, 0x5EED);
         game.resize(2414.0, 1080.0);
+        assert!(
+            (game.layout.scale - game.density_scale).abs() < 1e-6,
+            "live layout publishes the density scale: {} vs {}",
+            game.layout.scale,
+            game.density_scale
+        );
         game.set_safe_insets(210.0, 120.0, 90.0, 96.0);
         assert_eq!(game.viewport, glam::Vec2::new(2414.0, 1080.0));
         let (left, top) = (game.safe_insets.left, game.safe_insets.top);

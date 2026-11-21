@@ -79,8 +79,6 @@ pub struct ModelEntry {
     pub pose_sequence: Option<String>,
     /// `true` when the requested pose only matched a fallback alias.
     pub pose_fallback: bool,
-    /// Canonical ability sequences resolved by `wc3-anim` (no per-kind tables).
-    pub cast_sequence: Option<String>,
     /// Canonical projectile sequences resolved by `wc3-anim`.
     pub flight_sequence: Option<String>,
     pub birth_sequence: Option<String>,
@@ -285,8 +283,8 @@ impl ModelRegistry {
     }
 
     /// Build geometry with an explicit pose source. `Stand` keeps the gallery
-    /// behaviour, `Projectile(Flight)` is what missiles use, and
-    /// `Ability(Cast)` is the canonical spell-playback patch.
+    /// behaviour; `Projectile(Flight)` is what missiles use. Spell playback is
+    /// per-frame ([`SpellPlayback`]) and does not go through this cache.
     fn build_posed(&mut self, model: &str, pose: Pose) -> BuildOutcome {
         let Ok(model_asset) = self.db.model_shared(model) else {
             return BuildOutcome::Failed;
@@ -308,10 +306,6 @@ impl ModelRegistry {
             .sequence(model, "stand")
             .or_else(|| mdx.sequences.first().cloned());
         // Canonical sequence resolution from `wc3-anim` — no per-kind tables.
-        let cast_sequence = self
-            .animators
-            .ability_sequence(model, AbilitySequence::Cast)
-            .map(|matched| matched.sequence.name.clone());
         let flight_sequence = self
             .animators
             .projectile_sequence(model, ProjectileSequence::Flight)
@@ -332,18 +326,6 @@ impl ModelRegistry {
                     .unwrap_or_else(|| wc3_anim::Animator::from_model(&mdx));
                 (animator, stand.as_ref().map(|sequence| sequence.name.clone()), false)
             }
-            Pose::Ability(kind) => match self.animators.ability_animator(model, kind) {
-                Some((matched, animator)) => (
-                    animator,
-                    Some(matched.sequence.name.clone()),
-                    matched.fallback,
-                ),
-                None => (
-                    wc3_anim::Animator::from_model(&mdx),
-                    stand.as_ref().map(|sequence| sequence.name.clone()),
-                    true,
-                ),
-            },
             Pose::Projectile(kind) => match self.animators.projectile_animator(model, kind) {
                 Some((matched, animator)) => (
                     animator,
@@ -384,7 +366,6 @@ impl ModelRegistry {
             stand_sequence: stand.as_ref().map(|sequence| sequence.name.clone()),
             pose_sequence,
             pose_fallback,
-            cast_sequence,
             flight_sequence,
             birth_sequence,
             impact_sequence,
@@ -444,10 +425,14 @@ impl ModelRegistry {
 }
 
 /// Which sequence the cached geometry is posed with.
+///
+/// The old `Ability(AbilitySequence)` variant was never constructed: the
+/// runtime moved to per-frame sequence sampling and spell playback resolves
+/// its own animator ([`SpellPlayback`]), so the variant is gone rather than
+/// left as unreachable animation logic (WC3-GAME-004).
 #[derive(Clone, Copy, Debug)]
 enum Pose {
     Stand,
-    Ability(AbilitySequence),
     Projectile(ProjectileSequence),
 }
 
@@ -455,12 +440,6 @@ impl Pose {
     fn tag(self) -> &'static str {
         match self {
             Self::Stand => "stand",
-            Self::Ability(AbilitySequence::Cast) => "cast",
-            Self::Ability(AbilitySequence::Channel) => "channel",
-            Self::Ability(AbilitySequence::Attack) => "attack",
-            Self::Ability(AbilitySequence::Victory) => "victory",
-            Self::Ability(AbilitySequence::Death) => "death",
-            Self::Ability(AbilitySequence::Dissipate) => "dissipate",
             Self::Projectile(ProjectileSequence::Flight) => "flight",
             Self::Projectile(ProjectileSequence::Birth) => "birth",
             Self::Projectile(ProjectileSequence::Impact) => "impact",
@@ -1180,6 +1159,7 @@ mod tests {
                     scale: 1.0,
                     yaw_offset: 0.0,
                     fallback: false,
+                    generic: false,
                 });
                 let x = (slot as f32 - 3.5) * 320.0;
                 let z = if grid {
@@ -1503,6 +1483,7 @@ mod tests {
                 scale: 1.0,
                 yaw_offset: 0.0,
                 fallback: false,
+                generic: false,
             });
             let x = -640.0 + slot as f32 * 150.0;
             let origin = Vec3::new(x, 30.0, -300.0);
@@ -1684,6 +1665,7 @@ mod tests {
             scale: 1.0,
             yaw_offset: 0.0,
             fallback: false,
+            generic: false,
         });
         // Flight along +Z (yaw 0) keeps the flat plane's normal in model space.
         let origin = Vec3::new(0.0, 120.0, -200.0);
