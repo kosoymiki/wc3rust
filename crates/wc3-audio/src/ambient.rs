@@ -561,10 +561,11 @@ impl MidiSong {
                 break;
             }
             parse_track(bytes, track_start, track_end, &mut song, &mut tempo_events)?;
+            // Standard MIDI chunks are packed back to back; unlike RIFF there
+            // is no word-alignment padding. BarrensNight.mid starts with a
+            // 35-byte track, and treating the next byte as padding lost every
+            // following track (silent night ambience, ledger 508).
             pos = track_start + track_len;
-            if track_len % 2 == 1 {
-                pos += 1;
-            }
         }
         if song.notes.is_empty() {
             return Err(AudioError::Corrupt("MIDI has no notes"));
@@ -1057,6 +1058,47 @@ mod tests {
         println!("AMBIENT_CLIPS themes={} unresolved=0", table.len());
     }
 
+    /// Every shipped ambient theme must parse its MIDI and render audible PCM.
+    ///
+    /// Six of the fifteen themes start with an odd-length `MTrk`
+    /// (LordaeronWinter day/night, LordaeronFall day, Barrens night, Ashenvale
+    /// night, Northrend day); a padding-skipping parser dropped their later
+    /// tracks and the loops rendered silent. The sweep keeps that class closed.
+    #[test]
+    fn every_ambient_theme_parses_and_renders_audible() {
+        let Some(_root) = ambient_dir() else {
+            return;
+        };
+        let Some(table) = table() else {
+            return;
+        };
+        let install = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../analysis/war3_full3");
+        let mut checked = 0usize;
+        let mut silent = Vec::new();
+        for theme in table.themes() {
+            let read = |path: String| {
+                std::fs::read(install.join(path.replace('\\', "/")))
+                    .unwrap_or_else(|error| panic!("{}: {path}: {error}", theme.name))
+            };
+            let midi = read(theme.midi_path());
+            let dls = read(theme.dls_path());
+            let song = MidiSong::parse(&midi)
+                .unwrap_or_else(|error| panic!("{}: MIDI parse: {error}", theme.name));
+            assert!(!song.notes.is_empty(), "{}: no notes", theme.name);
+            let bank = DlsBank::parse(&dls)
+                .unwrap_or_else(|error| panic!("{}: DLS parse: {error}", theme.name));
+            let render = render_ambient(&song, &bank, 10.0)
+                .unwrap_or_else(|| panic!("{}: no rendered PCM", theme.name));
+            if render.peak < 1e-4 {
+                silent.push(theme.name.clone());
+            }
+            checked += 1;
+        }
+        assert!(silent.is_empty(), "silent ambient themes: {silent:?}");
+        assert!(checked >= 15, "ambient themes checked: {checked}");
+        println!("AMBIENT_RENDER themes={checked} silent=0");
+    }
+
     #[test]
     fn dls_bank_parses_the_shipped_lordaeron_summer_bank() {        let Some(root) = ambient_dir() else {
             return;
@@ -1082,5 +1124,37 @@ mod tests {
         assert!(song.seconds() > 60.0, "seconds {}", song.seconds());
         assert!(song.end_tick > 100_000, "end tick {}", song.end_tick);
         assert!(!song.tempo_events.is_empty(), "tempo changes: {}", song.tempo_events.len());
+    }
+
+    /// BarrensNight.mid starts with a 35-byte (odd) `MTrk`. Standard MIDI
+    /// chunks have no word padding, unlike RIFF; a parser that skips a padding
+    /// byte loses every later track and the night score goes silent (the
+    /// observed ledger-508 Orc01 failure).
+    #[test]
+    fn midi_song_parses_odd_length_tracks_without_padding() {
+        let Some(root) = ambient_dir() else {
+            return;
+        };
+        let bytes = std::fs::read(root.join("Barrens/BarrensNight.mid")).expect("mid");
+        let first_len = u32::from_be_bytes(bytes[18..22].try_into().unwrap()) as usize;
+        assert_eq!(first_len, 35, "the fixture really has an odd first track");
+        let song = MidiSong::parse(&bytes).expect("odd-length MIDI parses");
+        assert!(song.notes.len() > 100, "notes={}", song.notes.len());
+        assert!(song.seconds() > 60.0, "seconds {}", song.seconds());
+    }
+
+    #[test]
+    fn barrens_night_ambient_renders_audible_pcm() {
+        let Some(root) = ambient_dir() else {
+            return;
+        };
+        let midi = std::fs::read(root.join("Barrens/BarrensNight.mid")).expect("mid");
+        let dls = std::fs::read(root.join("Barrens/Barrens.dls")).expect("dls");
+        let song = MidiSong::parse(&midi).expect("parse midi");
+        let bank = DlsBank::parse(&dls).expect("parse dls");
+        let render = render_ambient(&song, &bank, MAX_AMBIENT_SECONDS).expect("render");
+        assert!(render.peak > 1e-4, "peak {}", render.peak);
+        assert!(render.sound.duration_seconds() > 30.0, "{} s", render.sound.duration_seconds());
+        assert!(render.notes > 100, "rendered notes {}", render.notes);
     }
 }

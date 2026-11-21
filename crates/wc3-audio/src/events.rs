@@ -9,12 +9,15 @@
 //! `AbilitySounds.slk` (ability casts), and `UI/TriggerData.txt` `musictheme`
 //! rows (race music, victory/defeat stingers).
 //!
-//! An event with no retail row stays silent and is reported as a data gap;
-//! inventing a sound would be worse than the gap.
+//! Two events need a shipped file without a SoundInfo row:
+//! `Sound\Interface\ReceiveGold.wav` (its filename states the semantics) is
+//! played for the gold deposit; `DepositLumber` has no shipped file at all and
+//! stays a documented gap. An event with no shipped sound stays silent and is
+//! reported as a data gap; inventing a sound would be worse than the gap.
 
 use glam::Vec3;
 
-use crate::engine::VoiceId;
+use crate::engine::{Category, PlayParams, VoiceId};
 use crate::game_audio::{GameAudio, SoundProvider};
 
 /// Playable races (the four per-race sound families).
@@ -324,7 +327,8 @@ impl AudioEvent {
             | AudioEvent::QuestUpdate
             | AudioEvent::QuestCompleted
             | AudioEvent::QuestFailed
-            | AudioEvent::AbilityCast => AudioGroup::Ui,
+            | AudioEvent::AbilityCast
+            | AudioEvent::LevelUp => AudioGroup::Ui,
             AudioEvent::UiError
             | AudioEvent::DenyNoGold
             | AudioEvent::DenyNoLumber
@@ -332,8 +336,7 @@ impl AudioEvent {
             | AudioEvent::LowGold
             | AudioEvent::LowFood
             | AudioEvent::DepositGold
-            | AudioEvent::DepositLumber
-            | AudioEvent::LevelUp => AudioGroup::Error,
+            | AudioEvent::DepositLumber => AudioGroup::Error,
         }
     }
 
@@ -366,6 +369,26 @@ impl AudioEvent {
                 | AudioEvent::Selected
         )
     }
+
+    /// Shipped file the event plays directly, for events with no SoundInfo row.
+    ///
+    /// `ReceiveGold.wav` is the retail interface cue for gold received; the
+    /// filename is the only shipped mapping (no `UISounds.slk` row exists).
+    pub fn direct_file(self) -> Option<&'static str> {
+        match self {
+            AudioEvent::DepositGold => Some("Sound\\Interface\\ReceiveGold.wav"),
+            _ => None,
+        }
+    }
+
+    /// Event with no shipped sound at all: silent by data, not by defect.
+    ///
+    /// Only `DepositLumber` remains: the archive ships no lumber-receipt cue
+    /// and no table row, so the event is reported once as a gap instead of
+    /// borrowing the gold cue (which would be the wrong sound).
+    pub fn documented_gap(self) -> bool {
+        matches!(self, AudioEvent::DepositLumber)
+    }
 }
 
 /// Retail `SoundInfo` definitions for an event, in preference order.
@@ -374,10 +397,12 @@ impl AudioEvent {
 /// an empty slice. `AbilityCast` is resolved by the caller from
 /// `AbilitySounds.slk` (`GameAudio::spell`), and `AttackImpact` from
 /// `UnitCombatSounds.slk` (`GameAudio::attack_impact`, weapon × material).
-/// `LevelUp`, `DepositGold` and `DepositLumber` have no row in any shipped
-/// table (documented data gaps; reported once as `AUDIO_EVENT missing=`).
-/// With `race = None` the race-scoped events list every race variant, which is
-/// what the audit matrix needs; playback should pass the race.
+/// `LevelUp` is the shipped `AnimSounds.slk` row; `DepositGold` plays the
+/// shipped `Sound\Interface\ReceiveGold.wav` directly
+/// ([`AudioEvent::direct_file`]); `DepositLumber` is the one documented gap
+/// ([`AudioEvent::documented_gap`]). With `race = None` the race-scoped events
+/// list every race variant, which is what the audit matrix needs; playback
+/// should pass the race.
 pub fn event_defs(event: AudioEvent, race: Option<Race>) -> &'static [&'static str] {
     match (event, race) {
         (AudioEvent::BuildStart, Some(Race::Human)) => &["ConstructingBuildingDefault"],
@@ -480,6 +505,9 @@ pub fn event_defs(event: AudioEvent, race: Option<Race>) -> &'static [&'static s
         (AudioEvent::QuestUpdate, _) => &["QuestUpdate", "QuestLogModified", "QuestNew"],
         (AudioEvent::QuestCompleted, _) => &["QuestCompleted"],
         (AudioEvent::QuestFailed, _) => &["QuestFailed"],
+        // `AnimSounds.slk` ships the hero level-up cue (`Levelupcaster.wav`);
+        // the event was previously reported as a gap.
+        (AudioEvent::LevelUp, _) => &["LevelUp"],
         _ => &[],
     }
 }
@@ -634,6 +662,30 @@ impl<P: SoundProvider> GameAudio<P> {
             other => {
                 if other.is_race_scoped() && race.is_none() {
                     None
+                } else if let Some(file) = other.direct_file() {
+                    // Shipped file with no table row (`ReceiveGold.wav`): play
+                    // it on the interface bus, non-positional, and prove the
+                    // path in the event line.
+                    match self.provider().resolve(file) {
+                        Some(path) => match self.provider_mut().load_sound(&path) {
+                            Some(sound) => {
+                                self.last_sound_file = Some(path.clone());
+                                def_name = Some(format!("direct:{path}"));
+                                Some(self.engine().play(
+                                    sound,
+                                    PlayParams {
+                                        gain: 1.0,
+                                        position: None,
+                                        category: Category::Ui,
+                                        priority: 6,
+                                        ..Default::default()
+                                    },
+                                ))
+                            }
+                            None => None,
+                        },
+                        None => None,
+                    }
                 } else {
                     let defs = event_defs(other, race);
                     match self.play_first_named(defs, position) {
@@ -797,7 +849,12 @@ impl<P: SoundProvider> GameAudio<P> {
     }
 
     /// Race/state music selection (playing loop, victory or defeat stinger).
+    ///
+    /// An explicit selection ends the match playlist: the victory/defeat stinger
+    /// must not be replaced by the next in-game track when the old track length
+    /// elapses.
     pub fn music_for_race(&mut self, race: Race, state: MusicState) -> Option<VoiceId> {
+        self.clear_playlist();
         for name in race.theme_names(state) {
             if let Some(voice) = self.music(name) {
                 return Some(voice);

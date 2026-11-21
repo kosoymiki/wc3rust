@@ -132,6 +132,33 @@ impl SoundProvider for ArchiveProvider {
     }
 }
 
+/// Provider that corrupts one music path, for the probe-before-fade regression.
+struct CorruptMusicProvider {
+    inner: ArchiveProvider,
+    corrupt: String,
+}
+
+impl SoundProvider for CorruptMusicProvider {
+    fn load_sound(&mut self, path: &str) -> Option<Arc<Sound>> {
+        self.inner.load_sound(path)
+    }
+
+    fn load_bytes(&mut self, path: &str) -> Option<Arc<[u8]>> {
+        if !self.corrupt.is_empty() && path.eq_ignore_ascii_case(&self.corrupt) {
+            return Some(Arc::from(&b"not an mpeg stream"[..]));
+        }
+        self.inner.load_bytes(path)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.inner.exists(path)
+    }
+
+    fn resolve(&self, path: &str) -> Option<String> {
+        self.inner.resolve(path)
+    }
+}
+
 fn headless() -> AudioEngine {
     AudioEngine::headless(AudioConfig {
         sample_rate: 48_000,
@@ -256,6 +283,9 @@ fn audio_events_every_retail_event_has_a_mapped_sound() {
                 .get("InterfaceError")
                 .or_else(|| sounds.get("ErrorMessage"))
                 .is_some(),
+            AudioEvent::DepositGold => event
+                .direct_file()
+                .is_some_and(|file| root.join(file.replace('\\', "/")).is_file()),
             other => event_defs(other, None)
                 .iter()
                 .any(|name| sounds.get(name).is_some()),
@@ -267,11 +297,11 @@ fn audio_events_every_retail_event_has_a_mapped_sound() {
         }
     }
 
-    assert_eq!(mapped.len(), 31, "mapped={mapped:?} absent={absent:?}");
+    assert_eq!(mapped.len(), 33, "mapped={mapped:?} absent={absent:?}");
     assert_eq!(
         absent,
-        vec!["deposit_gold", "deposit_lumber", "level_up"],
-        "these have no row in any shipped SoundInfo table; they stay silent and are reported once"
+        vec!["deposit_lumber"],
+        "no shipped lumber-receipt cue exists; it stays silent and is reported once"
     );
 
     // Every definition named for an event exists in the loaded tables.
@@ -331,10 +361,10 @@ fn audio_events_every_mapped_event_starts_a_voice() {
     for event in AudioEvent::ALL {
         let voice = play_event_with_context(&mut audio, event);
         match event {
-            AudioEvent::LevelUp | AudioEvent::DepositGold | AudioEvent::DepositLumber => {
+            AudioEvent::DepositLumber => {
                 assert!(
                     voice.is_none(),
-                    "{} must stay silent (no retail row)",
+                    "{} must stay silent (no shipped cue)",
                     event.id()
                 );
             }
@@ -347,12 +377,143 @@ fn audio_events_every_mapped_event_starts_a_voice() {
         // gapped clock keep this matrix a mapping test, not a limiter test.
         audio.advance_ms(500);
     }
-    assert_eq!(started, 31, "events with a started voice");
+    assert_eq!(started, 33, "events with a started voice");
     assert_eq!(
         audio.missing_events(),
-        &["deposit_gold", "deposit_lumber", "level_up"],
-        "only the documented gaps are reported missing"
+        &["deposit_lumber"],
+        "only the documented gap is reported missing"
     );
+}
+
+/// Every mapped event must name a shipped file that actually decodes.
+///
+/// The mapping matrix above uses a synthetic PCM buffer for speed, so it cannot
+/// catch a row whose WAV is absent or corrupt. This walks the same mapping to
+/// the real archive and decodes the bytes (WAV fully, MP3 header probe): one
+/// missing file is a defect, not a silent fallback.
+#[test]
+fn audio_events_every_mapped_event_has_a_decodable_file() {
+    let Some(root) = archive() else {
+        return;
+    };
+    let sounds = load_sounds(&root);
+    let units = load_units(&root);
+    let weapons = wc3_audio::UnitWeaponSounds::parse(
+        &std::fs::read(root.join("Units/UnitWeapons.slk")).expect("UnitWeapons.slk"),
+    )
+    .expect("parse UnitWeapons");
+    let provider = ArchiveProvider::new(&root);
+
+    fn unit_def_paths(
+        sounds: &SoundInfoDb,
+        units: &UnitNameMap,
+        unit_id: &str,
+        kind: &str,
+    ) -> Vec<String> {
+        let Some(set) = units.sound_set(unit_id) else {
+            return Vec::new();
+        };
+        let def = match kind {
+            "attack" => sounds.unit_attack(set),
+            "death" => sounds.unit_death(set),
+            "ack" => sounds.unit_ack(set),
+            "ready" => sounds.unit_ready(set),
+            _ => None,
+        };
+        def.map(|def| def.paths()).unwrap_or_default()
+    }
+
+    let candidates = |event: AudioEvent| -> Vec<String> {
+        match event {
+            AudioEvent::Attack | AudioEvent::AttackOrder => {
+                unit_def_paths(&sounds, &units, "hfoo", "attack")
+            }
+            AudioEvent::Death => unit_def_paths(&sounds, &units, "ogru", "death"),
+            AudioEvent::WorkerAck | AudioEvent::MoveOrder | AudioEvent::Selected => {
+                unit_def_paths(&sounds, &units, "hpea", "ack")
+            }
+            AudioEvent::TrainComplete => unit_def_paths(&sounds, &units, "hfoo", "ready"),
+            AudioEvent::AttackImpact => {
+                let weapon = weapons.weapon_type("hfoo").expect("hfoo weapon family");
+                let material = units.material("ogru").unwrap_or(wc3_audio::events::Material::Flesh);
+                sounds
+                    .get(&format!("{weapon}{}", material.suffix()))
+                    .map(|def| def.paths())
+                    .unwrap_or_default()
+            }
+            AudioEvent::AbilityCast => sounds
+                .get("BlizzardWave")
+                .map(|def| def.paths())
+                .unwrap_or_default(),
+            AudioEvent::UiClick => [
+                "InterfaceClick",
+                "GlueScreenClick",
+                "MenuButtonClick",
+                "AutoCastButtonClick",
+            ]
+            .iter()
+            .filter_map(|name| sounds.get(name))
+            .flat_map(|def| def.paths())
+            .collect(),
+            AudioEvent::UiError => ["InterfaceError", "ErrorMessage"]
+                .iter()
+                .filter_map(|name| sounds.get(name))
+                .flat_map(|def| def.paths())
+                .collect(),
+            other => match other.direct_file() {
+                Some(file) => vec![file.to_string()],
+                None => event_defs(other, Some(Race::Human))
+                    .iter()
+                    .filter_map(|name| sounds.get(name))
+                    .flat_map(|def| def.paths())
+                    .collect(),
+            },
+        }
+    };
+
+    let mut checked = 0usize;
+    for event in AudioEvent::ALL {
+        if event.documented_gap() {
+            continue;
+        }
+        let paths = candidates(event);
+        assert!(!paths.is_empty(), "{}: no candidate path in the shipped tables", event.id());
+        let mut decoded = None;
+        let mut failures = Vec::new();
+        for requested in &paths {
+            let Some(path) = provider.resolve(requested) else {
+                failures.push(format!("{requested}: unresolved"));
+                continue;
+            };
+            let bytes = std::fs::read(root.join(path.replace('\\', "/"))).expect("read sound file");
+            if path.to_ascii_lowercase().ends_with(".mp3") {
+                match wc3_audio::probe_mp3(&bytes).ok() {
+                    Some(info) if info.frames > 0 => {
+                        decoded = Some(path);
+                        break;
+                    }
+                    _ => failures.push(format!("{path}: mp3 probe failed")),
+                }
+            } else {
+                match wc3_audio::decode_wav(&bytes) {
+                    Ok(sound) if sound.frames() > 0 && !sound.is_silent() => {
+                        decoded = Some(path);
+                        break;
+                    }
+                    Ok(_) => failures.push(format!("{path}: empty/silent PCM")),
+                    Err(error) => failures.push(format!("{path}: {error}")),
+                }
+            }
+        }
+        assert!(
+            decoded.is_some(),
+            "{}: no decodable shipped file; tried {failures:?}",
+            event.id()
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 33, "every mapped event decoded a real file");
+    println!("EVENT_FILES decoded={checked} documented_gaps=1");
 }
 
 /// `audio.events.ack`: order/selection/training acknowledgements resolve through
@@ -526,10 +687,11 @@ fn audio_events_ui_group_rows() {
         assert!(voice.0 > 0);
         lines.push(format!("{} {voice:?} {:?}", event.id(), audio.last_event_line()));
     }
-    assert_eq!(lines.len(), 10, "UI group covers 10 events");
+    assert_eq!(lines.len(), 11, "UI group covers 11 events");
     assert!(lines.iter().any(|line| line.contains("RallyPointPlace")), "{lines:?}");
     assert!(lines.iter().any(|line| line.contains("ItemGet")), "{lines:?}");
     assert!(lines.iter().any(|line| line.contains("QuestCompleted")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("Levelupcaster")), "{lines:?}");
 
     // A `UiAction` result string drives the same prompts.
     for (result, feedback) in [
@@ -564,10 +726,7 @@ fn audio_events_error_group_and_missing_once() {
     );
     let mut lines = Vec::new();
     for event in AudioEvent::ALL.iter().copied().filter(|event| event.group() == AudioGroup::Error) {
-        if matches!(
-            event,
-            AudioEvent::DepositGold | AudioEvent::DepositLumber | AudioEvent::LevelUp
-        ) {
+        if matches!(event, AudioEvent::DepositGold | AudioEvent::DepositLumber) {
             continue;
         }
         let voice = audio
@@ -581,16 +740,16 @@ fn audio_events_error_group_and_missing_once() {
     assert!(lines.iter().any(|line| line.contains("GoldMineLowNightElf")), "{lines:?}");
     assert!(lines.iter().any(|line| line.contains("NoFoodNightElf")), "{lines:?}");
 
-    // Hero level has no retail row: report once, keep counting.
-    assert!(audio.play_event(AudioEvent::LevelUp, None, Some(Race::Human), None).is_none());
+    // Lumber receipt has no shipped cue: report once, keep counting.
+    assert!(audio.play_event(AudioEvent::DepositLumber, None, Some(Race::Human), None).is_none());
     let first = audio.last_event_line().unwrap_or_default().to_string();
-    assert!(first.contains("missing=level_up"), "{first}");
+    assert!(first.contains("missing=deposit_lumber"), "{first}");
     assert_eq!(audio.stats().events_missing, 1);
-    assert!(audio.play_event(AudioEvent::LevelUp, None, Some(Race::Human), None).is_none());
+    assert!(audio.play_event(AudioEvent::DepositLumber, None, Some(Race::Human), None).is_none());
     assert_eq!(audio.stats().events_missing, 2, "every gap is counted");
     assert_eq!(
         audio.missing_events(),
-        &["level_up"],
+        &["deposit_lumber"],
         "one missing record per event id: the AUDIO_EVENT missing line is not repeated"
     );
     println!("ERROR_GROUP lines={lines:?} missing_once={first}");
@@ -1950,6 +2109,82 @@ fn audio_music_playlist_per_race() {
     assert!(audio.stats().music_missing <= 3, "shipped themes resolve");
 }
 
+/// Explicit theme selection (victory/defeat stinger, host override) ends the
+/// match rotation: `tick_music` must not replace the stinger with the playlist's
+/// next track when the previous track length elapses.
+#[test]
+fn audio_music_explicit_theme_stops_playlist_rotation() {
+    let Some(root) = archive() else {
+        return;
+    };
+    let trigger = std::fs::read(root.join("UI/TriggerData.txt")).expect("TriggerData.txt");
+    let mut audio = GameAudio::new(
+        headless(),
+        load_sounds(&root),
+        load_units(&root),
+        ArchiveProvider::new(&root),
+    );
+    audio.load_themes_from_trigger_data(&trigger);
+
+    audio.start_race_playlist(Race::Human).expect("human playlist");
+    assert!(audio.playlist().is_some(), "rotation is current");
+    audio
+        .music_for_race(Race::Human, MusicState::Victory)
+        .expect("victory stinger starts");
+    assert!(
+        audio.playlist().is_none(),
+        "an explicit theme owns the score from now on"
+    );
+    audio.set_clock_ms(10_000_000);
+    assert!(
+        audio.tick_music().is_none(),
+        "the stinger is never replaced by the old rotation"
+    );
+}
+
+/// A corrupt music stream must not fade out the running theme: the probe runs
+/// before the cross-fade, so a bad file leaves the score playing and reports the
+/// decode gap once.
+#[test]
+fn audio_music_corrupt_track_keeps_the_score() {
+    let Some(root) = archive() else {
+        return;
+    };
+    let trigger = std::fs::read(root.join("UI/TriggerData.txt")).expect("TriggerData.txt");
+    let mut audio = GameAudio::new(
+        headless(),
+        load_sounds(&root),
+        load_units(&root),
+        CorruptMusicProvider {
+            inner: ArchiveProvider::new(&root),
+            corrupt: String::new(),
+        },
+    );
+    audio.load_themes_from_trigger_data(&trigger);
+    audio.music("Orc1").expect("orc theme starts");
+    let started = audio.stats().music_started;
+    // One block applies the queued play command: the theme is on the mixer.
+    let mut block = vec![0.0f32; 512];
+    audio.render(&mut block);
+    let resolved = audio
+        .themes()
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("Orc1"))
+        .and_then(|(_, path)| audio.provider().resolve(path))
+        .expect("Orc1 resolves through the archive");
+    audio.provider_mut().corrupt = resolved.clone();
+    audio.add_theme("BrokenTheme", resolved);
+
+    assert!(audio.music("BrokenTheme").is_none(), "corrupt track is rejected");
+    assert_eq!(audio.stats().music_started, started, "no new theme started");
+    assert!(
+        audio.audio_stats().active_voices >= 1,
+        "the running theme is still on the mixer"
+    );
+    let line = audio.last_event_line().unwrap_or_default();
+    assert!(line.contains("probe=fail"), "decode gap reported: {line}");
+}
+
 /// `audio.mixer.ack-limiter`: one acknowledgement per unit per window; other
 /// units are unaffected and the line resumes after the window. The clock is the
 /// deterministic sim clock, so a burst at one instant yields exactly one line.
@@ -2232,3 +2467,8 @@ fn audio_budget_no_overflow() {
     assert!(started_events > 4_000, "events played: {started_events}");
     assert_eq!(audio.ambient_region(), current_region.as_deref());
 }
+
+// `artE_perdef_voices` (bugs #4/#13) lives in `tests/artE_perdef_voices.rs`:
+// it independently parses the shipped SLK cells as the oracle and asserts the
+// deterministic def -> set -> row -> file log, so the acceptance test does not
+// share a parser with the code it verifies.

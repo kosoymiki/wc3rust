@@ -30,6 +30,10 @@ pub struct Mp3Info {
     pub first_frame_offset: usize,
     pub id3v2_bytes: usize,
     pub has_vbr_tag: bool,
+    /// Largest `main_data_begin` seen in a frame header: how many bytes of main
+    /// data the encoder borrowed from earlier frames (the Layer III bit
+    /// reservoir). 0 means every frame is self-contained.
+    pub reservoir_max_bytes: u16,
 }
 
 impl Mp3Info {
@@ -38,7 +42,141 @@ impl Mp3Info {
     }
 }
 
+/// Frame-window arithmetic shared by the probe and the streaming mixer.
+///
+/// The streaming buffer holds `frames` decoded frames whose first frame is
+/// absolute source frame `start_frame`. A mixer sample needs both the frame at
+/// `abs` and its interpolation successor at `abs + 1`, so the request is only
+/// satisfiable when `abs - start_frame + 1 < frames`.
+///
+/// Returns `(rel, rel + 1)` — the indices into the window — or `None` when the
+/// request lies before the window or too near its end.
+///
+/// All comparisons are overflow-free: `rel + 1` is never evaluated without the
+/// `rel <= frames - 2` guard, and `frames < 2` short-circuits before the
+/// subtraction. Callers must not do `rel + 2`, `frames - rel`, or
+/// `phase.floor() as u64 + 1` on unvalidated values (`u64::MAX` requests are
+/// reachable from a corrupted phase, and both panic in debug builds and wrap in
+/// release).
+#[must_use]
+pub fn mp3_window_span(start_frame: u64, frames: usize, abs: u64) -> Option<(usize, usize)> {
+    if frames < 2 || abs < start_frame {
+        return None;
+    }
+    let rel = abs - start_frame;
+    let last_start = frames as u64 - 2;
+    if rel > last_start {
+        return None;
+    }
+    let rel = rel as usize;
+    Some((rel, rel + 1))
+}
+
+/// MPEG audio sample rates (all versions). A rate outside this set means the
+/// frame header was misread or the stream is not MPEG audio.
+const MPEG_SAMPLE_RATES: [u32; 9] = [
+    8_000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000,
+];
+
+/// Layer III per-version decoding constants re-derived from the 4-byte header.
+///
+/// This is the arithmetic the streaming path depends on, checked against the
+/// MPEG-1/2/2.5 tables instead of assuming one frame layout: bitrate and sample
+/// rate indices, the padded frame length, the decoded sample count and the
+/// bit-reservoir reference (`main_data_begin`).
+struct Layer3Header {
+    sample_rate: u32,
+    channels: u16,
+    frame_len: usize,
+    samples: usize,
+    main_data_begin: u16,
+    reservoir_limit: u16,
+}
+
+const MPEG1_L3_BITRATES: [u16; 15] = [
+    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+];
+const MPEG2_L3_BITRATES: [u16; 15] = [
+    0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160,
+];
+
+/// Parse a Layer III frame header and derive its length/sample count.
+///
+/// Returns `None` for a non-sync, non-Layer-III, reserved or free-format
+/// header. Layer III frame length: `144 * bitrate / rate + padding` for MPEG-1,
+/// `72 * bitrate / rate + padding` for MPEG-2/2.5.
+fn parse_layer3_header(frame: &[u8]) -> Option<Layer3Header> {
+    if frame.len() < 4 {
+        return None;
+    }
+    let header = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
+    if header & 0xFFE0_0000 != 0xFFE0_0000 {
+        return None;
+    }
+    let version = (header >> 19) & 0b11; // 0=2.5, 2=MPEG-2, 3=MPEG-1, 1=reserved
+    let layer = (header >> 17) & 0b11; // 1 = Layer III
+    let bitrate_index = ((header >> 12) & 0b1111) as usize;
+    let rate_index = ((header >> 10) & 0b11) as usize;
+    let padding = ((header >> 9) & 1) as usize;
+    if version == 1 || layer != 1 || rate_index == 3 || bitrate_index == 0 || bitrate_index == 15 {
+        return None;
+    }
+    let (rates, bitrates, mpeg1) = match version {
+        3 => (
+            [44_100u32, 48_000, 32_000],
+            MPEG1_L3_BITRATES,
+            true,
+        ),
+        _ => (
+            match version {
+                2 => [22_050u32, 24_000, 16_000],
+                _ => [11_025u32, 12_000, 8_000],
+            },
+            MPEG2_L3_BITRATES,
+            false,
+        ),
+    };
+    let sample_rate = rates[rate_index];
+    let bitrate = bitrates[bitrate_index] as usize * 1000;
+    let frame_len = if mpeg1 {
+        144 * bitrate / sample_rate as usize + padding
+    } else {
+        72 * bitrate / sample_rate as usize + padding
+    };
+    let mono = (header >> 6) & 0b11 == 0b11;
+    let crc = (header >> 16) & 1 == 0;
+    let side_offset = 4 + usize::from(crc);
+    let side_len = match (mpeg1, mono) {
+        (true, true) => 17,
+        (true, false) => 32,
+        (false, true) => 9,
+        (false, false) => 17,
+    };
+    let side = frame.get(side_offset..side_offset + side_len)?;
+    let main_data_begin = if mpeg1 {
+        (((side[0] as u16) << 1) | ((side[1] as u16) >> 7)) & 0x1FF
+    } else {
+        side[0] as u16
+    };
+    Some(Layer3Header {
+        sample_rate,
+        channels: if mono { 1 } else { 2 },
+        frame_len,
+        samples: if mpeg1 { 1152 } else { 576 },
+        main_data_begin,
+        reservoir_limit: if mpeg1 { 511 } else { 255 },
+    })
+}
+
 /// Parse frame headers without decoding audio.
+///
+/// The walk validates the header arithmetic the streaming path depends on:
+/// layer is III, the sample-rate index is legal, every frame decodes to the
+/// sample count its version/layer implies, the sample rate and layer do not
+/// change mid-stream, and each frame starts exactly where the previous frame's
+/// byte length (bitrate + padding, bit reservoir does not change frame length)
+/// says it should. A violation is a controlled `Corrupt`/`Unsupported` error,
+/// never a plausible-looking wrong duration.
 pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
     let id3v2 = nanomp3::id3v2_len(bytes);
     let table = frames(bytes);
@@ -55,20 +193,58 @@ pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
         first_frame_offset: 0,
         id3v2_bytes: id3v2,
         has_vbr_tag: false,
+        reservoir_max_bytes: 0,
     };
     let mut bitrate_sum: u64 = 0;
+    let mut prev_end: Option<u64> = None;
+    let mut reservoir_max: u16 = 0;
     for frame in table {
-        if info.frames == 0 {
-            info.sample_rate = frame.sample_rate;
-            info.channels = match frame.channels {
-                nanomp3::Channels::Mono => 1,
-                nanomp3::Channels::Stereo => 2,
-            };
-            info.layer = frame.layer;
-            info.first_frame_offset = frame.offset;
+        let header = parse_layer3_header(frame.data)
+            .ok_or(AudioError::Corrupt("MP3 frame header is not Layer III"))?;
+        let channels = match frame.channels {
+            nanomp3::Channels::Mono => 1,
+            nanomp3::Channels::Stereo => 2,
+        };
+        // The header re-derivation must agree with what the iterator reported;
+        // disagreement means a frame-length/table assumption is wrong and the
+        // reported duration would be fiction.
+        if header.sample_rate != frame.sample_rate
+            || header.samples != frame.samples
+            || header.frame_len != frame.data.len()
+            || header.channels != channels
+        {
+            return Err(AudioError::Corrupt(
+                "MP3 frame length/sample rate/sample count disagree with header",
+            ));
         }
+        if let Some(end) = prev_end {
+            if (frame.offset as u64) < end {
+                return Err(AudioError::Corrupt("MP3 frames overlap"));
+            }
+        }
+        prev_end = Some(frame.offset as u64 + frame.data.len() as u64);
+        if info.frames == 0 {
+            if frame.layer != 3 {
+                return Err(AudioError::Unsupported("MP3 decoder only handles Layer III"));
+            }
+            // Nothing precedes the first frame, so a nonzero reference would
+            // read outside the stream.
+            if header.main_data_begin != 0 {
+                return Err(AudioError::Corrupt("first MP3 frame references an empty bit reservoir"));
+            }
+            info.sample_rate = header.sample_rate;
+            info.channels = header.channels;
+            info.layer = frame.layer;
+            info.first_frame_offset = frame.offset as usize;
+        } else if header.sample_rate != info.sample_rate || frame.layer != info.layer {
+            return Err(AudioError::Corrupt("MP3 header changes mid-stream"));
+        }
+        if header.main_data_begin > header.reservoir_limit {
+            return Err(AudioError::Corrupt("MP3 bit reservoir reference exceeds the frame budget"));
+        }
+        reservoir_max = reservoir_max.max(header.main_data_begin);
         info.frames += 1;
-        info.samples_per_channel += frame.samples as u64;
+        info.samples_per_channel += header.samples as u64;
         bitrate_sum += frame.bitrate_kbps as u64;
         info.bitrate_min_kbps = info.bitrate_min_kbps.min(frame.bitrate_kbps);
         info.bitrate_max_kbps = info.bitrate_max_kbps.max(frame.bitrate_kbps);
@@ -76,6 +252,7 @@ pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
     if info.frames == 0 || info.sample_rate == 0 {
         return Err(AudioError::Corrupt("no MP3 frames found"));
     }
+    info.reservoir_max_bytes = reservoir_max;
     info.bitrate_avg_kbps = (bitrate_sum / info.frames as u64) as u32;
     if info.bitrate_min_kbps == u32::MAX {
         info.bitrate_min_kbps = 0;
@@ -189,6 +366,9 @@ impl Mp3Stream {
             None => return Err(AudioError::Corrupt("MP3 stream has no frames")),
         };
         let sample_rate = reader.sample_rate();
+        if !MPEG_SAMPLE_RATES.contains(&sample_rate) {
+            return Err(AudioError::Corrupt("MP3 sample rate is not a legal MPEG rate"));
+        }
         let total_samples = reader.total_samples();
         Ok(Self {
             reader,
@@ -261,6 +441,11 @@ impl Mp3Stream {
             self.scratch_pos += take;
             written += take;
         }
+        debug_assert_eq!(
+            written % self.channels.max(1) as usize,
+            0,
+            "MP3 decode returned a partial interleaved frame"
+        );
         written
     }
 

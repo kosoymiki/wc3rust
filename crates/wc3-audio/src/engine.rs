@@ -80,6 +80,44 @@ pub const SHUTDOWN_CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VoiceId(pub u32);
 
+/// Lowest playback pitch the mixer accepts (two octaves down).
+pub const MIN_PITCH: f32 = 0.25;
+/// Highest playback pitch the mixer accepts (two octaves up).
+pub const MAX_PITCH: f32 = 4.0;
+
+/// What [`clamp_pitch`] did to a requested pitch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchBound {
+    /// Finite and inside `[MIN_PITCH, MAX_PITCH]`.
+    Unchanged,
+    /// Finite but outside the range; replaced by the nearest bound.
+    Clamped,
+    /// NaN, ±Inf or non-positive; replaced by the neutral 1.0.
+    Rejected,
+}
+
+/// Bound a pitch before it reaches the resampler.
+///
+/// The mixer advances `phase` by `source_rate / out_rate * pitch` per output
+/// frame; a NaN/±Inf/≤0 pitch makes the play head non-finite or backwards,
+/// which is a silent wrong rate at best and a `u64` cast at worst
+/// (`phase.floor() as u64` saturates to `u64::MAX` for `+Inf`, and
+/// `u64::MAX + 1` panics in debug on the realtime thread). Every voice
+/// creation path and `SetPitch` goes through this function, so the invariant
+/// "phase is finite and monotonic" holds regardless of caller input.
+#[must_use]
+pub fn clamp_pitch(pitch: f32) -> (f32, PitchBound) {
+    if !pitch.is_finite() || pitch <= 0.0 {
+        (1.0, PitchBound::Rejected)
+    } else if pitch < MIN_PITCH {
+        (MIN_PITCH, PitchBound::Clamped)
+    } else if pitch > MAX_PITCH {
+        (MAX_PITCH, PitchBound::Clamped)
+    } else {
+        (pitch, PitchBound::Unchanged)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Sfx,
@@ -309,6 +347,18 @@ pub struct AudioStats {
     pub occluded_voices: u64,
     /// Blocks in which at least one category was ducked.
     pub ducked_blocks: u64,
+    /// Pitch values replaced by [`clamp_pitch`] (NaN/±Inf/non-positive or
+    /// outside `[MIN_PITCH, MAX_PITCH]`).
+    pub pitches_bounded: u64,
+    /// Voices whose decoder window ended mid-block; the tail was padded with
+    /// silence and reported once per voice (`AUDIO_SHORT_FRAME`).
+    pub short_frames: u64,
+    /// Samples above the master soft-knee (peak headroom actually used).
+    ///
+    /// The master stage is a soft limiter, so these samples are compressed
+    /// toward the ceiling, never hard-clipped; a large count means the mix is
+    /// driving the limiter continuously.
+    pub soft_limited_samples: u64,
 }
 
 impl AudioStats {
@@ -405,30 +455,49 @@ impl Mp3Buffer {
         self.start_frame = 0;
     }
 
-    /// Ensure frames `abs` and `abs + 1` are decoded. Returns false at end of
-    /// stream (caller decides whether to loop).
+    /// Ensure the frame at `abs` and its interpolation successor are decoded.
+    /// Returns false at end of stream (caller decides whether to loop).
+    ///
+    /// All window arithmetic goes through [`crate::mp3::mp3_window_span`] so no
+    /// `rel + 2` can overflow and no `frames - rel` can underflow when `abs`
+    /// jumps past the window (a corrupted phase used to reach `u64::MAX` here).
     fn ensure(&mut self, stream: &mut Mp3Stream, channels: usize, abs: u64) -> bool {
-        if abs < self.start_frame {
+        if channels == 0 || abs < self.start_frame {
             return false;
         }
         loop {
-            let rel = (abs - self.start_frame) as usize;
-            if rel + 2 <= self.frames {
+            if crate::mp3::mp3_window_span(self.start_frame, self.frames, abs).is_some() {
                 return true;
             }
-            if rel > 0 {
+            let rel = abs - self.start_frame;
+            if rel > 0 && rel <= self.frames as u64 {
+                // Frames before the requested one are consumed: drop them and
+                // continue filling at the new window start.
+                let rel = rel as usize;
                 let keep = self.frames - rel;
                 let source = rel * channels;
                 let end = self.frames * channels;
                 self.samples.copy_within(source..end, 0);
                 self.frames = keep;
-                self.start_frame += rel as u64;
+                self.start_frame = abs;
                 continue;
             }
-            // rel == 0: buffer starts at the requested frame but has < 2 frames.
+            if rel > self.frames as u64 {
+                // The play head jumped past the whole window: skip the gap in
+                // the stream instead of underflowing `frames - rel`.
+                let gap = rel - self.frames as u64;
+                self.frames = 0;
+                self.start_frame = abs;
+                if stream.skip_frames(gap) < gap {
+                    return false;
+                }
+                continue;
+            }
+            // rel == 0: the window starts at the requested frame but has < 2
+            // frames, so decode more.
             if self.frames * channels >= self.samples.len() {
-                // Full window and still too short: caller is asking for a frame
-                // far beyond what one window can hold (should not happen).
+                // A full window still cannot hold the request (unreachable with
+                // a bounded pitch; refuse instead of spinning).
                 return false;
             }
             let offset = self.frames * channels;
@@ -438,6 +507,12 @@ impl Mp3Buffer {
             }
             self.frames += n / channels;
         }
+    }
+
+    /// Whether `abs` is inside the decoded window (no interpolation successor
+    /// implied).
+    fn contains(&self, abs: u64) -> bool {
+        abs >= self.start_frame && abs - self.start_frame < self.frames as u64
     }
 
     fn frame(&self, abs: u64, channels: usize) -> (f32, f32) {
@@ -474,16 +549,21 @@ struct VoiceSlot {
     lp_r: f32,
     /// The occlusion counter is incremented once per voice, not per block.
     occluded_logged: bool,
+    /// The short-frame report is emitted once per voice, not once per block.
+    short_frame_logged: bool,
 }
 
 impl VoiceSlot {
     fn new(
         id: VoiceId,
         source: Source,
-        params: PlayParams,
+        mut params: PlayParams,
         out_rate: u32,
         max_frames: usize,
     ) -> Self {
+        // Last line of defence: no path may hand the resampler a pitch the
+        // phase accumulator cannot represent (see [`clamp_pitch`]).
+        params.pitch = clamp_pitch(params.pitch).0;
         let out_rate = out_rate.max(1) as f32;
         // A cross-fade stretches the attack ramp for this voice only; every
         // other sound keeps the 5 ms anti-click ramp.
@@ -506,6 +586,7 @@ impl VoiceSlot {
             lp_l: 0.0,
             lp_r: 0.0,
             occluded_logged: false,
+            short_frame_logged: false,
         };
         if let Source::Mp3(_) = &slot.source {
             slot.mp3_buffer = Some(Mp3Buffer::new(slot.source.channels()));
@@ -596,6 +677,9 @@ struct Counters {
     buffer_underruns: AtomicU64,
     occluded: AtomicU64,
     ducked_blocks: AtomicU64,
+    pitch_bounded: AtomicU64,
+    short_frames: AtomicU64,
+    soft_limited: AtomicU64,
 }
 
 impl Counters {
@@ -617,6 +701,9 @@ impl Counters {
             buffer_underruns: self.buffer_underruns.load(Ordering::Relaxed),
             occluded_voices: self.occluded.load(Ordering::Relaxed),
             ducked_blocks: self.ducked_blocks.load(Ordering::Relaxed),
+            pitches_bounded: self.pitch_bounded.load(Ordering::Relaxed),
+            short_frames: self.short_frames.load(Ordering::Relaxed),
+            soft_limited_samples: self.soft_limited.load(Ordering::Relaxed),
         }
     }
 }
@@ -849,7 +936,10 @@ impl Core {
             }
             Command::SetPitch(id, pitch) => {
                 if let Some(slot) = self.slot_mut(id) {
-                    slot.params.pitch = pitch.clamp(0.25, 4.0);
+                    // The API boundary already bounded this; repeat the clamp
+                    // here so an internally built command cannot inject a
+                    // non-finite phase step.
+                    slot.params.pitch = clamp_pitch(pitch).0;
                 }
             }
             Command::SetMaster(gain) => self.master_gain = gain.clamp(0.0, 4.0),
@@ -977,6 +1067,13 @@ impl Core {
         let lp_coeff = 1.0 - (-std::f32::consts::TAU * cutoff / out_rate as f32).exp();
         let source_rate = slot.source.sample_rate().max(1);
         let step = source_rate as f64 / out_rate as f64 * slot.params.pitch as f64;
+        // `clamp_pitch` on every creation path and on `SetPitch` keeps this
+        // finite and positive; the assertion documents the invariant.
+        debug_assert!(
+            step.is_finite() && step > 0.0,
+            "pitch {} produced a non-finite/zero step",
+            slot.params.pitch
+        );
         let total_frames = slot.source_frames();
         let frames_out = out.len() / channels;
         let env_step = slot.env_step;
@@ -991,11 +1088,11 @@ impl Core {
             if slot.finished && slot.env <= 0.0 {
                 break;
             }
-            let base_frame = slot.phase.floor() as u64;
+            let mut base_frame = slot.phase.floor() as u64;
             let (mut left, mut right) = match &mut slot.source {
                 Source::Pcm(sound) => {
                     let a = VoiceSlot::sample_pcm(sound, base_frame);
-                    let b = VoiceSlot::sample_pcm(sound, base_frame + 1);
+                    let b = VoiceSlot::sample_pcm(sound, base_frame.saturating_add(1));
                     let frac = (slot.phase - base_frame as f64) as f32;
                     (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
                 }
@@ -1008,24 +1105,52 @@ impl Core {
                         }
                     };
                     let channels_in = stream.channels().max(1) as usize;
-                    if !buffer.ensure(stream, channels_in, base_frame) {
-                        if slot.params.looping {
-                            if stream.rewind().is_ok() {
-                                buffer.reset();
-                                slot.phase = 0.0;
-                                let _ = buffer.ensure(stream, channels_in, 0);
-                            } else {
-                                slot.finished = true;
-                                slot.env_target = 0.0;
-                            }
-                        } else {
-                            slot.finished = true;
-                            slot.env_target = 0.0;
-                        }
+                    let mut ready = buffer.ensure(stream, channels_in, base_frame);
+                    if !ready && slot.params.looping && stream.rewind().is_ok() {
+                        buffer.reset();
+                        slot.phase = 0.0;
+                        base_frame = 0;
+                        ready = buffer.ensure(stream, channels_in, 0);
                     }
-                    let a = buffer.frame(base_frame.max(buffer.start_frame), channels_in);
-                    let next = base_frame + 1;
-                    let b = buffer.frame(next.max(buffer.start_frame), channels_in);
+                    if !ready {
+                        // The decoder ran out before the mixer's block did. End
+                        // of the declared track (`base_frame >= total`) is a
+                        // normal stop; a missing frame *before* the declared
+                        // total is a short frame: pad it with silence and report
+                        // it once per voice. When only the interpolation
+                        // successor is missing (the natural last frame) the
+                        // sample above is held instead.
+                        let beyond_declared =
+                            total_frames.is_some_and(|total| base_frame >= total);
+                        if !buffer.contains(base_frame)
+                            && !beyond_declared
+                            && !slot.short_frame_logged
+                        {
+                            slot.short_frame_logged = true;
+                            self.stats.short_frames.fetch_add(1, Ordering::Relaxed);
+                            eprintln!(
+                                "AUDIO_SHORT_FRAME voice={} requested_frame={} window_frames={} declared_frames={total_frames:?} action=silence-pad",
+                                slot.id.0, base_frame, buffer.frames
+                            );
+                        }
+                        slot.finished = true;
+                        slot.env_target = 0.0;
+                    }
+                    // Sample only what the window actually holds; a frame past
+                    // the decoded window contributes silence, never a wrapped
+                    // or out-of-bounds index.
+                    let (a, b) = if buffer.contains(base_frame) {
+                        let a = buffer.frame(base_frame, channels_in);
+                        let next = base_frame.saturating_add(1);
+                        let b = if buffer.contains(next) {
+                            buffer.frame(next, channels_in)
+                        } else {
+                            a
+                        };
+                        (a, b)
+                    } else {
+                        ((0.0, 0.0), (0.0, 0.0))
+                    };
                     let frac = (slot.phase - base_frame as f64) as f32;
                     (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
                 }
@@ -1086,7 +1211,11 @@ impl Core {
         let master = self.master_gain;
         let mut peak = 0.0f32;
         for sample in out.iter_mut() {
-            *sample = (*sample * master).clamp(-1.0, 1.0);
+            let scaled = *sample * master;
+            if scaled.abs() > SOFT_KNEE {
+                self.stats.soft_limited.fetch_add(1, Ordering::Relaxed);
+            }
+            *sample = soft_limit(scaled);
             peak = peak.max(sample.abs());
         }
         let frames = frames as u64;
@@ -1100,6 +1229,23 @@ impl Core {
             .store(self.active() as u64, Ordering::Relaxed);
         let _ = commands;
     }
+}
+
+/// Master soft-knee: below it the mix is linear.
+const SOFT_KNEE: f32 = 0.9;
+/// Asymptotic master ceiling above the knee. `tanh` approaches it, and the
+/// output never exceeds it, so the master stage can never produce a hard-clipped
+/// ±1.0 sample.
+const SOFT_CEILING: f32 = 0.999;
+
+/// Master limiter: linear below the knee, smooth compression above it.
+fn soft_limit(sample: f32) -> f32 {
+    let magnitude = sample.abs();
+    if magnitude <= SOFT_KNEE {
+        return sample;
+    }
+    let headroom = SOFT_CEILING - SOFT_KNEE;
+    sample.signum() * (SOFT_KNEE + headroom * ((magnitude - SOFT_KNEE) / headroom).tanh())
 }
 
 fn pan_gains(
@@ -1199,6 +1345,9 @@ pub struct AudioEngine {
     buffered_ms: Arc<AtomicU64>,
     /// Preallocated command drain queue for headless renders.
     pending: Vec<Command>,
+    /// One `AUDIO_PITCH` line per engine instance: repeated bad pitches are
+    /// counted in `AudioStats::pitches_bounded`, not printed per frame.
+    pitch_adjust_logged: bool,
     /// Render thread -> owner handoff of the backend. SDL closes the audio
     /// stream on the thread that opened it, so the thread must not destroy the
     /// device itself (it blocked there indefinitely; see
@@ -1226,6 +1375,7 @@ impl AudioEngine {
             backend_latency_ms: 0,
             buffered_ms: Arc::new(AtomicU64::new(u64::MAX)),
             pending: Vec::with_capacity(COMMAND_QUEUE_CAPACITY),
+            pitch_adjust_logged: false,
             backend_rx: None,
         }
     }
@@ -1345,6 +1495,7 @@ impl AudioEngine {
             backend_latency_ms,
             buffered_ms: buffered,
             pending: Vec::with_capacity(COMMAND_QUEUE_CAPACITY),
+            pitch_adjust_logged: false,
             backend_rx: Some(backend_rx),
         }
     }
@@ -1407,6 +1558,27 @@ impl AudioEngine {
         id
     }
 
+    /// Bound `params.pitch` at the API boundary and report the first
+    /// adjustment once. Returns the pitch the mixer will actually use.
+    fn sanitize_pitch(&mut self, pitch: f32) -> f32 {
+        let (applied, bound) = clamp_pitch(pitch);
+        if bound != PitchBound::Unchanged {
+            self.counters.pitch_bounded.fetch_add(1, Ordering::Relaxed);
+            if !self.pitch_adjust_logged {
+                self.pitch_adjust_logged = true;
+                let verdict = match bound {
+                    PitchBound::Clamped => "clamped",
+                    PitchBound::Rejected => "rejected",
+                    PitchBound::Unchanged => "unchanged",
+                };
+                eprintln!(
+                    "AUDIO_PITCH requested={pitch:?} applied={applied:?} verdict={verdict} bounds=[{MIN_PITCH},{MAX_PITCH}]"
+                );
+            }
+        }
+        applied
+    }
+
     /// Non-blocking command submission. Returns false when the queue is full.
     fn send(&mut self, command: Command) -> bool {
         match self.tx.try_send(command) {
@@ -1424,8 +1596,9 @@ impl AudioEngine {
         }
     }
 
-    pub fn play(&mut self, sound: Arc<Sound>, params: PlayParams) -> VoiceId {
+    pub fn play(&mut self, sound: Arc<Sound>, mut params: PlayParams) -> VoiceId {
         let id = self.next_id();
+        params.pitch = self.sanitize_pitch(params.pitch);
         self.send(Command::Play {
             id,
             source: Box::new(Source::Pcm(sound)),
@@ -1438,10 +1611,11 @@ impl AudioEngine {
     pub fn play_mp3(
         &mut self,
         bytes: Arc<[u8]>,
-        params: PlayParams,
+        mut params: PlayParams,
     ) -> Result<VoiceId, AudioError> {
         let stream = Mp3Stream::new(bytes)?;
         let id = self.next_id();
+        params.pitch = self.sanitize_pitch(params.pitch);
         self.send(Command::Play {
             id,
             source: Box::new(Source::Mp3(Box::new(stream))),
@@ -1487,6 +1661,7 @@ impl AudioEngine {
     }
 
     pub fn set_pitch(&mut self, id: VoiceId, pitch: f32) {
+        let pitch = self.sanitize_pitch(pitch);
         self.send(Command::SetPitch(id, pitch));
     }
 
@@ -1853,6 +2028,39 @@ mod tests {
         engine.render(&mut block);
         let peak = block.iter().fold(0.0f32, |p, s| p.max(s.abs()));
         assert!(peak < 1e-5, "muted music bus must be silent: {peak}");
+    }
+
+    #[test]
+    fn master_soft_limiter_prevents_hard_clipping() {
+        assert_eq!(soft_limit(0.5), 0.5, "linear below the knee");
+        assert!(
+            soft_limit(2.0) > SOFT_KNEE && soft_limit(2.0) <= SOFT_CEILING,
+            "above the knee compresses toward the ceiling: {}",
+            soft_limit(2.0)
+        );
+        assert_eq!(soft_limit(-2.0), -soft_limit(2.0), "symmetric");
+        assert!(soft_limit(1.0e6) <= SOFT_CEILING, "finite input never hard-clips");
+
+        let mut engine = AudioEngine::headless(config(48_000, 256, 8));
+        let sound = sine(8192, 48_000, 2, 220.0);
+        for _ in 0..8 {
+            engine.play(
+                sound.clone(),
+                PlayParams {
+                    gain: 4.0,
+                    ..Default::default()
+                },
+            );
+        }
+        let mut block = vec![0.0f32; 512];
+        engine.render(&mut block);
+        let peak = block.iter().fold(0.0f32, |p, s| p.max(s.abs()));
+        assert!(peak > 0.9, "a loud mix must drive the limiter: {peak}");
+        assert!(
+            block.iter().all(|s| s.abs() <= SOFT_CEILING),
+            "no sample may reach the hard ceiling: {peak}"
+        );
+        assert!(engine.stats().soft_limited_samples > 0, "limiter counted");
     }
 
     #[test]

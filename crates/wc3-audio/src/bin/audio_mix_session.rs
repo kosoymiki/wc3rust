@@ -25,6 +25,8 @@ struct TreeProvider {
     root: PathBuf,
     index: std::collections::HashMap<String, String>,
     by_basename: std::collections::HashMap<String, Vec<String>>,
+    /// Files that resolved but did not decode (reported, never masked).
+    failures: Vec<String>,
 }
 
 impl TreeProvider {
@@ -64,6 +66,7 @@ impl TreeProvider {
             root: root.to_path_buf(),
             index,
             by_basename,
+            failures: Vec::new(),
         }
     }
 
@@ -74,16 +77,20 @@ impl TreeProvider {
 
 impl SoundProvider for TreeProvider {
     fn load_sound(&mut self, path: &str) -> Option<Arc<Sound>> {
-        // Decode the shipped WAV for real; fall back to a synthetic buffer only
-        // for formats this probe does not implement (keeps the mix running).
+        // Decode the shipped bytes for real (WAV, MP3 rows in UISounds); a file
+        // that does not decode is reported, never replaced with synthetic PCM.
         let bytes = std::fs::read(self.file(path)).ok()?;
-        match wc3_audio::decode_wav(&bytes) {
+        let decoded = if path.to_ascii_lowercase().ends_with(".mp3") {
+            wc3_audio::decode_mp3_bounded(&bytes, 30 * 48_000 * 2).map(|(sound, _)| sound)
+        } else {
+            wc3_audio::decode_wav(&bytes)
+        };
+        match decoded {
             Ok(sound) => Some(Arc::new(sound)),
-            Err(_) => Some(Arc::new(Sound {
-                sample_rate: 22_050,
-                channels: 1,
-                samples: vec![0.2; 512],
-            })),
+            Err(error) => {
+                self.failures.push(format!("{path}: {error}"));
+                None
+            }
         }
     }
 
@@ -288,7 +295,6 @@ fn main() {
             let index = event_index;
             event_index += 1;
             let unit = unit_ids[index % unit_ids.len()];
-            let target = unit_ids[(index / 3) % unit_ids.len()];
             let position = Vec3::new(
                 ((index * 137) % 3_000) as f32,
                 0.0,
@@ -297,8 +303,8 @@ fn main() {
             let voice = match index % 10 {
                 0 => audio.play_event(AudioEvent::MoveOrder, Some(unit), None, Some(position)),
                 1 => audio.play_event(AudioEvent::Attack, Some(unit), None, Some(position)),
-                2 => audio.attack_impact(Some(unit), Some(target), Some(position)),
-                3 => audio.play_event(AudioEvent::Death, Some(target), None, Some(position)),
+                2 => audio.attack_impact(Some("hfoo"), Some("ogru"), Some(position)),
+                3 => audio.play_event(AudioEvent::Death, Some(unit), None, Some(position)),
                 4 => audio.play_event(AudioEvent::BuildComplete, None, Some(Race::Human), None),
                 5 => audio.ui_feedback(UiFeedback::Click, Some(Race::Human)),
                 6 => audio.ui_feedback(UiFeedback::Error, Some(Race::Human)),
@@ -362,8 +368,9 @@ fn main() {
     let engine_stats = audio.audio_stats();
     let (entries, cache_bytes, evictions, budget) = audio.ambient_cache_stats();
     let culled = stats.voices_gated + stats.events_gated + stats.acks_gated;
+    let decode_failures = audio.provider().failures.clone();
     println!(
-        "MIX_SESSION done seconds={seconds} started={started_events} impacts={started_impacts} music_rotations={started_music} culled={culled} evicted={evictions} peak_pcm_mb={:.1} cache_entries={entries} cache_mb={:.1} budget_mb={} active={} max_active={} chan_full={} chan_preempt={} crossfades_music={} crossfades_ambient={} acks_limited={} pauses={} missing={} unresolved={} paused_rms={paused_rms:.4} playing_rms={playing_rms:.4} music_bus_paused={music_bus} ambient_bus_paused={ambient_bus} block_peak={block_peak:.3}",
+        "MIX_SESSION done seconds={seconds} started={started_events} impacts={started_impacts} music_rotations={started_music} culled={culled} evicted={evictions} peak_pcm_mb={:.1} cache_entries={entries} cache_mb={:.1} budget_mb={} active={} max_active={} chan_full={} chan_preempt={} crossfades_music={} crossfades_ambient={} acks_limited={} pauses={} missing={} unresolved={} paused_rms={paused_rms:.4} playing_rms={playing_rms:.4} music_bus_paused={music_bus} ambient_bus_paused={ambient_bus} block_peak={block_peak:.3} decode_failures={}",
         peak_pcm as f32 / (1024.0 * 1024.0),
         cache_bytes as f32 / (1024.0 * 1024.0),
         budget / (1024 * 1024),
@@ -377,6 +384,25 @@ fn main() {
         stats.pauses,
         stats.events_missing,
         audio.unresolved().len(),
+        decode_failures.len(),
+    );
+    assert!(
+        decode_failures.is_empty(),
+        "shipped files that did not decode: {decode_failures:?}"
+    );
+    println!(
+        "AUDIO_STATS frames={} blocks={} underruns={} backend_errors={} buffered_ms={:?} active={} max_active={} dropped={} occluded={} ducked_blocks={} soft_lim={}",
+        engine_stats.frames_rendered,
+        engine_stats.blocks_rendered,
+        engine_stats.buffer_underruns,
+        engine_stats.backend_errors,
+        audio.buffered_ms(),
+        engine_stats.active_voices,
+        engine_stats.max_active_voices,
+        engine_stats.commands_dropped,
+        engine_stats.occluded_voices,
+        engine_stats.ducked_blocks,
+        engine_stats.soft_limited_samples,
     );
     println!("{}", audio.stats_line());
     assert!(

@@ -21,8 +21,8 @@ pub mod wav;
 pub mod ambient;
 
 pub use engine::{
-    AudioBackend, AudioConfig, AudioEngine, AudioStats, Category, HeightSampler, NullBackend,
-    PlayParams, VoiceId,
+    clamp_pitch, AudioBackend, AudioConfig, AudioEngine, AudioStats, Category, HeightSampler,
+    NullBackend, PlayParams, PitchBound, VoiceId, MAX_PITCH, MIN_PITCH,
 };
 pub use ambient::{
     render_ambient, AmbientRender, AmbientTable, AmbientTheme, DlsBank, DlsRegion, DlsSample,
@@ -30,7 +30,9 @@ pub use ambient::{
 };
 pub use events::{event_defs, AudioEvent, AudioGroup, Material, MusicState, Race};
 pub use map_sounds::{parse_w3r, parse_w3s, MapRegion, MapSound, MapSounds};
-pub use game_audio::{GameAudio, GameAudioConfig, SoundProvider, UiFeedback};
+pub use game_audio::{
+    GameAudio, GameAudioConfig, SoundProvider, UiFeedback, UnitVoiceRecord,
+};
 pub use mp3::{decode_mp3, decode_mp3_bounded, probe_mp3, Mp3Info, Mp3Stream};
 pub use playlist::{fnv1a, hash_order, MusicPlaylist};
 pub use soundinfo::{

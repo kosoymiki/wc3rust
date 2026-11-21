@@ -302,6 +302,31 @@ impl GameAudioStats {
     }
 }
 
+/// One deterministic per-command voice resolution record.
+///
+/// Appended in command order when a unit command is played through one of the
+/// def-id entry points ([`GameAudio::unit_ack`], [`GameAudio::unit_attack`],
+/// [`GameAudio::unit_death`], [`GameAudio::unit_pissed`]). The pair
+/// (`def_id`, `set`) is the evidence for operator bugs #4/#13: every unit
+/// definition must speak with its own shipped `unitSound` set instead of a
+/// shared race default. No audio recording is needed to audit it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitVoiceRecord {
+    /// Unit definition id that received the command (lower-cased, e.g. `hpea`).
+    pub def_id: String,
+    /// Command kind: `ack`, `attack`, `death`, `pissed`, or a `*_limited`/`*_missing` marker.
+    pub kind: &'static str,
+    /// Resolved shipped `UnitUI.unitSound` set (e.g. `Peasant`); `none` when unresolved.
+    pub set: String,
+    /// `SoundInfo` row that actually answered (e.g. `PeasantWhat`).
+    pub ack_def: String,
+    /// Archive path of the clip that started for this command, if any. This is
+    /// the file half of the deterministic def -> set -> row -> file record.
+    pub file: Option<String>,
+    /// Voice handle that started, if any (`VoiceId.0` is a `u32` index).
+    pub voice: Option<u32>,
+}
+
 pub struct GameAudio<P: SoundProvider> {
     engine: AudioEngine,
     sounds: SoundInfoDb,
@@ -362,6 +387,8 @@ pub struct GameAudio<P: SoundProvider> {
     missing_events: Vec<&'static str>,
     /// The last event rendered as one line (device verification asserts it).
     last_event: Option<String>,
+    /// Deterministic def id -> ack set log, one record per unit command.
+    voice_log: Vec<UnitVoiceRecord>,
     /// Archive path of the last clip that actually started (event -> file
     /// evidence for the device log and the event table probe).
     pub(crate) last_sound_file: Option<String>,
@@ -406,6 +433,7 @@ impl<P: SoundProvider> GameAudio<P> {
             paused_gains: None,
             missing_events: Vec::new(),
             last_event: None,
+            voice_log: Vec::new(),
             last_sound_file: None,
             event_log: std::env::var_os("H2_AUDIO_LOG").is_some(),
         }
@@ -444,7 +472,7 @@ impl<P: SoundProvider> GameAudio<P> {
         let stats = &self.stats;
         let (cache_entries, cache_bytes, cache_evictions, cache_budget) = self.ambient_cache_stats();
         format!(
-            "GAME_AUDIO_HOOKS device={} acks={}/{} limited={} missing={} acks_gated={} gated={} ui={} feedback={} events={} events_gated={} impacts={} music={}/{} crossfades={} ambient={}/{} ambient_crossfades={} taps={} unresolved={} pcm_mb={:.1} cache={}/{}_mb evicted={} budget_mb={} buffered_ms={:?} underruns={} dropped={} occluded={} ducked_blocks={} voices={} max_active={} chan_full={} chan_preempt={} deduped={}",
+            "GAME_AUDIO_HOOKS device={} acks={}/{} limited={} missing={} acks_gated={} gated={} ui={} feedback={} events={} events_gated={} impacts={} music={}/{} crossfades={} ambient={}/{} ambient_crossfades={} taps={} unresolved={} pcm_mb={:.1} cache={}/{}_mb evicted={} budget_mb={} buffered_ms={:?} underruns={} dropped={} occluded={} ducked_blocks={} soft_lim={} voices={} max_active={} chan_full={} chan_preempt={} deduped={}",
             self.engine.backend_name(),
             stats.acks_started,
             stats.acks_requested,
@@ -475,6 +503,7 @@ impl<P: SoundProvider> GameAudio<P> {
             engine.commands_dropped,
             engine.occluded_voices,
             engine.ducked_blocks,
+            engine.soft_limited_samples,
             engine.active_voices,
             engine.max_active_voices,
             engine.voices_channel_full,
@@ -498,6 +527,49 @@ impl<P: SoundProvider> GameAudio<P> {
     /// Last `AUDIO_*` line (also emitted on stderr when `H2_AUDIO_LOG` is set).
     pub fn last_event_line(&self) -> Option<&str> {
         self.last_event.as_deref()
+    }
+
+    /// Append one per-command resolution to the deterministic voice log.
+    fn record_unit_voice(
+        &mut self,
+        def_id: &str,
+        kind: &'static str,
+        set: &str,
+        ack_def: &str,
+        voice: Option<VoiceId>,
+    ) {
+        // `play_def_with` sets `last_sound_file` only when the clip started, and
+        // every entry point records immediately after its own play call, so the
+        // file belongs to this command; a missing/gated command records none.
+        let file = voice.and_then(|_| self.last_sound_file.clone());
+        self.voice_log.push(UnitVoiceRecord {
+            def_id: def_id.to_ascii_lowercase(),
+            kind,
+            set: set.to_string(),
+            ack_def: ack_def.to_string(),
+            file,
+            voice: voice.map(|id| id.0),
+        });
+    }
+
+    /// Resolve the ack set and `SoundInfo` row a def id would use for a unit
+    /// command, without starting a voice. This is the pure resolver the log
+    /// records and the per-def distinctness test asserts.
+    pub fn resolve_unit_voice(&self, def_id: &str) -> Option<(String, String)> {
+        let (set, def) = self.unit_ack_definition(def_id)?;
+        Some((set, def.name))
+    }
+
+    /// Deterministic def id -> ack set log, one record per unit command in the
+    /// order the commands were played. Per-def distinctness is asserted from
+    /// this log without an audio recording.
+    pub fn unit_voice_log(&self) -> &[UnitVoiceRecord] {
+        &self.voice_log
+    }
+
+    /// Clear the log at a test/phase boundary.
+    pub fn clear_unit_voice_log(&mut self) {
+        self.voice_log.clear();
     }
 
     /// Archive path of the clip that started last (`event -> file` evidence).
@@ -952,12 +1024,14 @@ impl<P: SoundProvider> GameAudio<P> {
                 &format!("{unit_id} limited=1 gap_ms={gap}"),
                 None,
             );
+            self.record_unit_voice(unit_id, "ack_limited", "none", "none", None);
             return None;
         }
         let Some((set, def)) = self.unit_ack_definition(unit_id) else {
             self.stats.acks_missing += 1;
             self.note_unresolved(format!("unit:{unit_id}"));
             self.emit("ACK", &format!("{unit_id} set=none"), None);
+            self.record_unit_voice(unit_id, "ack_missing", "none", "none", None);
             return None;
         };
         self.mark_ack(unit_id);
@@ -976,6 +1050,7 @@ impl<P: SoundProvider> GameAudio<P> {
             &format!("{unit_id} set={set} def={} gated={}", def.name, gated as u8),
             id,
         );
+        self.record_unit_voice(unit_id, "ack", &set, &def.name, id);
         id
     }
 
@@ -1023,12 +1098,17 @@ impl<P: SoundProvider> GameAudio<P> {
                 &format!("{unit_id} limited=1 gap_ms={gap}"),
                 None,
             );
+            self.record_unit_voice(unit_id, "attack_limited", "none", "none", None);
             return None;
         }
-        let (set, def) = self.unit_attack_definition(unit_id)?;
+        let Some((set, def)) = self.unit_attack_definition(unit_id) else {
+            self.record_unit_voice(unit_id, "attack_missing", "none", "none", None);
+            return None;
+        };
         self.mark_ack(unit_id);
         let id = self.play_def(&def, position, self.config.ack_priority);
         self.emit("ATTACK", &format!("{unit_id} set={set} def={}", def.name), id);
+        self.record_unit_voice(unit_id, "attack", &set, &def.name, id);
         id
     }
 
@@ -1044,9 +1124,13 @@ impl<P: SoundProvider> GameAudio<P> {
 
     /// Death line from the unit's own set (`{set}Death` in `AnimSounds`).
     pub fn unit_death(&mut self, unit_id: &str, position: Option<Vec3>) -> Option<VoiceId> {
-        let (set, def) = self.unit_death_definition(unit_id)?;
+        let Some((set, def)) = self.unit_death_definition(unit_id) else {
+            self.record_unit_voice(unit_id, "death_missing", "none", "none", None);
+            return None;
+        };
         let id = self.play_def(&def, position, self.config.ack_priority - 1);
         self.emit("DEATH", &format!("{unit_id} set={set} def={}", def.name), id);
+        self.record_unit_voice(unit_id, "death", &set, &def.name, id);
         id
     }
 
@@ -1062,9 +1146,13 @@ impl<P: SoundProvider> GameAudio<P> {
 
     /// "Pissed" line from the unit's own set (`{set}Pissed`).
     pub fn unit_pissed(&mut self, unit_id: &str, position: Option<Vec3>) -> Option<VoiceId> {
-        let (set, def) = self.unit_pissed_definition(unit_id)?;
+        let Some((set, def)) = self.unit_pissed_definition(unit_id) else {
+            self.record_unit_voice(unit_id, "pissed_missing", "none", "none", None);
+            return None;
+        };
         let id = self.play_def(&def, position, self.config.ack_priority);
         self.emit("PISSED", &format!("{unit_id} set={set} def={}", def.name), id);
+        self.record_unit_voice(unit_id, "pissed", &set, &def.name, id);
         id
     }
 
@@ -1307,16 +1395,15 @@ impl<P: SoundProvider> GameAudio<P> {
                 return None;
             }
         };
-        if let Some(previous) = self.music_voice.take() {
-            // Cross-fade: the outgoing theme ramps down while the incoming one
-            // ramps up, so a race/state change never clicks or cuts the score.
-            if self.config.crossfade_ms > 0 {
-                self.engine.fade_out(previous, self.config.crossfade_ms);
-                self.stats.music_crossfades += 1;
-            } else {
-                self.engine.stop(previous);
-            }
-        }
+        // Validate the stream before touching the running theme: a corrupt
+        // track must not fade out the score and leave silence.
+        let Some(info) = crate::probe_mp3(&bytes).ok() else {
+            self.stats.music_missing += 1;
+            self.note_unresolved(format!("music_probe:{path}"));
+            self.emit("MUSIC", &format!("theme={theme} path={path} probe=fail"), None);
+            return None;
+        };
+        let duration_ms = info.duration_ms;
         let params = PlayParams {
             gain: self.config.music_volume,
             category: self.config.music_category,
@@ -1324,11 +1411,20 @@ impl<P: SoundProvider> GameAudio<P> {
             fade_in_ms: self.config.crossfade_ms,
             ..Default::default()
         };
-        let duration_ms = crate::probe_mp3(&bytes)
-            .map(|info| info.duration_ms)
-            .unwrap_or(0);
         match self.engine.play_mp3(bytes, params) {
             Ok(id) => {
+                // Cross-fade: the outgoing theme ramps down while the incoming
+                // one ramps up, so a race/state change never clicks or cuts the
+                // score. The new voice is queued first, so a failed start above
+                // leaves the running theme untouched.
+                if let Some(previous) = self.music_voice.take() {
+                    if self.config.crossfade_ms > 0 {
+                        self.engine.fade_out(previous, self.config.crossfade_ms);
+                        self.stats.music_crossfades += 1;
+                    } else {
+                        self.engine.stop(previous);
+                    }
+                }
                 self.last_sound_file = Some(path.clone());
                 self.music_started_ms = self.clock_ms;
                 self.music_track_ms = duration_ms;
@@ -1382,9 +1478,28 @@ impl<P: SoundProvider> GameAudio<P> {
         None
     }
 
+    /// Whether a music voice is on the mixer (rotation never leaves a gap).
+    pub fn music_active(&self) -> bool {
+        self.music_voice.is_some()
+    }
+
+    /// Whether the region ambience loop is on the mixer.
+    pub fn ambient_active(&self) -> bool {
+        self.ambient_voice.is_some()
+    }
+
     /// Current race playlist (diagnostics / QA).
     pub fn playlist(&self) -> Option<&MusicPlaylist> {
         self.playlist.as_ref()
+    }
+
+    /// Stop the rotation without stopping the current theme.
+    ///
+    /// An explicit theme selection (victory/defeat stinger, menu music) owns the
+    /// score from that point; the match playlist must not advance over it when
+    /// the previous track length elapses.
+    pub(crate) fn clear_playlist(&mut self) {
+        self.playlist = None;
     }
 
     /// Rotate the race playlist when the current theme has played out.
@@ -1648,6 +1763,7 @@ impl<P: SoundProvider> GameAudio<P> {
     }
 
     pub fn stop_music(&mut self) {
+        self.clear_playlist();
         if let Some(id) = self.music_voice.take() {
             self.engine.stop(id);
         }
