@@ -17,7 +17,7 @@
 //! `H2_AUDIO` is unset/other, so CI does not touch hardware.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use glam::Vec3;
 
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = config.channels as usize;
     let mut block = vec![0.0f32; block_frames * channels];
 
-    let mut play = |audio: &mut WiredGameAudio,
+    let play = |audio: &mut WiredGameAudio,
                     block: &mut [f32],
                     shared: &SharedAssetDb,
                     name: &'static str,

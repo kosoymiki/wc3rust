@@ -430,6 +430,52 @@ impl MpqArchive {
         Self::open_at_indexed(path, base, None)
     }
 
+    /// Bytes of the container header scanned for an embedded archive.
+    ///
+    /// A classic RoC `.w3m` map puts the archive after its 512-byte `HM3W`
+    /// header; 4 KiB also covers protected maps that pad the header. The same
+    /// window and rule are used by `wc3_formats::map::map_mpq_base`.
+    pub const CONTAINER_SCAN: usize = 4096;
+
+    /// Archive base offset for a file header: `0` when `head` starts with the
+    /// MPQ magic, the signature offset when `head` is a `.w3m` (`HM3W`) map
+    /// container, `None` for anything else.
+    pub fn mpq_base(head: &[u8]) -> Option<u64> {
+        if head.starts_with(MPQ_MAGIC) {
+            return Some(0);
+        }
+        if head.starts_with(b"HM3W") {
+            return head
+                .windows(MPQ_MAGIC.len())
+                .position(|window| window == MPQ_MAGIC)
+                .map(|offset| offset as u64);
+        }
+        None
+    }
+
+    /// Open a bare archive or a `.w3m` map container in one call.
+    ///
+    /// The install's `.mpq` files (`base = 0`) and the shipped campaign `.w3m`
+    /// maps (`HM3W` header, archive at the first `MPQ\x1a` in the first 4 KiB)
+    /// both go through here, so tooling does not re-derive the base per caller.
+    /// A file with neither magic is `BadMagic` with its first four bytes; an
+    /// `HM3W` container without a signature is also `BadMagic` (`HM3W`), the
+    /// same typed error a wrong archive signature produces.
+    pub fn open_any(path: impl AsRef<Path>) -> Result<Self, MpqError> {
+        let path = path.as_ref();
+        let mut head = [0u8; Self::CONTAINER_SCAN];
+        let file = File::open(path)?;
+        let read = file.read_at(&mut head, 0)?;
+        let head = &head[..read];
+        let base = Self::mpq_base(head).ok_or_else(|| {
+            let mut magic = [0u8; 4];
+            let taken = read.min(4);
+            magic[..taken].copy_from_slice(&head[..taken]);
+            MpqError::BadMagic(magic)
+        })?;
+        Self::open_at(path, base)
+    }
+
     /// Open the archive using a prebuilt index: skips the listfile read and the
     /// hash probe for every name. The index must match the archive block table
     /// or [`MpqError::StaleIndex`] is returned.
@@ -605,7 +651,7 @@ impl MpqArchive {
             if index.fingerprint != Some(fingerprint) {
                 return Err(MpqError::StaleIndex);
             }
-            archive.listfile = index.entries().iter().map(|e| e.name.clone()).collect();
+            archive.listfile = dedup_names(index.entries().iter().map(|e| e.name.clone()));
             archive.by_name = index
                 .entries()
                 .iter()
@@ -617,11 +663,12 @@ impl MpqArchive {
             .read_raw(b"(listfile)")
             .map(|(bytes, _)| bytes)
             .unwrap_or_default();
-        archive.listfile = listfile
-            .split(|b| *b == b'\r' || *b == b'\n' || *b == 0u8)
-            .filter(|line| !line.is_empty())
-            .map(|line| String::from_utf8_lossy(line).into_owned())
-            .collect();
+        archive.listfile = dedup_names(
+            listfile
+                .split(|b| *b == b'\r' || *b == b'\n' || *b == 0u8)
+                .filter(|line| !line.is_empty())
+                .map(|line| String::from_utf8_lossy(line).into_owned()),
+        );
         for name in &archive.listfile {
             if let Some(index) = archive.find_block(name) {
                 archive.by_name.insert(normalize_name(name), index);
@@ -918,6 +965,38 @@ impl MpqArchive {
             .map(|b| (b.offset, b.compressed_size, b.size, b.flags))
     }
 
+    /// Streaming reader for one block, resolving its key the same way for named
+    /// and nameless blocks.
+    fn block_reader(&self, block_index: u32) -> Result<MpqFileReader<'_>, MpqError> {
+        let block = *self
+            .block_table
+            .get(block_index as usize)
+            .ok_or(MpqError::Corrupt("block index out of range"))?;
+        let name = self
+            .by_name
+            .iter()
+            .find(|(_, index)| **index == block_index)
+            .map(|(name, _)| name.clone());
+        match name {
+            Some(name) => {
+                self.check_readable(&name, block)?;
+                let key = self.file_key(&name, &block);
+                MpqFileReader::new(self, block, key, &name)
+            }
+            None => {
+                if block.flags & MPQ_FILE_DELETE_MARKER != 0 || block.flags & MPQ_FILE_EXISTS == 0 {
+                    return Err(MpqError::FileNotFound(format!("#{block_index}")));
+                }
+                let key = if block.flags & MPQ_FILE_ENCRYPTED != 0 {
+                    crate::stream::detect_key_by_content(self, &block)?
+                } else {
+                    0
+                };
+                MpqFileReader::new(self, block, key, "")
+            }
+        }
+    }
+
     /// Read a file by block index without a name: the read path for listfile-less
     /// and pseudo-named entries.
     ///
@@ -929,33 +1008,33 @@ impl MpqArchive {
             .block_table
             .get(block_index as usize)
             .ok_or(MpqError::Corrupt("block index out of range"))?;
-        let name = self
-            .by_name
-            .iter()
-            .find(|(_, index)| **index == block_index)
-            .map(|(name, _)| name.clone());
-        let mut reader = match name {
-            Some(name) => {
-                self.check_readable(&name, block)?;
-                let key = self.file_key(&name, &block);
-                MpqFileReader::new(self, block, key, &name)?
-            }
-            None => {
-                if block.flags & MPQ_FILE_DELETE_MARKER != 0 || block.flags & MPQ_FILE_EXISTS == 0 {
-                    return Err(MpqError::FileNotFound(format!("#{block_index}")));
-                }
-                let key = if block.flags & MPQ_FILE_ENCRYPTED != 0 {
-                    crate::stream::detect_key_by_content(self, &block)?
-                } else {
-                    0
-                };
-                MpqFileReader::new(self, block, key, "")?
-            }
-        };
+        let mut reader = self.block_reader(block_index)?;
         let mut out = Vec::with_capacity(block.size as usize);
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&chunk[..n]),
+                Err(err) => return Err(restore_sector_error(err)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Read at most `len` bytes from the start of a block.
+    ///
+    /// Movie discovery only needs the container magic of a nameless block, and
+    /// an archive can declare hundreds of 256 MiB blocks: decoding each one in
+    /// full to inspect four bytes (WC3-MPQ-002) is unbounded work for a
+    /// four-byte answer. The prefix read decompresses only the sectors it
+    /// needs.
+    pub fn read_block_prefix(&self, block_index: u32, len: usize) -> Result<Vec<u8>, MpqError> {
+        let mut reader = self.block_reader(block_index)?;
+        let mut out = Vec::with_capacity(len.min(64));
+        let mut chunk = [0u8; 8192];
+        while out.len() < len {
+            let want = (len - out.len()).min(chunk.len());
+            match reader.read(&mut chunk[..want]) {
                 Ok(0) => break,
                 Ok(n) => out.extend_from_slice(&chunk[..n]),
                 Err(err) => return Err(restore_sector_error(err)),
@@ -1303,6 +1382,25 @@ fn leak_kind(kind: io::ErrorKind) -> &'static str {
 
 pub(crate) fn normalize_name(name: &str) -> String {
     name.replace('/', "\\")
+}
+
+/// Case-insensitive dedup under MPQ naming rules, keeping the first spelling.
+///
+/// A `(listfile)` is a plain name table and hostile/broken archives repeat or
+/// case-vary entries. MPQ resolves names case-insensitively (the hash walk
+/// upper-cases, `SFileOpenFileEx` is case-insensitive), so two names that
+/// differ only in case can never resolve to different blocks. Deduping once at
+/// ingestion keeps every consumer linear in the number of distinct names — the
+/// `MapBundle::open` cross-check is O(N^2) on duplicates (WC3-I-021).
+fn dedup_names(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if seen.insert(normalize_name(&name).to_ascii_uppercase()) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 pub(crate) fn decrypt_bytes(data: &mut [u8], key: u32) {

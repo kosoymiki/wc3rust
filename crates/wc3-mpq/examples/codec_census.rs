@@ -25,7 +25,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut total_failures = 0usize;
     for path in archives {
-        let archive = MpqArchive::open(&path)?;
+        // `open_any` covers the install's bare `.mpq` archives and the shipped
+        // `.w3m` campaign maps (`HM3W` header, archive at the first `MPQ\x1a`
+        // in the first 4 KiB) in one call.
+        let mut archive = MpqArchive::open_any(&path)?;
+        if archive.listfile().is_empty() {
+            archive.discover_known_names();
+        }
         let names: Vec<String> = archive.listfile().to_vec();
         let mut histogram: BTreeMap<String, usize> = BTreeMap::new();
         let mut bytes = 0u64;

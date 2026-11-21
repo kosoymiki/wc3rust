@@ -38,6 +38,19 @@ pub const SCAN_MIN_BYTES: u32 = 512 * 1024;
 /// megabytes; anything above this is not a movie and is skipped unsampled.
 pub const SCAN_MAX_BYTES: u32 = 256 * 1024 * 1024;
 
+/// Bytes of the block head needed to classify a movie container: `BIK`/`KB2`
+/// are three bytes, `RIFF` is four. The scan reads exactly this prefix, never
+/// the whole block (WC3-MPQ-002).
+pub const MOVIE_MAGIC_BYTES: usize = 8;
+
+/// Total declared block bytes the unnamed-block scan will decode.
+///
+/// The prefix read is lazy for sector-compressed blocks, but a crafted
+/// single-unit block has to be decompressed whole before its first byte can be
+/// inspected, so the scan stops once this budget is spent instead of decoding
+/// an arbitrary number of 256 MiB blocks (WC3-MPQ-002).
+pub const SCAN_DECODE_BUDGET: u64 = 512 * 1024 * 1024;
+
 /// Where a discovered movie came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovieSource {
@@ -354,6 +367,7 @@ pub fn discover_movies(archive: &mut MpqArchive) -> Vec<MovieEntry> {
         .files()
         .map(|(_, meta)| meta.block_index)
         .collect();
+    let mut scanned_bytes = 0u64;
     for block in 0..archive.block_count() as u32 {
         if named.contains(&block) {
             continue;
@@ -361,16 +375,30 @@ pub fn discover_movies(archive: &mut MpqArchive) -> Vec<MovieEntry> {
         let Some((_offset, _csize, size, _flags)) = archive.block_entry(block) else {
             continue;
         };
-        // Only blocks of movie-ish size are worth decoding; `read_block`
+        // Only blocks of movie-ish size are worth probing; `read_block`
         // itself rejects deleted/absent entries, so the flags check stays in
         // the MPQ crate where the bit definitions live.
         if size < SCAN_MIN_BYTES || size > SCAN_MAX_BYTES {
             continue;
         }
-        let Ok(bytes) = archive.read_block(block) else {
+        if scanned_bytes.saturating_add(u64::from(size)) > SCAN_DECODE_BUDGET {
+            // A crafted archive must not turn discovery into an unbounded
+            // decode loop (WC3-MPQ-002).
+            crate::diag::note("movie_scan_budget", || {
+                format!(
+                    "skipped_blocks={} scanned_bytes={scanned_bytes} budget={SCAN_DECODE_BUDGET}",
+                    archive.block_count() as u32 - block
+                )
+            });
+            break;
+        }
+        scanned_bytes += u64::from(size);
+        // Read the container magic only: a whole-block read would decode up to
+        // 256 MiB per block just to inspect four bytes (WC3-MPQ-002).
+        let Ok(prefix) = archive.read_block_prefix(block, MOVIE_MAGIC_BYTES) else {
             continue;
         };
-        if !is_movie_container(&bytes) {
+        if !is_movie_container(&prefix) {
             continue;
         }
         let name = MpqArchive::pseudo_name(block, "bik");
@@ -383,7 +411,7 @@ pub fn discover_movies(archive: &mut MpqArchive) -> Vec<MovieEntry> {
             size,
             block,
             source: MovieSource::UnnamedBlock,
-            magic: magic4(&bytes),
+            magic: magic4(&prefix),
         });
     }
 

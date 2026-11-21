@@ -304,9 +304,13 @@ impl MpqIndex {
     pub fn with_extension(&self, ext: &str) -> impl Iterator<Item = &IndexEntry> {
         let suffix = format!(".{}", ext.to_ascii_lowercase());
         self.entries.iter().filter(move |entry| {
-            entry.name.len() >= suffix.len()
-                && entry.name[entry.name.len() - suffix.len()..]
-                    .eq_ignore_ascii_case(&suffix)
+            // Compare bytes, never `str` slices: `name.len() - suffix.len()` is
+            // a byte offset that can land inside a multi-byte character, which
+            // made `str` slicing panic on a non-ASCII asset name
+            // (WC3-MPQ-001).
+            let name = entry.name.as_bytes();
+            name.len() >= suffix.len()
+                && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
         })
     }
 

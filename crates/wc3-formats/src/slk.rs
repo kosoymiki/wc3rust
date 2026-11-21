@@ -10,6 +10,15 @@ use crate::FormatError;
 const MAX_ROWS: usize = 65_536;
 const MAX_COLUMNS: usize = 1_024;
 
+/// Ceiling on the total cells the grid may materialise.
+///
+/// `MAX_ROWS * MAX_COLUMNS` is not a useful bound by itself: rows and columns
+/// were checked independently, so one forged `C;X1024;Y65536` in a 31-byte file
+/// expanded to a dense 65 536 × 1 024 grid (WC3-SLK-001). The largest shipped
+/// sheet measured on this install is `Units/AbilityData.slk`
+/// (56 × 400 = 22 400 cells), so one million cells leaves a 46× margin.
+const MAX_CELLS: usize = 1_048_576;
+
 #[derive(Debug, Clone, Default)]
 pub struct SlkTable {
     pub columns: Vec<String>,
@@ -68,6 +77,25 @@ impl SlkTable {
                     current_x = x;
                     current_y = y;
                 }
+                "B" => {
+                    // `B;X<cols>;Y<rows>` declares the sheet extent. It is never
+                    // trusted for sizing (it is only advisory), but a forged
+                    // declaration is reported instead of silently ignored.
+                    let mut bx = 0usize;
+                    let mut by = 0usize;
+                    for field in fields {
+                        if let Some(rest) = field.strip_prefix('X') {
+                            bx = rest.parse().unwrap_or(0);
+                        } else if let Some(rest) = field.strip_prefix('Y') {
+                            by = rest.parse().unwrap_or(0);
+                        }
+                    }
+                    if bx.saturating_mul(by) > MAX_CELLS {
+                        crate::diag::note("slk_declared_grid_too_large", || {
+                            format!("declared={bx}x{by} cell_limit={MAX_CELLS}")
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -75,6 +103,9 @@ impl SlkTable {
         let height = table.max_y as usize;
         if width == 0 || height == 0 {
             return Ok(table);
+        }
+        if width.saturating_mul(height) > MAX_CELLS {
+            return Err(FormatError::Corrupt("SLK grid exceeds the cell budget"));
         }
         for x in 0..width {
             table

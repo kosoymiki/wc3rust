@@ -43,6 +43,11 @@ pub const MAX_PROFILE_COMPONENTS: usize = 1024;
 /// the ceiling is a corrupt position, not a real grid.
 const MAX_SHEET_ROWS: usize = 65_536;
 const MAX_SHEET_COLUMNS: usize = 1_024;
+/// Total grid slots one sheet may materialise (WC3-SLK-001). The two per-axis
+/// limits multiply out to 67 M slots (~1.6 GB of `Option<String>`); the shipped
+/// sheets are far smaller, and the dense grid is only a convenience view over
+/// the sparse stream.
+const MAX_SHEET_CELLS: usize = 1_048_576;
 
 /// Canonical FourCC (object identifier such as `hfoo`).
 ///
@@ -491,6 +496,8 @@ impl Sheet {
         // explicit position, so a following value record writes *at* it instead
         // of continuing sequentially.
         let mut positioned = false;
+        // Slots the dense grid has materialised so far (WC3-SLK-001).
+        let mut cells_allocated = 0usize;
 
         for line in text.split('\n') {
             let line = line.trim_end_matches('\r');
@@ -552,6 +559,21 @@ impl Sheet {
                         });
                         continue;
                     }
+                    // The product of the per-axis limits is what used to
+                    // amplify a single forged coordinate into a 67 M-slot grid.
+                    let grown = column
+                        .saturating_add(1)
+                        .saturating_sub(grid.get(row).map_or(0, Vec::len));
+                    if cells_allocated.saturating_add(grown) > MAX_SHEET_CELLS {
+                        crate::diag::note("slk_grid_too_large", || {
+                            format!(
+                                "sheet={} cells={} limit={MAX_SHEET_CELLS}",
+                                self.name, cells_allocated
+                            )
+                        });
+                        continue;
+                    }
+                    cells_allocated += grown;
                     if grid.len() <= row {
                         grid.resize_with(row + 1, Vec::new);
                     }

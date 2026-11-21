@@ -14,6 +14,7 @@ pub mod blp_report;
 pub mod catalog;
 mod lru;
 pub mod source;
+pub mod unit_icons;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -227,6 +228,16 @@ pub struct AssetDb {
     dependencies: HashMap<String, Vec<String>>,
     pub hits: u64,
     pub misses: u64,
+    /// Answers served by the negative cache instead of re-probing the archive.
+    negative_hits: u64,
+    /// Per-cache traffic, so a texture/model/sound cache that thrashes is
+    /// visible even though `hits`/`misses` aggregate every cache.
+    texture_hits: u64,
+    texture_misses: u64,
+    model_hits: u64,
+    model_misses: u64,
+    sound_hits: u64,
+    sound_misses: u64,
 }
 
 impl AssetDb {
@@ -303,6 +314,13 @@ impl AssetDb {
             dependencies: HashMap::new(),
             hits: 0,
             misses: 0,
+            negative_hits: 0,
+            texture_hits: 0,
+            texture_misses: 0,
+            model_hits: 0,
+            model_misses: 0,
+            sound_hits: 0,
+            sound_misses: 0,
         }
     }
 
@@ -495,6 +513,7 @@ impl AssetDb {
             return Ok(bytes);
         }
         if self.config.negative_cache && self.negative.contains(&key) {
+            self.negative_hits += 1;
             self.hits += 1;
             return Err(AssetError::NotFound(name.to_string()));
         }
@@ -531,9 +550,11 @@ impl AssetDb {
     pub fn texture_shared(&mut self, name: &str) -> Result<Arc<TextureAsset>, AssetError> {
         let key = normalize_key(name);
         if let Some(texture) = self.textures.get(&key) {
+            self.texture_hits += 1;
             self.hits += 1;
             return Ok(texture);
         }
+        self.texture_misses += 1;
         self.misses += 1;
         let canonical = self.resolve_path(name).unwrap_or_else(|| name.replace('/', "\\"));
         let bytes = self.read(&canonical)?;
@@ -562,9 +583,11 @@ impl AssetDb {
     pub fn model_shared(&mut self, name: &str) -> Result<Arc<ModelAsset>, AssetError> {
         let key = normalize_key(name);
         if let Some(model) = self.models.get(&key) {
+            self.model_hits += 1;
             self.hits += 1;
             return Ok(model);
         }
+        self.model_misses += 1;
         self.misses += 1;
         let canonical = self.resolve_path(name).unwrap_or_else(|| name.replace('/', "\\"));
         let bytes = self.read(&canonical)?;
@@ -676,9 +699,11 @@ impl AssetDb {
     pub fn sound_shared(&mut self, name: &str) -> Result<Arc<Sound>, AssetError> {
         let key = normalize_key(name);
         if let Some(sound) = self.sounds.get(&key) {
+            self.sound_hits += 1;
             self.hits += 1;
             return Ok(sound);
         }
+        self.sound_misses += 1;
         self.misses += 1;
         let canonical = self.resolve_path(name).unwrap_or_else(|| name.replace('/', "\\"));
         let bytes = self.read(&canonical)?;
@@ -716,19 +741,19 @@ impl AssetDb {
         AssetStats {
             hits: self.hits,
             misses: self.misses,
-            negative_hits: 0,
-            texture_hits: 0,
-            texture_misses: 0,
-            model_hits: 0,
-            model_misses: 0,
+            negative_hits: self.negative_hits,
+            texture_hits: self.texture_hits,
+            texture_misses: self.texture_misses,
+            model_hits: self.model_hits,
+            model_misses: self.model_misses,
             bytes_cached: self.bytes.bytes_used(),
             texture_bytes: self.textures.bytes_used(),
             model_bytes: self.models.bytes_used(),
             raw_evictions: self.bytes.evictions(),
             texture_evictions: self.textures.evictions(),
             model_evictions: self.models.evictions(),
-            sound_hits: 0,
-            sound_misses: 0,
+            sound_hits: self.sound_hits,
+            sound_misses: self.sound_misses,
             sound_bytes: self.sounds.bytes_used(),
             sound_evictions: self.sounds.evictions(),
             pinned_skips: self.bytes.pinned_skips()
@@ -904,8 +929,6 @@ mod tests {
             let _ = db.model_shared(name);
         }
         assert!(db.model_bytes() <= 5_000_000, "model budget");
-        let stats = db.stats();
-        assert_eq!(stats.pinned_skips >= 0, true);
     }
 
     #[test]

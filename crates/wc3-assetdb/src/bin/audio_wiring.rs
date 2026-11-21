@@ -30,21 +30,6 @@ fn esc(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// JSON array of strings.
-fn json_array(values: &[String]) -> String {
-    let mut out = String::from("[");
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push('"');
-        out.push_str(&esc(value));
-        out.push('"');
-    }
-    out.push(']');
-    out
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mpq = std::env::var_os("WC3_MPQ")
         .map(PathBuf::from)

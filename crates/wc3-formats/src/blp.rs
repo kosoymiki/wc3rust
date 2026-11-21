@@ -56,6 +56,219 @@ fn check_pixels(width: u32, height: u32) -> Result<(), FormatError> {
     Ok(())
 }
 
+/// Alpha depths the paletted branches understand (WC3-FMT-001/007). Any other
+/// value used to be read as "fully opaque", which turns a corrupt file into a
+/// plausible-looking texture instead of a typed error.
+fn checked_alpha_bits(bits: u32) -> Result<u32, FormatError> {
+    match bits {
+        0 | 1 | 4 | 8 => Ok(bits),
+        _ => Err(FormatError::Corrupt("BLP alpha depth")),
+    }
+}
+
+/// Bytes of the per-mip alpha plane that follows the index plane.
+fn alpha_plane_len(count: usize, bits: u32) -> usize {
+    match bits {
+        0 => 0,
+        1 => count.div_ceil(8),
+        4 => count.div_ceil(2),
+        _ => count,
+    }
+}
+
+/// One alpha sample. The caller has already validated that the plane holds
+/// `alpha_plane_len(count, bits)` bytes, so every index below is in range.
+fn alpha_sample(alpha: &[u8], bits: u32, index: usize) -> u8 {
+    match bits {
+        0 => 255,
+        8 => alpha[index],
+        4 => {
+            let byte = alpha[index / 2];
+            let nibble = if index % 2 == 0 { byte & 0x0F } else { byte >> 4 };
+            nibble * 17
+        }
+        1 => {
+            let byte = alpha[index / 8];
+            if byte & (1 << (index % 8)) != 0 {
+                255
+            } else {
+                0
+            }
+        }
+        _ => 255,
+    }
+}
+
+/// Dimensions of every stored mip level (each half of the previous, never
+/// below 1×1). A BLP carries at most 16 levels.
+fn mip_dimensions(width: u32, height: u32) -> [(u32, u32); 16] {
+    let mut dims = [(0u32, 0u32); 16];
+    let (mut w, mut h) = (width, height);
+    for slot in dims.iter_mut() {
+        *slot = (w, h);
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    dims
+}
+
+/// One validated mip payload: where it starts and how many bytes the branch
+/// reads from it (`needed`), which may be less than the declared size because
+/// trailing padding is legal.
+#[derive(Debug, Clone, Copy)]
+struct MipRange {
+    start: usize,
+    needed: usize,
+}
+
+impl MipRange {
+    fn payload_end(self) -> usize {
+        self.start + self.needed
+    }
+}
+
+/// The single offset/size contract every BLP branch goes through
+/// (WC3-FMT-001/002/004/007):
+///
+/// * a mip may not start inside its branch's header/palette region;
+/// * `must_declare` is the payload the size table is required to cover,
+///   `reads` is the extent the decoder will touch. Both are checked against the
+///   file with checked arithmetic, and `reads` may extend past `sizes[i]` only
+///   where the format puts a separate alpha plane after a declared index plane
+///   (BLP2 paletted, WC3-FMT-007);
+/// * the extents the decoder reads may not overlap each other;
+/// * the chain ends at the first empty slot, as the format declares.
+fn validate_mips(
+    file_len: usize,
+    offsets: &[u32; 16],
+    sizes: &[u32; 16],
+    header_end: usize,
+    mut must_declare: impl FnMut(usize) -> usize,
+    mut reads: impl FnMut(usize) -> usize,
+) -> Result<Vec<MipRange>, FormatError> {
+    let mut ranges: Vec<MipRange> = Vec::new();
+    for level in 0..16 {
+        if offsets[level] == 0 || sizes[level] == 0 {
+            break;
+        }
+        let start = offsets[level] as usize;
+        let declared = sizes[level] as usize;
+        let required = must_declare(level);
+        let needed = reads(level);
+        if start < header_end {
+            return Err(FormatError::Corrupt("BLP mip points into the header"));
+        }
+        if required > declared {
+            return Err(FormatError::Corrupt(
+                "BLP mip payload shorter than its pixels",
+            ));
+        }
+        let declared_end = start
+            .checked_add(declared)
+            .ok_or(FormatError::Corrupt("BLP mip range overflow"))?;
+        if declared_end > file_len {
+            return Err(FormatError::Corrupt("BLP mip out of bounds"));
+        }
+        let read_end = start
+            .checked_add(needed)
+            .ok_or(FormatError::Corrupt("BLP mip range overflow"))?;
+        if read_end > file_len {
+            return Err(FormatError::Corrupt("BLP mip pixels past end of file"));
+        }
+        let range = MipRange { start, needed };
+        if ranges
+            .iter()
+            .any(|other| start < other.payload_end() && other.start < range.payload_end())
+        {
+            return Err(FormatError::Corrupt("BLP mip payloads overlap"));
+        }
+        ranges.push(range);
+    }
+    if ranges.is_empty() {
+        return Err(FormatError::Corrupt("BLP has no mips"));
+    }
+    Ok(ranges)
+}
+
+/// Paletted mips shared by BLP1 (`header_end = 1180`) and BLP2
+/// (`header_end = 1172`): `count` index bytes followed by the per-mip alpha
+/// plane. There is no global alpha table in either version.
+///
+/// `alpha_in_size` is the one layout difference: BLP1's size table covers the
+/// index plane *and* its alpha plane (measured on all 3 901 local BLP1 files),
+/// while BLP2's declares the index plane only and the alpha plane follows it in
+/// the file.
+fn decode_paletted(
+    bytes: &[u8],
+    offsets: &[u32; 16],
+    sizes: &[u32; 16],
+    width: u32,
+    height: u32,
+    palette: &[u8],
+    header_end: usize,
+    alpha_bits: u32,
+    alpha_in_size: bool,
+) -> Result<BlpImage, FormatError> {
+    let alpha_bits = checked_alpha_bits(alpha_bits)?;
+    let dims = mip_dimensions(width, height);
+    let count_of = |level: usize| {
+        let (w, h) = dims[level];
+        w as usize * h as usize
+    };
+    let ranges = validate_mips(
+        bytes.len(),
+        offsets,
+        sizes,
+        header_end,
+        |level| {
+            let count = count_of(level);
+            if alpha_in_size {
+                count + alpha_plane_len(count, alpha_bits)
+            } else {
+                count
+            }
+        },
+        |level| {
+            let count = count_of(level);
+            count + alpha_plane_len(count, alpha_bits)
+        },
+    )?;
+    let mut mipmaps = Vec::with_capacity(ranges.len());
+    for (level, range) in ranges.iter().enumerate() {
+        let (w, h) = dims[level];
+        let count = w as usize * h as usize;
+        let alpha_len = alpha_plane_len(count, alpha_bits);
+        // The range validator guarantees `count + alpha_len` bytes here.
+        let indices = &bytes[range.start..range.start + count];
+        let alpha = &bytes[range.start + count..range.start + count + alpha_len];
+        let mut rgba = Vec::with_capacity(count * 4);
+        for (index, &palette_index) in indices.iter().enumerate() {
+            let p = palette_index as usize * 4;
+            rgba.extend_from_slice(&[
+                palette[p + 2],
+                palette[p + 1],
+                palette[p],
+                alpha_sample(alpha, alpha_bits, index),
+            ]);
+        }
+        mipmaps.push(MipLevel {
+            width: w,
+            height: h,
+            rgba,
+        });
+    }
+    let first = mipmaps
+        .first()
+        .cloned()
+        .ok_or(FormatError::Corrupt("BLP paletted has no mips"))?;
+    Ok(BlpImage {
+        width,
+        height,
+        rgba: first.rgba,
+        mipmaps,
+    })
+}
+
 fn decode_blp1(bytes: &[u8]) -> Result<BlpImage, FormatError> {
     if bytes.len() < 156 {
         return Err(FormatError::TooShort);
@@ -80,22 +293,29 @@ fn decode_blp1(bytes: &[u8]) -> Result<BlpImage, FormatError> {
         // is decoded with the shared header (War3Net `GetJpegFileBytes(mip)`).
         let header_size = u32_at(bytes, pos)? as usize;
         let header_start = pos + 4;
+        let header_end = header_start
+            .checked_add(header_size)
+            .ok_or(FormatError::Corrupt("BLP1 JPEG header length"))?;
         let header = bytes
-            .get(header_start..header_start + header_size)
+            .get(header_start..header_end)
             .ok_or(FormatError::Corrupt("BLP1 JPEG header truncated"))?;
-        let mut mipmaps = Vec::new();
-        let mut mip_width = width;
-        let mut mip_height = height;
-        for level in 0..16 {
-            if offsets[level] == 0 || sizes[level] == 0 {
-                break;
-            }
-            let start = offsets[level] as usize;
-            let size = sizes[level] as usize;
-            let data = bytes
-                .get(start..start + size)
-                .ok_or(FormatError::Corrupt("BLP1 JPEG mip truncated"))?;
-            let mut stream = Vec::with_capacity(header_size + size);
+        // A JPEG mip payload is opaque scan data: the declared size *is* what is
+        // appended to the shared header, so the validator checks placement,
+        // EOF and overlap rather than the value.
+        let dims = mip_dimensions(width, height);
+        let ranges = validate_mips(
+            bytes.len(),
+            &offsets,
+            &sizes,
+            header_end,
+            |level| sizes[level] as usize,
+            |level| sizes[level] as usize,
+        )?;
+        let mut mipmaps = Vec::with_capacity(ranges.len());
+        for (level, range) in ranges.iter().enumerate() {
+            let (mip_width, mip_height) = dims[level];
+            let data = &bytes[range.start..range.start + range.needed];
+            let mut stream = Vec::with_capacity(header.len() + data.len());
             stream.extend_from_slice(header);
             stream.extend_from_slice(data);
             let image = decode_jpeg_stream(&stream, mip_width, mip_height, alpha_bits)?;
@@ -105,8 +325,6 @@ fn decode_blp1(bytes: &[u8]) -> Result<BlpImage, FormatError> {
                 .next()
                 .ok_or(FormatError::Corrupt("BLP1 JPEG mip has no pixels"))?;
             mipmaps.push(level_image);
-            mip_width = (mip_width / 2).max(1);
-            mip_height = (mip_height / 2).max(1);
         }
         let first = mipmaps
             .first()
@@ -120,73 +338,21 @@ fn decode_blp1(bytes: &[u8]) -> Result<BlpImage, FormatError> {
         })
     } else if content_type == 1 {
         // Paletted: 256 BGRA colors, then per level (indices + alpha plane).
-        let palette = bytes.get(pos..pos + 1024).ok_or(FormatError::TooShort)?;
-        let mut mipmaps = Vec::new();
-        let mut mip_width = width;
-        let mut mip_height = height;
-        for level in 0..16 {
-            if offsets[level] == 0 || sizes[level] == 0 {
-                break;
-            }
-            let count = mip_width as usize * mip_height as usize;
-            let start = offsets[level] as usize;
-            let data = bytes
-                .get(start..start + count)
-                .ok_or(FormatError::Corrupt("BLP1 pixel data truncated"))?;
-            let alpha_start = start + count;
-            let alpha_len = (count * alpha_bits as usize).div_ceil(8);
-            let alpha = bytes
-                .get(alpha_start..alpha_start + alpha_len)
-                .unwrap_or(&[]);
-            let mut rgba = Vec::with_capacity(count * 4);
-            for (index, &palette_index) in data.iter().enumerate() {
-                let p = palette_index as usize * 4;
-                let a = match alpha_bits {
-                    8 => alpha.get(index).copied().unwrap_or(255),
-                    4 => {
-                        let byte = alpha.get(index / 2).copied().unwrap_or(0);
-                        let nibble = if index % 2 == 0 {
-                            byte & 0x0F
-                        } else {
-                            byte >> 4
-                        };
-                        nibble * 17
-                    }
-                    1 => {
-                        let byte = alpha.get(index / 8).copied().unwrap_or(0);
-                        if byte & (1 << (index % 8)) != 0 {
-                            255
-                        } else {
-                            0
-                        }
-                    }
-                    _ => 255,
-                };
-                rgba.extend_from_slice(&[
-                    palette.get(p + 2).copied().unwrap_or(0),
-                    palette.get(p + 1).copied().unwrap_or(0),
-                    palette.get(p).copied().unwrap_or(0),
-                    a,
-                ]);
-            }
-            mipmaps.push(MipLevel {
-                width: mip_width,
-                height: mip_height,
-                rgba,
-            });
-            mip_width = (mip_width / 2).max(1);
-            mip_height = (mip_height / 2).max(1);
-        }
-        let first = mipmaps
-            .first()
-            .cloned()
-            .ok_or(FormatError::Corrupt("BLP1 paletted has no mips"))?;
-        Ok(BlpImage {
+        let header_end = pos + 1024;
+        let palette = bytes
+            .get(pos..header_end)
+            .ok_or(FormatError::TooShort)?;
+        decode_paletted(
+            bytes,
+            &offsets,
+            &sizes,
             width,
             height,
-            rgba: first.rgba,
-            mipmaps,
-        })
+            palette,
+            header_end,
+            alpha_bits,
+            true,
+        )
     } else {
         Err(FormatError::Unsupported("BLP1 content type"))
     }
@@ -203,7 +369,10 @@ fn decode_blp2(bytes: &[u8]) -> Result<BlpImage, FormatError> {
         .ok_or(FormatError::TooShort)?;
     let compression = header[8];
     let alpha_bits = header[9];
-    let alpha_type = header[10];
+    // Byte 0x0A is the pixel/alpha-encoding field (`preferredFormat` in the
+    // published layout, `alphaEncoding` in War3Net): PIXEL_DXT1 = 0,
+    // PIXEL_DXT3 = 1, PIXEL_DXT5 = 7, PIXEL_UNSPECIFIED = 8.
+    let preferred_format = header[10];
     let width = u32_at(bytes, 12)?;
     let height = u32_at(bytes, 16)?;
     if width == 0 || height == 0 || width > 8192 || height > 8192 {
@@ -216,47 +385,79 @@ fn decode_blp2(bytes: &[u8]) -> Result<BlpImage, FormatError> {
         offsets[i] = u32_at(bytes, 20 + i * 4)?;
         sizes[i] = u32_at(bytes, 84 + i * 4)?;
     }
+    // BLP2 header (148 B) + the 1024-byte extended data region (palette, JPEG
+    // header or padding) precede every compression's mip data.
+    let header_end = 148 + 1024;
     match compression {
         1 => {
-            let palette = bytes.get(148..148 + 1024).ok_or(FormatError::TooShort)?;
-            let alpha_start = 148 + 1024;
-            let alpha = bytes
-                .get(alpha_start..alpha_start + 1024)
-                .ok_or(FormatError::TooShort)?;
-            decode_paletted_mips(bytes, &offsets, &sizes, width, height, palette, alpha, true)
+            let palette = bytes.get(148..header_end).ok_or(FormatError::TooShort)?;
+            decode_paletted(
+                bytes,
+                &offsets,
+                &sizes,
+                width,
+                height,
+                palette,
+                header_end,
+                u32::from(alpha_bits),
+                false,
+            )
         }
         2 => {
-            let mut mipmaps = Vec::new();
-            let mut w = width;
-            let mut h = height;
-            for i in 0..16 {
-                if offsets[i] == 0 || sizes[i] == 0 {
-                    break;
+            let kind = dxt_kind(alpha_bits, preferred_format)?;
+            let block_size = kind.block_size();
+            let dims = mip_dimensions(width, height);
+            let block_bytes = |level: usize| {
+                let (w, h) = dims[level];
+                w.div_ceil(4) as usize * h.div_ceil(4) as usize * block_size
+            };
+            // The published layout documents that *lower* compressed mips may
+            // carry a wrong `sizes[i]` and that the correct block count must be
+            // zero-filled ("Some lower mipmap levels in compressed textures have
+            // incorrect size ... the rest bytes in buffer can be filled with
+            // zeros"). Mip 0 is the visible surface and must be complete.
+            let must_declare = |level: usize| if level == 0 { block_bytes(0) } else { 0 };
+            let reads = |level: usize| {
+                let needed = block_bytes(level);
+                needed.min(sizes[level] as usize)
+            };
+            let ranges = validate_mips(
+                bytes.len(),
+                &offsets,
+                &sizes,
+                header_end,
+                must_declare,
+                reads,
+            )?;
+            let mut mipmaps = Vec::with_capacity(ranges.len());
+            for (level, range) in ranges.iter().enumerate() {
+                let (w, h) = dims[level];
+                let data = &bytes[range.start..range.start + range.needed];
+                let stored = block_bytes(level);
+                if data.len() < stored {
+                    // Documented retail padding: zero-fill the blocks the size
+                    // table under-declared for a lower mip.
+                    let mut padded = vec![0u8; stored];
+                    padded[..data.len()].copy_from_slice(data);
+                    let rgba = decode_dxt(&padded, w, h, kind)?;
+                    mipmaps.push(MipLevel {
+                        width: w,
+                        height: h,
+                        rgba,
+                    });
+                    continue;
                 }
-                let start = offsets[i] as usize;
-                let end = start + sizes[i] as usize;
-                let data = bytes
-                    .get(start..end)
-                    .ok_or(FormatError::Corrupt("DXT mip out of bounds"))?;
-                let rgba = match alpha_bits {
-                    0 | 1 if alpha_type == 0 => decode_dxt(data, w, h, DxtKind::Dxt1Opaque)?,
-                    1 => decode_dxt(data, w, h, DxtKind::Dxt1Alpha)?,
-                    3 | 4 | 5 => decode_dxt(data, w, h, DxtKind::Dxt5)?,
-                    8 => decode_dxt(data, w, h, DxtKind::Dxt3)?,
-                    _ => decode_dxt(data, w, h, DxtKind::Dxt5)?,
-                };
+                let rgba = decode_dxt(data, w, h, kind)?;
                 mipmaps.push(MipLevel {
                     width: w,
                     height: h,
                     rgba,
                 });
-                w = (w / 2).max(1);
-                h = (h / 2).max(1);
             }
             let first = mipmaps
                 .first()
-                .ok_or(FormatError::Corrupt("no BLP2 mip"))?
-                .clone();
+                .cloned()
+                .ok_or(FormatError::Corrupt("no BLP2 mip"))?;
             Ok(BlpImage {
                 width,
                 height,
@@ -265,22 +466,49 @@ fn decode_blp2(bytes: &[u8]) -> Result<BlpImage, FormatError> {
             })
         }
         3 => {
-            let start = offsets[0] as usize;
-            let end = start + (width as usize * height as usize * 4);
-            let data = bytes.get(start..end).ok_or(FormatError::TooShort)?;
-            let mut rgba = Vec::with_capacity(data.len());
-            for px in data.chunks_exact(4) {
-                rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            // ARGB8888 payload: the extended-region `preferred_format` byte must
+            // name an uncompressed format (PIXEL_ARGB8888 = 2, its duplicate = 4,
+            // or PIXEL_UNSPECIFIED = 8). A DXT/BC value on a raw payload is a
+            // tuple no decoder can honour (WC3-I-001).
+            if !matches!(preferred_format, 2 | 4 | 8) {
+                return Err(FormatError::Unsupported("BLP2 ARGB8888 pixel format"));
             }
+            let dims = mip_dimensions(width, height);
+            let raw_bytes = |level: usize| {
+                let (w, h) = dims[level];
+                w as usize * h as usize * 4
+            };
+            let ranges = validate_mips(
+                bytes.len(),
+                &offsets,
+                &sizes,
+                header_end,
+                raw_bytes,
+                raw_bytes,
+            )?;
+            let mut mipmaps = Vec::with_capacity(ranges.len());
+            for (level, range) in ranges.iter().enumerate() {
+                let (w, h) = dims[level];
+                let data = &bytes[range.start..range.start + range.needed];
+                let mut rgba = Vec::with_capacity(data.len());
+                for px in data.chunks_exact(4) {
+                    rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+                }
+                mipmaps.push(MipLevel {
+                    width: w,
+                    height: h,
+                    rgba,
+                });
+            }
+            let first = mipmaps
+                .first()
+                .cloned()
+                .ok_or(FormatError::Corrupt("no BLP2 mip"))?;
             Ok(BlpImage {
                 width,
                 height,
-                rgba: rgba.clone(),
-                mipmaps: vec![MipLevel {
-                    width,
-                    height,
-                    rgba,
-                }],
+                rgba: first.rgba,
+                mipmaps,
             })
         }
         other => Err(FormatError::Unsupported(if other == 0 {
@@ -289,63 +517,6 @@ fn decode_blp2(bytes: &[u8]) -> Result<BlpImage, FormatError> {
             "unknown BLP2 compression"
         })),
     }
-}
-
-fn decode_paletted_mips(
-    bytes: &[u8],
-    offsets: &[u32; 16],
-    sizes: &[u32; 16],
-    width: u32,
-    height: u32,
-    palette: &[u8],
-    alpha: &[u8],
-    _blp2: bool,
-) -> Result<BlpImage, FormatError> {
-    let mut mipmaps = Vec::new();
-    let mut w = width;
-    let mut h = height;
-    for i in 0..16 {
-        if offsets[i] == 0 || sizes[i] == 0 {
-            break;
-        }
-        let start = offsets[i] as usize;
-        let size = sizes[i] as usize;
-        let data = bytes
-            .get(start..start + size)
-            .ok_or(FormatError::Corrupt("paletted mip out of bounds"))?;
-        let count = (w as usize) * (h as usize);
-        let mut rgba = Vec::with_capacity(count * 4);
-        for &index in data.iter().take(count) {
-            let p = index as usize * 4;
-            let a = alpha.get(index as usize * 4).copied().unwrap_or(255);
-            rgba.extend_from_slice(&[
-                palette.get(p).copied().unwrap_or(0),
-                palette.get(p + 1).copied().unwrap_or(0),
-                palette.get(p + 2).copied().unwrap_or(0),
-                a,
-            ]);
-        }
-        if rgba.len() < count * 4 {
-            rgba.resize(count * 4, 0);
-        }
-        mipmaps.push(MipLevel {
-            width: w,
-            height: h,
-            rgba,
-        });
-        w = (w / 2).max(1);
-        h = (h / 2).max(1);
-    }
-    let first = mipmaps
-        .first()
-        .ok_or(FormatError::Corrupt("no paletted mip"))?
-        .clone();
-    Ok(BlpImage {
-        width,
-        height,
-        rgba: first.rgba,
-        mipmaps,
-    })
 }
 
 /// Warcraft III BLP1 JPEG stores the four JPEG components as **RGB + inverted
@@ -371,26 +542,41 @@ fn decode_jpeg_stream(
     height: u32,
     alpha_bits: u32,
 ) -> Result<BlpImage, FormatError> {
+    // WC3-FMT-005: read the frame header first and refuse a JPEG that does not
+    // describe this exact mip *before* any pixel work. Without this the
+    // library's default `usize::MAX` buffer limit lets a 147 KB file announce
+    // 5000x5000 and spend 205 MB / 7 s decoding pixels that are then thrown
+    // away.
+    let expected = width as usize * height as usize * 4;
     let mut decoder = jpeg_decoder::Decoder::new(stream);
-    let pixels = decoder
-        .decode()
-        .map_err(|_| FormatError::Corrupt("JPEG decode failed"))?;
+    decoder
+        .read_info()
+        .map_err(|_| FormatError::Corrupt("JPEG header decode failed"))?;
     let info = decoder
         .info()
         .ok_or(FormatError::Corrupt("JPEG info missing"))?;
-    if info.width == 0 || info.height == 0 || info.width > 8192 || info.height > 8192 {
-        return Err(FormatError::Corrupt("implausible JPEG dimensions"));
+    // WC3-FMT-003: the embedded frame must be the mip the BLP declares.
+    if info.width as u32 != width || info.height as u32 != height {
+        return Err(FormatError::Corrupt(
+            "JPEG dimensions do not match the BLP mip",
+        ));
     }
-    let mut rgba = match info.pixel_format {
+    // Belt and braces: the decoder's own plane budget can never exceed the
+    // RGBA budget of the mip we validated.
+    decoder.set_max_decoding_buffer_size(expected);
+    let pixels = decoder
+        .decode()
+        .map_err(|_| FormatError::Corrupt("JPEG decode failed"))?;
+    let rgba = match info.pixel_format {
         jpeg_decoder::PixelFormat::RGB24 => {
-            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            let mut out = Vec::with_capacity(expected);
             for px in pixels.chunks_exact(3) {
                 out.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
             out
         }
         jpeg_decoder::PixelFormat::L8 => {
-            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            let mut out = Vec::with_capacity(expected);
             for &v in &pixels {
                 out.extend_from_slice(&[v, v, v, 255]);
             }
@@ -401,7 +587,7 @@ fn decode_jpeg_stream(
             // inverted colour channels and K is the alpha mask (not a black
             // key). Treating K as black is what turned terrain into a black
             // mess with grass-shaped holes.
-            let mut out = Vec::with_capacity(pixels.len());
+            let mut out = Vec::with_capacity(expected);
             for px in pixels.chunks_exact(4) {
                 out.extend_from_slice(&cmyk_pixel(px[0], px[1], px[2], px[3], alpha_bits));
             }
@@ -409,11 +595,11 @@ fn decode_jpeg_stream(
         }
         _ => return Err(FormatError::Unsupported("JPEG pixel format")),
     };
-    let expected = width as usize * height as usize * 4;
-    if rgba.len() < expected {
-        rgba.resize(expected, 0);
-    } else if rgba.len() > expected {
-        rgba.truncate(expected);
+    // WC3-FMT-006: a short decode is corruption, not blank pixels at the edge.
+    if rgba.len() != expected {
+        return Err(FormatError::Corrupt(
+            "JPEG pixel buffer does not match the mip",
+        ));
     }
     Ok(BlpImage {
         width,
@@ -435,6 +621,47 @@ enum DxtKind {
     Dxt5,
 }
 
+/// Pick the DXT variant from the full header tuple (WC3-I-001), not from
+/// `alpha_bits` alone.
+///
+/// Sources (accessed 2026-11-18):
+/// * `wowdev.wiki/BLP`, "Struct definition" — `BLPPixelFormat`:
+///   `PIXEL_DXT1 = 0`, `PIXEL_DXT3 = 1`, `PIXEL_ARGB8888 = 2`,
+///   `PIXEL_DXT5 = 7`, `PIXEL_UNSPECIFIED = 8`, `PIXEL_BC5 = 11`, and the
+///   note "Alpha channel bit depth: 0, 1 or 8" plus "bit depth = 4 are found
+///   in Interface\Glues\Credits\*.blp".
+/// * War3Net `War3Net.Drawing.Blp/BlpFile.cs` (reference decoder for the same
+///   container): `alphaDepth > 1 ? (alphaEncoding == 7 ? DXT5 : DXT3) : DXT1`.
+///
+/// The old code mapped `alpha_bits` 8 → DXT3 and 4 → DXT5, i.e. it decoded
+/// every 8-bit-alpha DXT5 texture as DXT3 (chunky 4-bit alpha) and a 4-bit
+/// credits texture as DXT5. Unknown tuples are a typed error, never a guess.
+fn dxt_kind(alpha_bits: u8, preferred_format: u8) -> Result<DxtKind, FormatError> {
+    match preferred_format {
+        0 | 1 | 7 | 8 => {}
+        _ => return Err(FormatError::Unsupported("BLP2 DXT pixel format")),
+    }
+    match alpha_bits {
+        0 => Ok(DxtKind::Dxt1Opaque),
+        1 => Ok(DxtKind::Dxt1Alpha),
+        4 | 8 => Ok(if preferred_format == 7 {
+            DxtKind::Dxt5
+        } else {
+            DxtKind::Dxt3
+        }),
+        _ => Err(FormatError::Unsupported("BLP2 DXT alpha depth")),
+    }
+}
+
+impl DxtKind {
+    fn block_size(self) -> usize {
+        match self {
+            DxtKind::Dxt1Opaque | DxtKind::Dxt1Alpha => 8,
+            DxtKind::Dxt3 | DxtKind::Dxt5 => 16,
+        }
+    }
+}
+
 fn rgb565(c: u16) -> [u8; 3] {
     let r = ((c >> 11) & 0x1F) as u32;
     let g = ((c >> 5) & 0x3F) as u32;
@@ -447,10 +674,7 @@ fn rgb565(c: u16) -> [u8; 3] {
 }
 
 fn decode_dxt(data: &[u8], width: u32, height: u32, kind: DxtKind) -> Result<Vec<u8>, FormatError> {
-    let block_size = match kind {
-        DxtKind::Dxt1Opaque | DxtKind::Dxt1Alpha => 8,
-        DxtKind::Dxt3 | DxtKind::Dxt5 => 16,
-    };
+    let block_size = kind.block_size();
     let bw = width.div_ceil(4) as usize;
     let bh = height.div_ceil(4) as usize;
     let needed = bw * bh * block_size;

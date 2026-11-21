@@ -8,6 +8,11 @@ use glam::{Quat, Vec2, Vec3};
 
 use crate::FormatError;
 
+/// Maximum UV sets a geoset may declare. The shipped models carry one or two;
+/// the ceiling exists so a forged `UVAS` count can never size an allocation
+/// even when the chunk itself is large (WC3-MDX-001).
+const MAX_UV_SETS: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interpolation {
     None,
@@ -114,38 +119,69 @@ fn squad(q1: Quat, q2: Quat, q3: Quat, q4: Quat, t: f32) -> Quat {
 }
 
 impl<T: AnimValue> Track<T> {
+    /// Sample the track at a sequence-relative frame.
+    ///
+    /// `keys` is sorted by **signed** time: the file stores `int32` frame
+    /// numbers and shipped models use negative pre-start keys (WC3-I-009).
+    /// Keys before frame 0 are outside the sequence and are skipped, as the
+    /// engine's per-sequence sampler does. Duplicate timestamps resolve to the
+    /// **earlier** key (the first window wins, and equal times are a zero-length
+    /// step at that instant).
     pub fn sample(&self, time: u32) -> Option<T> {
         if let Some(value) = self.static_value {
             return Some(value);
         }
-        // `first`/`last` keep the whole function total: an empty track samples
-        // to `None` and no key access is unchecked.
-        let first = self.keys.first()?;
-        let last = self.keys.last()?;
-        let time = time as f32;
-        if time <= first.time as f32 {
-            return Some(first.value);
-        }
-        if time >= last.time as f32 {
-            return Some(last.value);
-        }
-        for pair in self.keys.windows(2) {
-            let (a, b) = (&pair[0], &pair[1]);
-            if time >= a.time as f32 && time <= b.time as f32 {
-                let span = (b.time - a.time).max(1) as f32;
-                let t = (time - a.time as f32) / span;
+        // Keyframe times are `int32` on disk, so a key before frame 0 lies
+        // outside every sequence; the engine filters those keys out before
+        // sampling (mdx-m3-viewer `viewer/handlers/mdx/sd.ts` keeps only
+        // `frame >= start`). Sampling a sequence-relative time therefore uses
+        // the keys at frame >= 0 only, and every subtraction is signed, so a
+        // pre-start key can never underflow the interpolation span
+        // (`0xFFFF_FF9C - 3900` as `u32` was the WC3-I-009 panic).
+        let time = time as i64;
+        let mut previous: Option<&Key<T>> = None;
+        for key in &self.keys {
+            let at = key.time as i32 as i64;
+            if at < 0 {
+                continue;
+            }
+            let Some(a) = previous else {
+                if time <= at {
+                    return Some(key.value);
+                }
+                previous = Some(key);
+                continue;
+            };
+            if time == at {
+                // The engine's step scan selects the first key with
+                // `frames[i] > frame` (mdx-m3-viewer `sd.ts:95`), so at an exact
+                // keyframe the key's own value applies — visible for
+                // `DontInterp` tracks, where the earlier key otherwise wins one
+                // frame too long.
+                return Some(key.value);
+            }
+            if time < at {
+                let from = a.time as i32 as i64;
+                let span = (at - from).max(1) as f32;
+                let t = ((time - from) as f32 / span).clamp(0.0, 1.0);
                 return Some(match self.interpolation {
                     Interpolation::None => a.value,
-                    Interpolation::Linear => T::lerp(a.value, b.value, t),
-                    Interpolation::Hermite => T::hermite(a.value, a.out_tan, b.value, b.in_tan, t),
-                    // Bezier control points are (p0, out_tan, in_tan, p1); the
-                    // previous call passed the end value as the second control
-                    // point and the in-tangent as the end value.
-                    Interpolation::Bezier => T::bezier(a.value, a.out_tan, b.in_tan, b.value, t),
+                    Interpolation::Linear => T::lerp(a.value, key.value, t),
+                    Interpolation::Hermite => {
+                        T::hermite(a.value, a.out_tan, key.value, key.in_tan, t)
+                    }
+                    // Bezier control points are (p0, out_tan, in_tan, p1).
+                    Interpolation::Bezier => {
+                        T::bezier(a.value, a.out_tan, key.in_tan, key.value, t)
+                    }
                 });
             }
+            previous = Some(key);
         }
-        Some(last.value)
+        // A track whose keys all sit before frame 0 samples to `None`: the
+        // caller applies the object's static value, exactly like the engine's
+        // per-sequence "no keys in range -> default value".
+        previous.map(|key| key.value)
     }
 }
 
@@ -1277,6 +1313,30 @@ fn parse_track<T: AnimValue>(
             out_tan,
         });
     }
+    // Keyframe times are `int32` in the file: mdx-m3-viewer reads them with
+    // `stream.readInt32()` (`src/parsers/mdlx/animations.ts:40`), and shipped
+    // Blizzard models use the negative range — Hydralisk's `BlizParticlePuff`
+    // emission track starts at frame `-100` (`0xFFFF_FF9C`) before its first
+    // in-sequence key at 3900. Ordering is therefore **signed**: an unsigned
+    // comparison turns every pre-start key into an "inversion", and a `u32`
+    // sort then moves it past the sequence end, changing what the track emits at
+    // the end of an animation.
+    //
+    // A stable signed sort keeps file order for equal times and is the identity
+    // on the shipped corpus after the pre-start keys (`-100`, `-133`, `-167`,
+    // `-33`) are read as negative; a genuine inversion is reported, never
+    // silently reordered into a different curve.
+    let inversion = keys
+        .windows(2)
+        .find(|pair| (pair[1].time as i32) < (pair[0].time as i32))
+        .map(|pair| (pair[0].time as i32, pair[1].time as i32));
+    if let Some((previous, next)) = inversion {
+        let key_count = keys.len();
+        crate::diag::note("mdx_track_unsorted", || {
+            format!("keys={key_count} inversion={previous}>{next}")
+        });
+    }
+    keys.sort_by_key(|key| key.time as i32);
     Ok(Track {
         interpolation,
         global_sequence,
@@ -1506,6 +1566,13 @@ fn parse_geoset(r: &mut Reader<'_>, version: u32) -> Result<Geoset, FormatError>
         return Err(FormatError::Corrupt("expected UVAS tag"));
     }
     let uv_set_count = r.u32()? as usize;
+    // Every other geoset count is validated against the remaining bytes before
+    // it sizes a `Vec`; this one was not, so four forged bytes asked for 103 GB
+    // (WC3-MDX-001). Each `UVBS` needs at least its tag and count.
+    r.check_count(uv_set_count, 8)?;
+    if uv_set_count > MAX_UV_SETS {
+        return Err(FormatError::Corrupt("geoset UV set count out of range"));
+    }
     let mut uv_sets = Vec::with_capacity(uv_set_count);
     for _ in 0..uv_set_count {
         expect_tag(r, b"UVBS")?;
@@ -2200,5 +2267,87 @@ mod tests {
         // (542/542 models) starts with this fixture.
         let node_objects = MdxModel::node_object_count(&bytes).expect("node count");
         assert_eq!(node_objects, model.pivots.len());
+    }
+
+    fn linear_track(keys: &[(u32, f32)]) -> Track<f32> {
+        Track {
+            interpolation: Interpolation::Linear,
+            global_sequence: None,
+            keys: keys
+                .iter()
+                .map(|(time, value)| Key {
+                    time: *time,
+                    value: *value,
+                    in_tan: *value,
+                    out_tan: *value,
+                })
+                .collect(),
+            static_value: None,
+        }
+    }
+
+    /// WC3-I-009: keyframe times are `int32`; a pre-start key (`-100` =
+    /// `0xFFFF_FF9C`) is filtered out of sequence sampling instead of being
+    /// sorted past the end of the track, and the signed span never underflows.
+    #[test]
+    fn assets_models_mdx_signed_key_times() {
+        // Hydralisk `BlizParticlePuff` emission track: -100, then 3900..10000.
+        let track = linear_track(&[(0xFFFF_FF9C, 0.0), (3900, 1.0), (10000, 2.0)]);
+        assert_eq!(track.sample(0), Some(1.0), "pre-start key is filtered");
+        assert_eq!(track.sample(3900), Some(1.0));
+        let mid = track.sample(6950).expect("mid-interval sample");
+        assert!((mid - 1.5).abs() < 1e-6, "midpoint {mid}");
+        assert_eq!(track.sample(10000), Some(2.0));
+        assert_eq!(
+            track.sample(999_999),
+            Some(2.0),
+            "past the last in-sequence key the track holds its value, not -100's"
+        );
+
+        // A track that only carries pre-start keys is empty for a sequence:
+        // the caller applies the object's static value (engine: default value).
+        let only_pre_start = linear_track(&[(0xFFFF_FF9C, 7.0)]);
+        assert_eq!(only_pre_start.sample(0), None);
+
+        // Genuine inversions are put in signed order by the parser; equal times
+        // keep file order (the earlier key wins at the shared instant).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for (time, value) in [(500u32, 1.0f32), (100, 2.0)] {
+            bytes.extend_from_slice(&time.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut reader = Reader::new(&bytes, 0);
+        let parsed = parse_track(&mut reader, |reader| reader.f32()).expect("parse track");
+        let times: Vec<u32> = parsed.keys.iter().map(|key| key.time).collect();
+        assert_eq!(times, vec![100, 500], "signed sort");
+        assert_eq!(parsed.sample(50), Some(2.0));
+
+        // `DontInterp` steps at the key itself: the engine's scan selects the
+        // first key with `frames[i] > frame`, so frame 100 reads the key at 100.
+        let step = Track {
+            interpolation: Interpolation::None,
+            keys: vec![
+                Key {
+                    time: 0,
+                    value: 1.0f32,
+                    in_tan: 1.0,
+                    out_tan: 1.0,
+                },
+                Key {
+                    time: 100,
+                    value: 0.0,
+                    in_tan: 0.0,
+                    out_tan: 0.0,
+                },
+            ],
+            ..linear_track(&[])
+        };
+        assert_eq!(step.sample(0), Some(1.0));
+        assert_eq!(step.sample(99), Some(1.0));
+        assert_eq!(step.sample(100), Some(0.0), "step lands exactly on the key");
+        assert_eq!(step.sample(101), Some(0.0));
     }
 }

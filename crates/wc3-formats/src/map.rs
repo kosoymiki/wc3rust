@@ -1,6 +1,5 @@
 //! Whole-map reader: `war3map.w3e`, `w3i`, `wpm`, object data, units, script.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
@@ -10,11 +9,6 @@ use glam::Vec3;
 use wc3_mpq::{MpqArchive, MpqError};
 
 use crate::FormatError;
-use crate::gamedata::{ObjectKind, Wts};
-use crate::objects::ObjectData;
-use crate::w3e::Terrain;
-use crate::w3i::MapInfo;
-use crate::wpm::PathingMap;
 
 #[derive(Debug)]
 pub enum MapError {
@@ -72,22 +66,16 @@ pub struct PlacedUnit {
 
 /// RoC `.w3m` files start with a 512-byte `HM3W` header and the archive begins
 /// at the first `MPQ\x1a` signature in the first 4 KiB; TFT `.w3x` files are a
-/// bare MPQ. This is the single implementation shared by the
-/// `wc3-re` map bundle.
+/// bare MPQ. The rule lives in [`MpqArchive::mpq_base`] so the archive reader
+/// and the map layer cannot drift; this function only adds the file read and
+/// the map error type.
 pub fn map_mpq_base(path: &Path) -> Result<u64, MapError> {
     let mut file = File::open(path)?;
-    let mut head = vec![0u8; 4096];
+    let mut head = vec![0u8; MpqArchive::CONTAINER_SCAN];
     let read = file.read(&mut head)?;
     head.truncate(read);
-    if head.starts_with(b"MPQ\x1a") {
-        return Ok(0);
-    }
-    if head.starts_with(b"HM3W") {
-        return head
-            .windows(4)
-            .position(|window| window == b"MPQ\x1a")
-            .map(|offset| offset as u64)
-            .ok_or(MapError::Unsupported("W3M MPQ header"));
+    if head.starts_with(b"MPQ\x1a") || head.starts_with(b"HM3W") {
+        return MpqArchive::mpq_base(&head).ok_or(MapError::Unsupported("W3M MPQ header"));
     }
     Err(MapError::Unsupported("map magic"))
 }

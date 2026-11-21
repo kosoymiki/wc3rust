@@ -19,7 +19,6 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use wc3_assetdb::audio_provider::load_sound_tables;
-use wc3_assetdb::source::{AssetSource, DirSource, MpqSource};
 use wc3_assetdb::{AssetDb, Resolution};
 
 
@@ -41,18 +40,6 @@ fn json_array(values: &[String]) -> String {
     }
     out.push(']');
     out
-}
-
-fn open_layer(label: &str, path: &PathBuf) -> Result<Box<dyn AssetSource>, Box<dyn std::error::Error>> {
-    if path.is_dir() {
-        return Ok(Box::new(DirSource::open(path)?));
-    }
-    let mut source = MpqSource::open(path)?;
-    // Keep the caller's label (file name alone loses which install it is).
-    if !label.is_empty() {
-        source = source.with_label(label);
-    }
-    Ok(Box::new(source))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
