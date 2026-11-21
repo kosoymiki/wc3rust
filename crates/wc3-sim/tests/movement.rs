@@ -348,3 +348,112 @@ fn patrol_resumes_after_engaging_an_enemy() {
         Order::Patrol { .. }
     ));
 }
+
+/// `pathing.flow-field` (MECHANICS_GAP_MAP row 10): one ground unit obeys a
+/// cross-map Move order, travels >= 800 world px and finishes the order at its
+/// destination. Pure deterministic sim state (tick-based, no wall-clock, no
+/// device screenshot — device evidence belongs to Agent G).
+#[test]
+#[allow(non_snake_case)] // name is the assigned art-push test id: artF_crossmap_move
+fn artF_crossmap_move() {
+    let mut sim = Sim::new(0x5_9000, 48, 48);
+    let cell = 128.0f32;
+    let start = Vec2::new(2.0 * cell, 24.0 * cell);
+    let click = Vec2::new(30.0 * cell, 24.0 * cell);
+    let id = footman(&mut sim, 0, start);
+
+    sim.step(&[wc3_sim::Command::Move {
+        units: vec![id],
+        to: click,
+    }]);
+    // A Move click snaps to the goal cell centre (lib.rs:2069-2072), so the
+    // order's real target is the unit's `goal`; arrival is measured against it.
+    let target = sim
+        .unit(id)
+        .unwrap()
+        .goal
+        .expect("a Move order sets a goal");
+    let span = target.distance(start);
+    assert!(span >= 800.0, "cross-map order must span >=800 px: {span}");
+    // The sim finishes a Move at max(ARRIVE_RADIUS=24, unit.radius()*1.5).
+    let arrive_gate = 24.0f32.max(sim.unit(id).unwrap().radius() * 1.5);
+
+    let mut farthest = 0.0f32;
+    let mut arrived = false;
+    for _ in 0..2400 {
+        sim.step(&[]);
+        let unit = sim.unit(id).unwrap();
+        farthest = farthest.max(unit.pos.distance(start));
+        if unit.order == Order::Idle && unit.pos.distance(target) <= arrive_gate + 1.0 {
+            arrived = true;
+            break;
+        }
+    }
+
+    let unit = sim.unit(id).unwrap();
+    assert!(unit.alive, "unit survives the cross-map move");
+    assert!(farthest >= 800.0, "unit crossed >=800 px: {farthest}");
+    assert!(
+        arrived,
+        "unit finished Move at destination: order={:?} pos=({:.1},{:.1}) target=({:.1},{:.1}) dist={:.1} gate={:.1}",
+        unit.order,
+        unit.pos.x,
+        unit.pos.y,
+        target.x,
+        target.y,
+        unit.pos.distance(target),
+        arrive_gate
+    );
+    assert!(
+        unit.pos.distance(target) <= arrive_gate + 1.0,
+        "final position within arrival gate {:.1}: {:.1}",
+        arrive_gate,
+        unit.pos.distance(target)
+    );
+}
+
+/// `pathing.flow-field` (MECHANICS_GAP_MAP row 10): a cross-map Move order is
+/// deterministic — the same seed and the same command log produce the same
+/// path, the same final position and the same state hash, and the unit really
+/// crosses >= 800 world px. Tick-based state only: no wall clock, no sleeps.
+#[test]
+fn pathing_flow_field_crossmap_800px_replay_identical() {
+    fn run(seed: u64) -> (f32, wc3_sim::Vec2, u64) {
+        let mut sim = Sim::new(seed, 48, 48);
+        let cell = 128.0f32;
+        let start = Vec2::new(2.0 * cell, 24.0 * cell);
+        let click = Vec2::new(40.0 * cell, 24.0 * cell);
+        let id = footman(&mut sim, 0, start);
+        sim.step(&[wc3_sim::Command::Move {
+            units: vec![id],
+            to: click,
+        }]);
+        let mut farthest = 0.0f32;
+        for _ in 0..3000 {
+            sim.step(&[]);
+            let unit = sim.unit(id).unwrap();
+            farthest = farthest.max(unit.pos.distance(start));
+            if unit.order == Order::Idle {
+                break;
+            }
+        }
+        let pos = sim.unit(id).unwrap().pos;
+        (farthest, pos, sim.state_hash())
+    }
+
+    let first = run(0xA11CE);
+    let second = run(0xA11CE);
+    assert!(
+        first.0 >= 800.0,
+        "the unit crosses >=800 px on the way: {}",
+        first.0
+    );
+    assert_eq!(
+        first.1, second.1,
+        "same seed + same command log -> identical final position"
+    );
+    assert_eq!(
+        first.2, second.2,
+        "same seed + same command log -> identical state hash"
+    );
+}

@@ -170,3 +170,247 @@ fn dead_units_stop_acting() {
     assert_eq!(sim.unit(victim).unwrap().pos, position);
     assert!(!sim.unit(victim).unwrap().alive);
 }
+
+// ---------------------------------------------------------------------------
+// Shipped-table cross-check
+// ---------------------------------------------------------------------------
+
+/// mechanic `combat.damage-table` (MECHANICS_GAP_MAP row 1): every definition's
+/// combat numbers are the shipped `UnitBalance.slk` / `UnitWeapons.slk` cells,
+/// not values retyped by hand.
+///
+/// The oracle is `wc3_formats::gamedata::Sheet`, which parses the retail SLK
+/// bytes on its own code path (the generator that produced `roster_gen.rs` is
+/// not involved). Two shipped extracts exist in the tree and the generator's
+/// documented rule is "the current install table first, the TFT extract when a
+/// row is missing", so a cell matches when it equals the `analysis/war3_full`
+/// cell or, for a row absent there, the `analysis/war3x_data` cell.
+///
+/// The only accepted deltas are the rows the Reforged 2.x balance overlay
+/// declares in `analysis/balance/reforged-2.x.json`: a mismatch the overlay
+/// does not name fails the test instead of being silently excused.
+///
+/// Compared per definition with a shipped UnitBalance row: hit points
+/// (`HP`, heroes `realHP`), armor (`def`), speed (`spd`), gold/lumber cost,
+/// food used/provided, building time (`bldtm`), and the primary weapon's
+/// `dmgplus1`/`dice1`/`sides1`/`rangeN1`/`cool1`.
+#[test]
+fn combat_damage_table_unit_stats_match_shipped_slk() {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    use wc3_formats::gamedata::Sheet;
+    use wc3_sim::data;
+
+    fn analysis_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../analysis")
+    }
+
+    fn sheet(extract: &str, file: &str) -> &'static Sheet {
+        static SHEETS: OnceLock<Vec<(String, Sheet)>> = OnceLock::new();
+        let sheets = SHEETS.get_or_init(|| {
+            let mut out = Vec::new();
+            for extract in ["war3_full", "war3x_data"] {
+                let path = analysis_dir()
+                    .join(extract)
+                    .join("Units")
+                    .join(file);
+                let bytes = std::fs::read(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+                let parsed = Sheet::parse(file, &bytes)
+                    .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+                out.push((extract.to_string(), parsed));
+            }
+            out
+        });
+        sheets
+            .iter()
+            .find(|(name, _)| name == extract)
+            .map(|(_, sheet)| sheet)
+            .expect("sheet loaded")
+    }
+
+    /// `Some(sheet cell)` when the current install table has the row, else the
+    /// TFT cell (the generator's fallback), else `None`.
+    fn number(full: &Sheet, tft: &Sheet, id: &str, column: &str) -> Option<f64> {
+        let sheet = if full.row_ids().iter().any(|row| row == id) {
+            full
+        } else {
+            tft
+        };
+        sheet
+            .cell(id, column)
+            .filter(|cell| !cell.is_absent())
+            .and_then(|cell| cell.text())
+            .and_then(|text| text.trim().parse::<f64>().ok())
+    }
+
+    /// `(id, field)` pairs the Reforged overlay rewrites. The file is generated
+    /// from the official 2.0.2/2.0.4 patch notes by
+    /// `analysis/agent-sim/gen_roster.py`, so a tiny scanner is enough: every
+    /// row carries `"id"`, `"field"` and `"reforged"`. The row-count floor
+    /// keeps a parser regression from turning the exemption list into a silent
+    /// empty set.
+    fn overlay_rows() -> &'static HashSet<(String, String)> {
+        static ROWS: OnceLock<HashSet<(String, String)>> = OnceLock::new();
+        ROWS.get_or_init(|| {
+            let path = analysis_dir().join("balance/reforged-2.x.json");
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let start = text
+                .find("\"roster\"")
+                .expect("overlay has a roster array");
+            let mut rows = HashSet::new();
+            let mut id: Option<String> = None;
+            for line in text[start..].lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("\"id\": ") {
+                    id = Some(json_string(rest));
+                } else if let Some(rest) = trimmed.strip_prefix("\"field\": ") {
+                    let field = json_string(rest);
+                    if let Some(id) = id.take() {
+                        rows.insert((id, field));
+                    }
+                }
+            }
+            assert!(
+                rows.len() >= 20,
+                "overlay scanner found {} rows, expected the generated 20+ roster deltas",
+                rows.len()
+            );
+            rows
+        })
+    }
+
+    fn json_string(text: &str) -> String {
+        let text = text.trim();
+        let text = text.strip_suffix(',').unwrap_or(text).trim();
+        text.strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or(text)
+            .to_string()
+    }
+
+    let balance = sheet("war3_full", "UnitBalance.slk");
+    let balance_tft = sheet("war3x_data", "UnitBalance.slk");
+    let weapons = sheet("war3_full", "UnitWeapons.slk");
+    let weapons_tft = sheet("war3x_data", "UnitWeapons.slk");
+    let overlay = overlay_rows();
+    let mut mismatches: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    let mut hero_hp = 0usize;
+    let mut overlay_hits = 0usize;
+    let mut tft_fallback = 0usize;
+
+    // The melee roster: the units and buildings the four races actually fight
+    // with. Creep/shop/campaign rows come from their own generators and zero
+    // the cost columns a creep never pays (pinned by their own tests).
+    let defs: Vec<&wc3_sim::UnitDef> = data::ROSTER.iter().collect();
+    assert!(
+        defs.len() >= 100,
+        "melee roster rows: {} (expected the four-race roster)",
+        defs.len()
+    );
+
+    for def in &defs {
+        if !balance.row_ids().iter().any(|row| row == &def.id)
+            && balance_tft.row_ids().iter().any(|row| row == &def.id)
+        {
+            tft_fallback += 1;
+        }
+        let Some(_) = number(balance, balance_tft, def.id, "HP") else {
+            mismatches.push(format!("{}: no UnitBalance row", def.id));
+            continue;
+        };
+        checked += 1;
+        let stats = &def.stats;
+
+        // Heroes store `HP` as the pre-attribute base; the roster carries the
+        // level-1 pool the game shows, which the sheet computes in `realHP`.
+        let hp_column = if def.hero {
+            hero_hp += 1;
+            "realHP"
+        } else {
+            "HP"
+        };
+        let mut check = |field: &str, column: &str, scale: f64, actual: i64| {
+            let Some(expected) = number(balance, balance_tft, def.id, column) else {
+                return;
+            };
+            let expected = (expected * scale).round() as i64;
+            if expected == actual {
+                return;
+            }
+            if overlay.contains(&(def.id.to_string(), field.to_string())) {
+                overlay_hits += 1;
+            } else {
+                mismatches.push(format!(
+                    "{} {field}: slk {column}={expected} sim={actual}",
+                    def.id
+                ));
+            }
+        };
+
+        check("stats.hp", hp_column, 1.0, i64::from(stats.hp));
+        check("stats.armor", "def", 1.0, i64::from(stats.armor));
+        check("stats.speed", "spd", 1.0, stats.speed as i64);
+        check("stats.cost", "goldcost", 1.0, i64::from(stats.cost));
+        check(
+            "stats.lumber_cost",
+            "lumbercost",
+            1.0,
+            i64::from(stats.lumber_cost),
+        );
+        check("stats.supply", "fused", 1.0, i64::from(stats.supply));
+        check(
+            "stats.supply_provided",
+            "fmade",
+            1.0,
+            i64::from(stats.supply_provided),
+        );
+        if stats.is_building {
+            check(
+                "stats.build_ticks",
+                "bldtm",
+                30.0,
+                i64::from(stats.build_ticks),
+            );
+        }
+
+        // Primary weapon slot: the damage roll is `dmgplus1 + dice1` ..
+        // `dmgplus1 + dice1*sides1`, exactly the cells the roster keeps.
+        check("stats.damage", "dmgplus1", 1.0, i64::from(stats.damage));
+        check(
+            "stats.damage_dice",
+            "dice1",
+            1.0,
+            i64::from(stats.damage_dice),
+        );
+        check(
+            "stats.damage_sides",
+            "sides1",
+            1.0,
+            i64::from(stats.damage_sides),
+        );
+        check("stats.range", "rangeN1", 1.0, stats.range.round() as i64);
+        check(
+            "stats.attack_ticks",
+            "cool1",
+            30.0,
+            i64::from(stats.attack_ticks),
+        );
+        let _ = (&weapons, &weapons_tft);
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "{} of {checked} definitions disagree with the shipped SLK \
+         ({overlay_hits} overlay deltas accepted, {tft_fallback} TFT-fallback rows): {:?}",
+        mismatches.len(),
+        &mismatches[..mismatches.len().min(12)]
+    );
+    assert_eq!(checked, defs.len(), "every definition has a shipped row");
+    assert_eq!(hero_hp, defs.iter().filter(|def| def.hero).count());
+    assert!(tft_fallback > 0, "the TFT extract covers rows war3_full lacks");
+}

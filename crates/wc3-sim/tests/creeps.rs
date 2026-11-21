@@ -307,7 +307,8 @@ fn load_justice() -> Option<Justice> {
 }
 
 /// Boots the map the way `wc3_game::sim_bridge` does: WPM pathing, then every
-/// data-backed neutral placement as owner 2, then creep-camp clustering.
+/// data-backed neutral placement at [`wc3_sim::NEUTRAL_OWNER`], then creep-camp
+/// clustering.
 fn justice_sim(map: &Justice) -> Sim {
     let origin = Vec2::new(map.terrain.center.0, map.terrain.center.1);
     let mut sim = Sim::new(0x3_8200, map.wpm.width, map.wpm.height);
@@ -332,7 +333,7 @@ fn justice_sim(map: &Justice) -> Sim {
             continue;
         }
         let pos = Vec2::new(unit.position.x - origin.x, unit.position.y - origin.y);
-        sim.spawn_def_exact(2, &def_id, pos);
+        sim.spawn_def_exact(wc3_sim::NEUTRAL_OWNER, &def_id, pos);
     }
     sim.cluster_neutral_camps();
     sim

@@ -461,11 +461,311 @@ impl Spell {
 /// tag names the category without claiming the effect runs.
 const TRANSFORMATION_IDS: &[&str] = &["AEme", "AHav", "AOre"];
 
+/// Curated, mechanism-specific reasons for ability rows the engine cannot
+/// execute, keyed by the real WC3 rawcode.
+///
+/// The first block is the Orc01 acceptance roster (`Maps\Campaign\Orc01.w3m`):
+/// every one of those ids is carried by a unit the map places, so the reason is
+/// read from the mission, not from a synthetic unit.  The second block records
+/// rows whose sheet statistics would otherwise be misread as a damage handler
+/// (Far Sight carries `Data11=3`, which the generic point-row fallback would
+/// turn into 3 area damage).
+pub const DATA_ONLY_REASONS: &[(&str, &str)] = &[
+    // Orc01 placed-unit abilities (census 2026-11-18, 37 unit types).
+    (
+        "AOae",
+        "passive aura: Endurance Aura's attack-speed share has no engine aura kind (only the Unholy Aura move-speed row is modelled)",
+    ),
+    (
+        "Aion",
+        "passive: two-slot inventory grant; the engine backpack is a fixed six slots",
+    ),
+    (
+        "Asal",
+        "passive: Pillage steals resources on hit; the economy has no pillage hook",
+    ),
+    (
+        "Awar",
+        "passive: Pulverize is a 25% chance / 60 damage splash proc; combat has no proc handler",
+    ),
+    (
+        "Sbsk",
+        "passive: Berserker upgrade marker; upgrade effects resolve through the upgrade table, not a cast",
+    ),
+    // Sheet values that must not become a damage handler.
+    (
+        "AOfs",
+        "vision: Far Sight reveals fog; the headless sim has no temporary vision-source channel (Data11=3 is the reveal constant, not damage)",
+    ),
+];
+
 static DATA_ONLY_LOGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<&'static str>>> =
     std::sync::OnceLock::new();
 
-/// Logs `ABILITY_DATA_ONLY id=...` once per ability id.  Used when an ability
-/// has no handler instead of spending mana on a silent no-op.
+/// Curated reason for an ability id, when the row must not run through the
+/// generic handler table even if its sheet columns look like damage/heal.
+pub fn curated_data_only_reason(id: &str) -> Option<&'static str> {
+    DATA_ONLY_REASONS
+        .iter()
+        .find(|(ability, _)| *ability == id)
+        .map(|(_, reason)| *reason)
+}
+
+/// Family of state change a data or typed ability performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbilityEffectKind {
+    Damage,
+    Heal,
+    HealOrDamage,
+    DamageArea,
+    HealArea,
+    Buff,
+    Aura,
+    Summon,
+    Movement,
+    Transformation,
+}
+
+impl AbilityEffectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Damage => "damage",
+            Self::Heal => "heal",
+            Self::HealOrDamage => "heal-or-damage",
+            Self::DamageArea => "damage-area",
+            Self::HealArea => "heal-area",
+            Self::Buff => "buff",
+            Self::Aura => "aura",
+            Self::Summon => "summon",
+            Self::Movement => "movement",
+            Self::Transformation => "transformation",
+        }
+    }
+}
+
+/// What the engine actually does for one ability id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbilityCoverage {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Hand-written `Spell` variant (`Spell::is_typed`).
+    pub typed: bool,
+    /// Active row that `cast_data_ability` accepts (sheet `castable` flag).
+    pub castable: bool,
+    /// `Some` when a handler changes game state.
+    pub effect: Option<AbilityEffectKind>,
+    /// `Some` for every row without an effect; never empty.
+    pub reason: Option<String>,
+}
+
+impl AbilityCoverage {
+    pub fn is_effectful(&self) -> bool {
+        self.effect.is_some()
+    }
+}
+
+/// Aggregate of a coverage census over a set of ability ids.
+#[derive(Debug, Default, Clone)]
+pub struct AbilityCensus {
+    pub total: usize,
+    pub typed: usize,
+    pub effectful: usize,
+    pub data_only: usize,
+    /// Ids absent from `AbilityData` (no `GenericAbility` row).
+    pub unmapped: Vec<String>,
+    /// Rows with neither an effect nor a printable reason. Must stay empty.
+    pub missing_reason: Vec<&'static str>,
+    pub rows: Vec<AbilityCoverage>,
+}
+
+/// Effect family a row executes through the cast handler table (summon rows
+/// count only when the summoned unit type exists in the shipped def tables).
+fn handler_effect_kind(def: &GenericAbility) -> Option<AbilityEffectKind> {
+    use crate::effects::EffectSpec;
+    for effect in crate::effects::build_effects(def) {
+        match effect {
+            EffectSpec::Damage { amount, .. } if amount > 0 => {
+                return Some(AbilityEffectKind::Damage)
+            }
+            EffectSpec::Heal { amount } if amount > 0 => return Some(AbilityEffectKind::Heal),
+            EffectSpec::HealOrDamage { amount, .. } if amount > 0 => {
+                return Some(AbilityEffectKind::HealOrDamage)
+            }
+            EffectSpec::DamageArea { amount, .. } if amount > 0 => {
+                return Some(AbilityEffectKind::DamageArea)
+            }
+            EffectSpec::HealArea { amount, .. } if amount > 0 => {
+                return Some(AbilityEffectKind::HealArea)
+            }
+            EffectSpec::Buff { .. } => return Some(AbilityEffectKind::Buff),
+            EffectSpec::Aura { .. } => return Some(AbilityEffectKind::Aura),
+            EffectSpec::Summon { def_id, .. } => {
+                // `run_effect` returns `Skipped { "summon unit type not in
+                // roster" }` for an absent target; paying mana for that is the
+                // silent no-op the coverage contract forbids.
+                if crate::data::def_of(def_id).is_some() {
+                    return Some(AbilityEffectKind::Summon);
+                }
+            }
+            EffectSpec::Movement { .. } => return Some(AbilityEffectKind::Movement),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Effect family reported by the coverage census.  A passive aura row counts
+/// as an aura even though it has no cast path, because the engine has the
+/// `effects::AURAS` row and `apply_data_aura` can install it.
+fn effect_kind(def: &GenericAbility) -> Option<AbilityEffectKind> {
+    handler_effect_kind(def).or_else(|| {
+        if crate::effects::aura_row(def.id).is_some() {
+            Some(AbilityEffectKind::Aura)
+        } else {
+            None
+        }
+    })
+}
+
+/// Effect family of one of the eleven hand-written spells.
+fn typed_effect_kind(spell: Spell) -> Option<AbilityEffectKind> {
+    match spell {
+        Spell::HolyLight | Spell::Heal => Some(AbilityEffectKind::Heal),
+        Spell::DivineShield => Some(AbilityEffectKind::Buff),
+        Spell::Blizzard | Spell::ThunderClap | Spell::FrostNova | Spell::CarrionSwarm => {
+            Some(AbilityEffectKind::DamageArea)
+        }
+        Spell::EntanglingRoots | Spell::ChainLightning | Spell::StormBolt => {
+            Some(AbilityEffectKind::Damage)
+        }
+        Spell::DeathCoil => Some(AbilityEffectKind::HealOrDamage),
+        _ => None,
+    }
+}
+
+/// Explicit reason for a row with no executable effect.
+///
+/// Order: curated mission reasons -> transform/aura categories -> the sheet
+/// columns that explain why the generic handler table is empty. Every resolved
+/// row returns a non-empty reason, so a `DataOnly` classification can never be
+/// a silent no-op.
+pub fn data_only_reason(id: &str) -> Option<String> {
+    let def = generic_ability(id)?;
+    if let Some(reason) = curated_data_only_reason(id) {
+        return Some(reason.to_string());
+    }
+    if handler_effect_kind(def).is_some() {
+        return None;
+    }
+    for effect in crate::effects::build_effects(def) {
+        if let crate::effects::EffectSpec::Summon { def_id, .. } = effect {
+            if crate::data::def_of(def_id).is_none() {
+                return Some(format!(
+                    "summon target {def_id} is not in the unit def tables; the handler would skip it"
+                ));
+            }
+        }
+    }
+    match spell_for_ability(id) {
+        Some(Spell::DataAuraPassive { .. }) => Some(format!(
+            "passive aura: {} is a data aura row with no cast path in the engine",
+            def.name
+        )),
+        Some(Spell::DataTransformation { .. }) => Some(format!(
+            "transformation: {} has no transform handler in the engine",
+            def.name
+        )),
+        _ => {
+            if def.castable {
+                Some(format!(
+                    "active row: {} has no effect handler (target {:?}, power {}, secondary {}, radius {})",
+                    def.name, def.target, def.power, def.secondary, def.radius
+                ))
+            } else if def.radius > 0.0 && def.target == TargetKind::None {
+                Some(format!(
+                    "passive aura: {} applies a radius effect the engine aura kinds do not model",
+                    def.name
+                ))
+            } else {
+                Some(format!(
+                    "passive row: {} has no active cast; no engine handler for this mechanic",
+                    def.name
+                ))
+            }
+        }
+    }
+}
+
+/// Coverage row for one ability id; `None` when the sheet has no row.
+pub fn ability_coverage(id: &str) -> Option<AbilityCoverage> {
+    let def = generic_ability(id)?;
+    let typed = Spell::from_id(id).is_some();
+    let effect = if typed {
+        typed_effect_kind(Spell::from_id(id)?)
+    } else if curated_data_only_reason(id).is_some() {
+        None
+    } else {
+        effect_kind(def)
+    };
+    let reason = if effect.is_some() {
+        None
+    } else if typed {
+        Some("typed row: handler missing".to_string())
+    } else {
+        data_only_reason(id)
+    };
+    Some(AbilityCoverage {
+        id: def.id,
+        name: def.name,
+        typed,
+        castable: def.castable,
+        effect,
+        reason,
+    })
+}
+
+/// Census over an explicit id list (roster ids, a map's placed units, ...).
+pub fn census_ability_ids(ids: &[&'static str]) -> AbilityCensus {
+    let mut census = AbilityCensus::default();
+    for id in ids {
+        if census.rows.iter().any(|row| row.id == *id) {
+            continue;
+        }
+        census.total += 1;
+        match ability_coverage(id) {
+            Some(row) => {
+                if row.typed {
+                    census.typed += 1;
+                }
+                if row.effect.is_some() {
+                    census.effectful += 1;
+                } else {
+                    census.data_only += 1;
+                    if row.reason.as_deref().map(str::is_empty).unwrap_or(true) {
+                        census.missing_reason.push(row.id);
+                    }
+                }
+                census.rows.push(row);
+            }
+            None => census.unmapped.push((*id).to_string()),
+        }
+    }
+    census
+}
+
+/// Every distinct ability id referenced by a roster/camp/shop unit def.
+pub fn roster_ability_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = crate::data::ROSTER
+        .iter()
+        .flat_map(|def| def.ability_ids.iter().copied())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Logs `ABILITY_DATA_ONLY id=... reason=...` once per ability id.  Used when
+/// an ability has no handler instead of spending mana on a silent no-op.
 pub fn log_ability_data_only(id: &'static str) {
     let logged = DATA_ONLY_LOGGED.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
     let mut set = match logged.lock() {
@@ -473,25 +773,23 @@ pub fn log_ability_data_only(id: &'static str) {
         Err(poisoned) => poisoned.into_inner(),
     };
     if set.insert(id) {
-        eprintln!("ABILITY_DATA_ONLY id={id}");
+        match data_only_reason(id) {
+            Some(reason) => eprintln!("ABILITY_DATA_ONLY id={id} reason=\"{reason}\""),
+            None => eprintln!("ABILITY_DATA_ONLY id={id} reason=\"no handler for this row\""),
+        }
     }
 }
 
-/// True when `effects::build_effects` yields at least one handler that changes
-/// game state (a positive damage/heal amount, a buff, a summon, a movement
-/// modifier or an aura).
+/// True when the engine has at least one handler that changes game state for
+/// this row: a positive damage/heal amount, a buff, a summon whose unit type
+/// exists, a movement modifier or an aura.  Curated non-effects (Far Sight's
+/// reveal constant, passives) are excluded even when the sheet columns carry a
+/// number.
 pub fn data_ability_has_effect(def: &GenericAbility) -> bool {
-    use crate::effects::EffectSpec;
-    crate::effects::build_effects(def).iter().any(|effect| match effect {
-        EffectSpec::Damage { amount, .. }
-        | EffectSpec::Heal { amount }
-        | EffectSpec::HealOrDamage { amount, .. } => *amount > 0,
-        EffectSpec::DamageArea { amount, .. } | EffectSpec::HealArea { amount, .. } => *amount > 0,
-        EffectSpec::Buff { .. }
-        | EffectSpec::Aura { .. }
-        | EffectSpec::Summon { .. }
-        | EffectSpec::Movement { .. } => true,
-    })
+    if curated_data_only_reason(def.id).is_some() {
+        return false;
+    }
+    handler_effect_kind(def).is_some()
 }
 
 /// Maps a hero ability id to a typed spell or a categorised data spell.
@@ -507,10 +805,18 @@ pub fn spell_for_ability(id: &str) -> Option<Spell> {
         return Some(typed);
     }
     let def = generic_ability(id)?;
+    if curated_data_only_reason(def.id).is_some() {
+        return Some(Spell::DataOnly { id: def.id });
+    }
     let effects = crate::effects::build_effects(def);
     use crate::effects::EffectSpec;
     let has = |matcher: fn(&EffectSpec) -> bool| effects.iter().any(matcher);
-    if has(|effect| matches!(effect, EffectSpec::Summon { .. })) {
+    if effects.iter().any(|effect| {
+        matches!(
+            effect,
+            EffectSpec::Summon { def_id, .. } if crate::data::def_of(def_id).is_some()
+        )
+    }) {
         return Some(Spell::DataSummon { id: def.id });
     }
     if has(|effect| matches!(effect, EffectSpec::Buff { .. })) {
@@ -769,7 +1075,12 @@ impl Sim {
         if !caster_unit.alive {
             return Err("caster dead");
         }
-        if !caster_unit.def().spells.contains(&spell) {
+        if !caster_unit.def().spells.contains(&spell)
+            && !caster_unit
+                .def()
+                .ability_ids
+                .contains(&spell.ability_id())
+        {
             return Err("spell not available");
         }
         if caster_unit.mana < def.mana {

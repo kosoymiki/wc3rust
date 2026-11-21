@@ -5,27 +5,54 @@ mod common;
 use common::*;
 use wc3_sim::{Order, Sim, Vec2};
 
+/// `production.queue` (MECHANICS_GAP_MAP row 20): a building holds seven queued
+/// entries and cancelling one refunds 100% of its own price regardless of its
+/// position in the queue (`TrainRefundRate=1.0`,
+/// `analysis/war3x_local/Melee_V0/Units/MiscGame.txt:126`).
 #[test]
-fn production_queue_is_bounded() {
+fn production_queue_seven_slots_and_full_refund_any_position() {
     let mut sim = sandbox(81);
     let hall_id = sim.units[0].id;
+    let peasant = wc3_sim::UnitKind::Peasant;
+    let cost = wc3_sim::def_of("hpea").unwrap().stats.cost;
+    assert_eq!(wc3_sim::PRODUCTION_QUEUE_MAX, 7, "WC3 melee queue is seven slots");
     for _ in 0..wc3_sim::PRODUCTION_QUEUE_MAX {
         sim.step(&[wc3_sim::Command::Train {
             building: hall_id,
-            kind: wc3_sim::UnitKind::Peasant,
+            kind: peasant,
         }]);
     }
-    assert_eq!(sim.unit(hall_id).unwrap().production.len(), 5);
+    assert_eq!(
+        sim.unit(hall_id).unwrap().production.len(),
+        7,
+        "seven queued entries fit"
+    );
     sim.step(&[wc3_sim::Command::Train {
         building: hall_id,
-        kind: wc3_sim::UnitKind::Peasant,
+        kind: peasant,
     }]);
-    assert_eq!(sim.unit(hall_id).unwrap().production.len(), 5);
+    assert_eq!(
+        sim.unit(hall_id).unwrap().production.len(),
+        7,
+        "the eighth entry is refused"
+    );
     assert!(has_error(&sim.events, "production queue full"));
+
+    // The refund is the cancelled entry's price, not the front entry's: the
+    // shipped rate is applied regardless of queue position.
+    let before = sim.resources[0];
+    sim.step(&[wc3_sim::Command::CancelTrain {
+        building: hall_id,
+        index: 3,
+    }]);
+    assert_eq!(sim.resources[0], before + cost, "refund restores the price");
+    assert_eq!(sim.unit(hall_id).unwrap().production.len(), 6);
 }
 
+/// `production.queue`: cancelling the front entry refunds it and the next entry
+/// starts producing.
 #[test]
-fn cancel_refunds_and_advances_the_queue() {
+fn production_queue_cancel_front_entry_advances_the_queue() {
     let mut sim = sandbox(82);
     let hall_id = sim.units[0].id;
     let cost = wc3_sim::def_of("hpea").unwrap().stats.cost;
@@ -101,8 +128,10 @@ fn train_def_rejects_the_wrong_producer() {
         .expect("footman from barracks");
 }
 
+/// `buildings.construction`: a completed site raises supply and reaches full hp
+/// (`UnitData.bldtm` drives the timer, `fmade` the supply).
 #[test]
-fn construction_site_completes_and_raises_supply() {
+fn buildings_construction_site_completes_and_raises_supply() {
     let mut sim = Sim::new(86, 32, 32);
     sim.passive_income = false;
     sim.resources[0] = 10_000;
@@ -128,8 +157,10 @@ fn construction_site_completes_and_raises_supply() {
     assert_eq!(sim.supply_cap(0), 18);
 }
 
+/// `buildings.construction`: the builder must stand near the site and the site
+/// must have free ground (footprint cells stay unwalkable while it stands).
 #[test]
-fn construction_requires_a_nearby_builder_and_free_ground() {
+fn buildings_construction_requires_builder_and_free_ground() {
     let mut sim = Sim::new(87, 32, 32);
     sim.resources[0] = 100_000;
     hall(&mut sim, 0, Vec2::new(400.0, 400.0));
@@ -146,8 +177,13 @@ fn construction_requires_a_nearby_builder_and_free_ground() {
     );
 }
 
+/// `buildings.construction`: a cancelled site refunds 75% of its price
+/// (`ConstructionRefundRate=0.75`,
+/// `analysis/war3x_local/Melee_V0/Units/MiscGame.txt:123`) and frees its
+/// footprint. The old expectation in this file was a full refund, which the
+/// shipped constant contradicts.
 #[test]
-fn cancel_construction_refunds_and_frees_the_footprint() {
+fn buildings_construction_cancel_refunds_seventy_five_percent() {
     let mut sim = Sim::new(88, 32, 32);
     sim.passive_income = false;
     sim.resources[0] = 10_000;
@@ -163,9 +199,56 @@ fn cancel_construction_refunds_and_frees_the_footprint() {
     let (cx, cy) = sim.grid.world_to_cell(Vec2::new(1000.0, 400.0));
     assert!(!sim.grid.walkable(cx, cy));
     assert!(sim.cancel_construction(site));
-    assert_eq!(sim.resources[0], before);
-    assert!(sim.grid.walkable(cx, cy));
+    assert_eq!(
+        sim.resources[0],
+        before - cost + cost * 3 / 4,
+        "cancelled construction returns 75% of the price"
+    );
+    assert!(sim.grid.walkable(cx, cy), "footprint freed");
     assert!(!sim.unit(site).unwrap().alive);
+}
+
+/// `buildings.construction`: a site nobody works on loses 10 hp per second
+/// (`ConstructionLifeDrainRate=10.0`,
+/// `analysis/war3x_local/Melee_V0/Units/MiscGame.txt:129`) and stays resumable.
+#[test]
+fn buildings_construction_halted_site_drains_ten_hp_per_second() {
+    let mut sim = Sim::new(91, 32, 32);
+    sim.passive_income = false;
+    sim.resources[0] = 10_000;
+    hall(&mut sim, 0, Vec2::new(400.0, 400.0));
+    let builder = worker(&mut sim, 0, Vec2::new(700.0, 400.0));
+    sim.step(&[]);
+    let site = sim
+        .place_building(builder, "hhou", Vec2::new(1000.0, 400.0))
+        .expect("farm site");
+    sim.step(&[]);
+    let hp_before = sim.unit(site).unwrap().hp;
+    assert!(
+        sim.unit(site).unwrap().construct.is_some(),
+        "site still under construction"
+    );
+
+    // Halt the channel: the peasant leaves the Build order, nobody is within
+    // the build ring, and the foundation decays at 10 hp/s (30 Hz = 1 per 3
+    // ticks).
+    sim.step(&[wc3_sim::Command::Stop { units: vec![builder] }]);
+    step_n(&mut sim, 90);
+    let hp_after = sim.unit(site).unwrap().hp;
+    assert_eq!(
+        hp_before - hp_after,
+        30,
+        "3 s of halted construction drains 10 hp/s: {hp_before} -> {hp_after}"
+    );
+
+    // Resuming work raises the hp back toward the progress cap and the site
+    // still completes: the decay never destroys it. `OrderSpec::Build` is the
+    // same order the AI's `ai_resume_build` issues.
+    sim.queue_order(&[builder], wc3_sim::OrderSpec::Build(site));
+    step_n(&mut sim, 1600);
+    let unit = sim.unit(site).unwrap();
+    assert!(unit.construct.is_none(), "resumed site completed");
+    assert_eq!(unit.hp, unit.max_hp);
 }
 
 #[test]

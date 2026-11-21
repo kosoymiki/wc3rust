@@ -7,12 +7,12 @@
 //! restored `Sim` continues to produce the same [`Sim::state_hash`] as the
 //! original on every following tick.
 //!
-//! # Format (`W3SV`, version 4)
+//! # Format (`W3SV`, version 9)
 //!
 //! ```text
 //! offset  size  field
 //! 0       4     magic            b"W3SV"
-//! 4       2     format version   u16 LE (1..=7)
+//! 4       2     format version   u16 LE (1..=9)
 //! 6       2     flags            u16 LE (must be 0)
 //! 8       4     payload length   u32 LE
 //! 12      N     payload          sections below, in this exact order
@@ -27,8 +27,8 @@
 //! | `0x4831` | header | tick, seed, rng state, ruleset, passive income |
 //! | `0x4731` | grid | width, height, cell size, bit-packed walkable bitmap |
 //! | `0x4931` | ids | next unit/item/destructable/camp/projectile id |
-//! | `0x5231` | resources | gold and lumber per player |
-//! | `0x4631` | fog | visibility + explored bitmaps per player |
+//! | `0x5231` | resources | gold and lumber per seat (`MAX_PLAYERS` from v9, 2 before) |
+//! | `0x4631` | fog | visibility + explored bitmap per seat (same width rule) |
 //! | `0x5031` | gameplay | every `GameplayConfig` field |
 //! | `0x4D31` | mines | gold mines |
 //! | `0x4431` | destructables | trees/crates |
@@ -41,6 +41,7 @@
 //! | `0x4131` | ai | AI controllers |
 //! | `0x5532` | upgrades | researched upgrade levels per player |
 //! | `0x5332` | script | JASS VM: compiled code, globals, threads, timers, triggers, host world |
+//! | `0x5431` | seats | seat count (`MAX_PLAYERS`) + the bound human seat (v9) |
 //! | `0x454E` | end | end marker (proves the writer reached the end) |
 //!
 //! ## Script section (version 4)
@@ -120,8 +121,8 @@ use crate::nav;
 use crate::spatial;
 use crate::{
     Camp, Construction, Destructable, DestructableId, GoldMine, Item, ItemId, Order, OrderSpec,
-    PATH_BUDGET, Production, Projectile, ProjectileId, Research, Ruleset, Shop, ShopSlot, Sim,
-    Unit, UnitId,
+    MAX_PLAYERS, PATH_BUDGET, Production, Projectile, ProjectileId, Research, Ruleset, Shop,
+    ShopSlot, Sim, Unit, UnitId,
 };
 
 /// Save file magic (`W3` save, versioned).
@@ -136,11 +137,21 @@ pub const SAVE_MAGIC: [u8; 4] = *b"W3SV";
 /// the two trigger registrations that used to be discarded
 /// (`TriggerRegisterGameStateEvent`, `TriggerRegisterGameEvent`); version 7
 /// appends the per-unit runtime `UNIT_TYPE_*` delta of
-/// `UnitAddType`/`UnitRemoveType`.  Older files are still readable through their
-/// decode arms; those versions never stored the newer state, so it restores to
-/// its neutral value.  Version 8 appends the per-unit in-flight building
-/// upgrade (`UpgradeJob`: target def, remaining/total ticks).
-pub const SAVE_FORMAT_VERSION: u16 = 8;
+/// `UnitAddType`/`UnitRemoveType`; version 8 appends the per-unit in-flight
+/// building upgrade (`UpgradeJob`); version 9 widens the per-player records from
+/// two seats to [`MAX_PLAYERS`] (resources, lumber, explored grids, upgrades) and
+/// appends the `SEC_SEATS` frame (seat count + the bound human seat), so a
+/// campaign mission saved on seat 4 restores its own bank and fog; version 10
+/// appends the latched melee verdict to the header (a game saved after
+/// elimination restores as ended instead of re-firing `Victory`). Older files
+/// are still readable through their decode arms; those versions never stored the
+/// newer state, so it restores to its neutral value.
+pub const SAVE_FORMAT_VERSION: u16 = 10;
+/// Seats stored by layout `version`: every save before v9 carried exactly the
+/// two melee sides, v9 carries [`MAX_PLAYERS`].
+const fn seats_for_version(version: u16) -> usize {
+    if version >= 9 { MAX_PLAYERS } else { 2 }
+}
 
 /// Hard ceiling for every ID space a save can carry (`next_id`, `next_item_id`,
 /// `next_destructable_id`, `next_camp_id`, `next_projectile_id` and the script
@@ -195,6 +206,8 @@ const SEC_SQUADS: u32 = 0x5131;
 const SEC_STAMPS: u32 = 0x4F31;
 /// Version 4: the JASS script world.
 const SEC_SCRIPT: u32 = 0x5332;
+/// Version 9: the player-seat table (seat count + bound human seat).
+const SEC_SEATS: u32 = 0x5431;
 const SEC_END: u32 = 0x454E;
 
 /// Restore report prefix for script state that is intentionally not persisted
@@ -4289,6 +4302,17 @@ fn encode_payload(sim: &Sim) -> Vec<u8> {
 /// is written by the public API; the parameter exists so a test can produce a
 /// genuine v2 file (no ethereal byte) and prove the migration.
 fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
+    encode_payload_layout(sim, version, seats_for_version(version), version >= 9)
+}
+
+/// Encodes the simulation payload for one layout.
+///
+/// `seats` is the number of per-seat frames (resources, fog, upgrades) and
+/// `seats_frame` writes the `SEC_SEATS` tail. [`Sim::state_hash`] encodes with
+/// `seats_frame = false`: the seat count is layout metadata and the bound
+/// human seat is a view parameter (two lockstep peers may bind different
+/// seats), while every other byte in the payload is live simulation state.
+fn encode_payload_layout(sim: &Sim, version: u16, seats: usize, seats_frame: bool) -> Vec<u8> {
     let mut w = W::new();
 
     w.u32(SEC_HEADER);
@@ -4297,6 +4321,9 @@ fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
     w.u64(sim.rng_state);
     w.u8(ruleset_tag(sim.ruleset));
     w.bool(sim.passive_income);
+    if version >= 10 {
+        w.opt_u8(sim.victory);
+    }
 
     w.u32(SEC_GRID);
     w.u32(sim.grid.width);
@@ -4314,17 +4341,18 @@ fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
     w.u32(sim.next_projectile_id);
 
     w.u32(SEC_RESOURCES);
-    for value in sim.resources {
-        w.i32(value);
+    for seat in 0..seats {
+        w.i32(sim.gold(seat as u8));
     }
-    for value in sim.lumber {
-        w.i32(value);
+    for seat in 0..seats {
+        w.i32(sim.lumber_of(seat as u8));
     }
 
     w.u32(SEC_FOG);
     w.bytes(&sim.visibility);
-    w.bytes(&sim.explored[0]);
-    w.bytes(&sim.explored[1]);
+    for grid in sim.explored.iter().take(seats) {
+        w.bytes(grid);
+    }
 
     w.u32(SEC_GAMEPLAY);
     write_gameplay(&mut w, &sim.gameplay);
@@ -4414,7 +4442,7 @@ fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
     }
 
     w.u32(SEC_UPGRADES);
-    for map in &sim.upgrades {
+    for map in sim.upgrades.iter().take(seats) {
         w.len(map.len());
         for (id, level) in map {
             w.str(id);
@@ -4538,6 +4566,16 @@ fn encode_payload_version(sim: &Sim, version: u16) -> Vec<u8> {
         write_script_section(&mut w, sim.script.as_deref(), version);
     }
 
+    // Version 9: the seat table. `MAX_PLAYERS` is written explicitly so a
+    // future reader can tell a widened layout from a corrupt one instead of
+    // inferring the count from the version number alone. `state_hash` omits
+    // this frame: both fields are view/layout metadata, not simulation state.
+    if seats_frame {
+        w.u32(SEC_SEATS);
+        w.u8(MAX_PLAYERS as u8);
+        w.opt_u8(sim.human_seat);
+    }
+
     w.u32(SEC_END);
     w.buf
 }
@@ -4626,6 +4664,21 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     let rng_state = r.u64()?;
     let ruleset = ruleset_from(r.u8()?)?;
     let passive_income = r.bool("sim.passive_income")?;
+    let victory = if version >= 10 {
+        let winner = r.opt_u8()?;
+        if let Some(seat) = winner
+            && crate::seat_row(seat).is_none()
+        {
+            return Err(SaveError::OutOfRange {
+                section: "header.victory",
+                index: u32::from(seat),
+                limit: MAX_PLAYERS,
+            });
+        }
+        winner
+    } else {
+        None
+    };
 
     r.section(SEC_GRID, "grid")?;
     let width = r.u32()?;
@@ -4644,16 +4697,29 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     let next_camp_id = r.u32()?;
     let next_projectile_id = r.u32()?;
 
+    // Version 9 stores every player seat ([`MAX_PLAYERS`]); versions 1..8
+    // stored exactly two, so their extra seats restore to the fresh-sim values.
+    let seats = seats_for_version(version);
+
     r.section(SEC_RESOURCES, "resources")?;
-    let resources = [r.i32()?, r.i32()?];
-    let lumber = [r.i32()?, r.i32()?];
+    let mut gold = [1000i32; MAX_PLAYERS];
+    let mut lumber = [1000i32; MAX_PLAYERS];
+    for slot in gold.iter_mut().take(seats) {
+        *slot = r.i32()?;
+    }
+    for slot in lumber.iter_mut().take(seats) {
+        *slot = r.i32()?;
+    }
 
     r.section(SEC_FOG, "fog")?;
     let visibility = r.bytes()?.to_vec();
-    let explored_a = r.bytes()?.to_vec();
-    let explored_b = r.bytes()?.to_vec();
-    if visibility.len() != cells || explored_a.len() != cells || explored_b.len() != cells {
-        return Err(SaveError::InvalidGrid { width, height });
+    let mut explored: [Vec<u8>; MAX_PLAYERS] = std::array::from_fn(|_| vec![0; cells]);
+    for slot in explored.iter_mut().take(seats) {
+        let grid = r.bytes()?.to_vec();
+        if visibility.len() != cells || grid.len() != cells {
+            return Err(SaveError::InvalidGrid { width, height });
+        }
+        *slot = grid;
     }
 
     r.section(SEC_GAMEPLAY, "gameplay")?;
@@ -4799,8 +4865,9 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     }
 
     r.section(SEC_UPGRADES, "upgrades")?;
-    let mut upgrades: [BTreeMap<&'static str, u8>; 2] = [BTreeMap::new(), BTreeMap::new()];
-    for map in upgrades.iter_mut() {
+    let mut upgrades: [BTreeMap<&'static str, u8>; MAX_PLAYERS] =
+        std::array::from_fn(|_| BTreeMap::new());
+    for map in upgrades.iter_mut().take(seats) {
         let count = r.len()?;
         for _ in 0..count {
             let raw = r.str()?;
@@ -4970,6 +5037,33 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
         None
     };
 
+    // Version 9: the player-seat table. Older layouts carried exactly two
+    // seats and no way to name a human seat above seat 1.
+    let human_seat = if version >= 9 {
+        r.section(SEC_SEATS, "seats")?;
+        let seats = r.u8()?;
+        if usize::from(seats) != MAX_PLAYERS {
+            return Err(SaveError::InvalidIdSpace {
+                field: "seats.players",
+                value: u32::from(seats),
+                detail: format!("save carries {seats} seats, this build reads {MAX_PLAYERS}"),
+            });
+        }
+        let seat = r.opt_u8()?;
+        if let Some(seat) = seat
+            && crate::seat_row(seat).is_none()
+        {
+            return Err(SaveError::OutOfRange {
+                section: "seats.human",
+                index: u32::from(seat),
+                limit: MAX_PLAYERS,
+            });
+        }
+        seat
+    } else {
+        None
+    };
+
     r.section(SEC_END, "end")?;
     if r.remaining() != 0 {
         return Err(SaveError::TrailingBytes(r.remaining()));
@@ -5014,6 +5108,7 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     sim.tick = tick;
     sim.ruleset = ruleset;
     sim.passive_income = passive_income;
+    sim.victory = victory;
     sim.rng_state = rng_state;
     sim.grid = wc3_path::Grid::from_walkable(width, height, cell_size, walkable);
     sim.next_id = next_id;
@@ -5021,10 +5116,12 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     sim.next_destructable_id = next_destructable_id;
     sim.next_camp_id = next_camp_id;
     sim.next_projectile_id = next_projectile_id;
-    sim.resources = resources;
-    sim.lumber = lumber;
+    for seat in 0..MAX_PLAYERS {
+        sim.set_gold(seat as u8, gold[seat]);
+        sim.set_lumber(seat as u8, lumber[seat]);
+    }
     sim.visibility = visibility;
-    sim.explored = [explored_a, explored_b];
+    sim.explored = explored;
     sim.gameplay = gameplay;
     sim.gold_mines = gold_mines;
     sim.destructables = destructables;
@@ -5036,6 +5133,7 @@ fn decode_payload(payload: &[u8], version: u16) -> SaveResult<Sim> {
     sim.pending_casts = pending_casts;
     sim.ai = ai;
     sim.upgrades = upgrades;
+    sim.human_seat = human_seat;
     sim.buffs = buffs;
     sim.squads = squads;
     sim.issue_stamps = issue_stamps;
@@ -5520,6 +5618,18 @@ fn decode_v7(payload: &[u8]) -> SaveResult<Sim> {
 /// Decodes the version-8 payload: version 7 plus the per-unit in-flight
 /// building upgrade (`UpgradeJob`).
 fn decode_v8(payload: &[u8]) -> SaveResult<Sim> {
+    decode_payload(payload, 8)
+}
+
+/// Decodes the current version-9 payload: eight player seats (resources,
+/// lumber, explored grids, upgrades) and the `SEC_SEATS` frame.
+fn decode_v9(payload: &[u8]) -> SaveResult<Sim> {
+    decode_payload(payload, 9)
+}
+
+/// Decodes the current version-10 payload (the header carries the latched
+/// melee verdict after the passive-income flag).
+fn decode_v10(payload: &[u8]) -> SaveResult<Sim> {
     decode_payload(payload, SAVE_FORMAT_VERSION)
 }
 
@@ -5553,6 +5663,8 @@ impl Sim {
             6 => decode_v6(payload),
             7 => decode_v7(payload),
             8 => decode_v8(payload),
+            9 => decode_v9(payload),
+            10 => decode_v10(payload),
             other => Err(SaveError::UnknownVersion(other)),
         }
     }
@@ -5615,6 +5727,31 @@ impl Sim {
     pub fn save_digest(&self) -> u64 {
         checksum(&encode_payload(self))
     }
+}
+
+/// FNV-1a over the canonical save payload minus the view-only seat frame.
+///
+/// This is [`Sim::state_hash`]: the digest is exactly as wide as the save's
+/// live state, so a mutation to any stored field (carried lumber, gather/stun/
+/// channel timers, XP and learned abilities, research, item holdings and
+/// charges, goals, queued-order payloads, per-seat tech, destructables,
+/// projectiles, shops, AI/squad state, order stamps) changes it. A save/load
+/// round trip preserves it because the restored simulation re-encodes the same
+/// bytes; the two fields the save writes outside simulation state — the seat
+/// count and the bound human seat — are omitted so two lockstep peers bound to
+/// different seats still compare equal.
+///
+/// The cost is one linear pass over the payload. That is deliberate: a
+/// hand-picked field list is what let the old hash miss half the live state,
+/// and 200-400 units encode to a few hundred kilobytes, which is far below one
+/// tick of simulation work.
+pub(crate) fn simulation_digest(sim: &Sim) -> u64 {
+    checksum(&encode_payload_layout(
+        sim,
+        SAVE_FORMAT_VERSION,
+        MAX_PLAYERS,
+        false,
+    ))
 }
 
 #[cfg(test)]

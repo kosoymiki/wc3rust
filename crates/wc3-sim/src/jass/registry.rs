@@ -55,11 +55,19 @@ pub fn table() -> &'static [NativeDef] {
                 let params = parse_type_list(params).unwrap_or_else(|| {
                     panic!("registry: unparsable parameter list for {name}: {params:?}")
                 });
-                let ret = parse_type_list(ret)
+                let mut ret = parse_type_list(ret)
                     .and_then(|mut types| types.pop())
                     .unwrap_or_else(|| {
                         panic!("registry: unparsable return type for {name}: {ret:?}")
                     });
+                // The shipped script is the authority where it differs from the
+                // donor tables the registry was generated from: the byte-level
+                // check (scripts/native_sig_compare.py) found GroupAddUnit and
+                // GroupRemoveUnit declared `returns nothing` in this install's
+                // common.j while the donor 1.32.9 declares `boolean`.
+                if let Some(original_ret) = shipped_return_override(name) {
+                    ret = original_ret;
+                }
                 let dispatch = super::natives::is_handled(name);
                 let (status, status_reason) = native_status::resolve(name, dispatch);
                 NativeDef {
@@ -73,6 +81,19 @@ pub fn table() -> &'static [NativeDef] {
             })
             .collect()
     })
+}
+
+/// Return types that the SHIPPED `Scripts/common.j` declares differently from
+/// the donor-generated table. Every row is justified by
+/// `scripts/native_sig_compare.py` against
+/// `analysis/war3_full3/Scripts/common.j`: the original wins because that is the
+/// script this installation actually runs.
+fn shipped_return_override(name: &str) -> Option<Type> {
+    match name {
+        // common.j: `native GroupAddUnit takes group whichGroup, unit whichUnit returns nothing`
+        "GroupAddUnit" | "GroupRemoveUnit" => Some(Type::Void),
+        _ => None,
+    }
 }
 
 fn index() -> &'static BTreeMap<String, usize> {
@@ -244,5 +265,25 @@ mod tests {
             lookup("CreateTrigger").unwrap().return_default(),
             Value::Null
         );
+    }
+}
+
+#[cfg(test)]
+mod shipped_signature_tests {
+    use super::*;
+
+    /// The shipped common.j declares these `returns nothing`; the donor table said
+    /// `boolean`. Pinned so a registry regeneration cannot silently re-diverge.
+    #[test]
+    fn group_add_remove_return_nothing_like_the_shipped_script() {
+        for name in ["GroupAddUnit", "GroupRemoveUnit"] {
+            let def = lookup(name).unwrap_or_else(|| panic!("{name} missing from registry"));
+            assert_eq!(
+                def.signature.ret,
+                Type::Void,
+                "{name} must return nothing per common.j"
+            );
+            assert_eq!(def.signature.params.len(), 2, "{name} takes (group, unit)");
+        }
     }
 }

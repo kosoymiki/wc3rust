@@ -765,8 +765,7 @@ impl UpgradeDef {
 
 // The roster is generated: `analysis/agent-sim/gen_roster.py` emits it from
 // the real Warcraft III tables.  See `analysis/agent-sim/REPORT.md`.
-include!("roster_gen.rs");
-include!("creeps_gen.rs");
+include!("roster_gen.rs");include!("creeps_gen.rs");
 include!("shops_gen.rs");
 include!("extras_gen.rs");
 include!("bounty_gen.rs");
@@ -1008,6 +1007,16 @@ pub fn sold_units(shop_id: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// One map-local unit row: the chapter's own four-letter rawcode on top of an
+/// install-table base (`war3map.w3u` custom object, e.g. Orc01 `nC08` extends
+/// `ncnt`).  `def.id` stays the chapter's rawcode so JASS `'nC08'` comparisons
+/// keep working; `map` is the map file stem.
+#[derive(Debug, Clone, Copy)]
+pub struct MapUnitDef {
+    pub map: &'static str,
+    pub def: UnitDef,
+}
+
 /// Linear lookup of a roster or camp definition by WC3 type id.
 pub fn def_of(id: &str) -> Option<&'static UnitDef> {
     ROSTER
@@ -1017,6 +1026,7 @@ pub fn def_of(id: &str) -> Option<&'static UnitDef> {
         .chain(EXTRA_DEFS.iter())
         .chain(TECH_DEFS.iter())
         .chain(CAMPAIGN_DEFS.iter())
+        .chain(MAP_DEFS.iter().map(|row| &row.def))
         .find(|def| def.id == id)
 }
 
@@ -1037,14 +1047,16 @@ pub fn def_at(index: u16) -> Option<&'static UnitDef> {
     {
         TECH_DEFS.get(index - ROSTER.len() - CREEP_DEFS.len() - SHOP_DEFS.len() - EXTRA_DEFS.len())
     } else {
-        CAMPAIGN_DEFS.get(
-            index
-                - ROSTER.len()
-                - CREEP_DEFS.len()
-                - SHOP_DEFS.len()
-                - EXTRA_DEFS.len()
-                - TECH_DEFS.len(),
-        )
+        let campaign = ROSTER.len()
+            + CREEP_DEFS.len()
+            + SHOP_DEFS.len()
+            + EXTRA_DEFS.len()
+            + TECH_DEFS.len();
+        if index < campaign + CAMPAIGN_DEFS.len() {
+            CAMPAIGN_DEFS.get(index - campaign)
+        } else {
+            MAP_DEFS.get(index - campaign - CAMPAIGN_DEFS.len()).map(|row| &row.def)
+        }
     }
 }
 
@@ -1077,6 +1089,56 @@ pub fn def_index(id: &str) -> Option<u16> {
                     + TECH_DEFS.len()
                     + index) as u16
             })
+        })
+        .or_else(|| map_def_index_any(id))
+}
+
+/// Exact per-map lookup: the row a chapter's own `war3map.w3u` defines.
+///
+/// `nC00..nC11` are map-local slots reused by several chapters with different
+/// bases, so an id alone is not enough to pick the chapter's row; the map file
+/// stem is.  Falls back to [`def_of`] so a caller can use one lookup for every
+/// placed id.
+pub fn map_def_of(map: &str, id: &str) -> Option<&'static UnitDef> {
+    MAP_DEFS
+        .iter()
+        .find(|row| row.map == map && row.def.id == id)
+        .map(|row| &row.def)
+        .or_else(|| def_of(id))
+}
+
+/// Table index of a map-local row (for `Sim::spawn_def_id`); install ids keep
+/// their normal [`def_index`] value.
+pub fn map_def_index(map: &str, id: &str) -> Option<u16> {
+    if let Some(index) = MAP_DEFS
+        .iter()
+        .position(|row| row.map == map && row.def.id == id)
+    {
+        let base = ROSTER.len()
+            + CREEP_DEFS.len()
+            + SHOP_DEFS.len()
+            + EXTRA_DEFS.len()
+            + TECH_DEFS.len()
+            + CAMPAIGN_DEFS.len();
+        return Some((base + index) as u16);
+    }
+    def_index(id)
+}
+
+/// First row of every map-local id, in `MAP_DEFS` order (the precedence
+/// `def_of` uses).  Used by [`def_index`] only.
+fn map_def_index_any(id: &str) -> Option<u16> {
+    MAP_DEFS
+        .iter()
+        .position(|row| row.def.id == id)
+        .map(|index| {
+            let base = ROSTER.len()
+                + CREEP_DEFS.len()
+                + SHOP_DEFS.len()
+                + EXTRA_DEFS.len()
+                + TECH_DEFS.len()
+                + CAMPAIGN_DEFS.len();
+            (base + index) as u16
         })
 }
 

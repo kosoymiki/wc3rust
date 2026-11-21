@@ -77,7 +77,11 @@ fn melee_opening_units_stand_on_walkable_ground_outside_the_hall() {
 #[test]
 fn melee_opening_fields_five_creeps_per_mine_as_one_camp() {
     let sim = melee();
-    let creeps: Vec<_> = sim.units.iter().filter(|unit| unit.owner == 2).collect();
+    let creeps: Vec<_> = sim
+        .units
+        .iter()
+        .filter(|unit| unit.owner == wc3_sim::NEUTRAL_OWNER)
+        .collect();
     // 5 guards per starting mine (2) + 5 per expansion mine (4).
     assert_eq!(creeps.len(), 30, "five neutral creeps per mine");
     assert_eq!(sim.camps.len(), 6, "one camp per gold mine");

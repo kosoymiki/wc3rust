@@ -17,6 +17,13 @@
 
 use std::fmt;
 
+/// WC3 heroes carry six items; every limit check in this file uses the same
+/// constant so a UI or host cannot disagree with the simulation.
+pub const INVENTORY_SLOTS: usize = 6;
+
+/// A shop pays half of an item's `goldcost` when it buys the item back.
+pub const SELL_REFUND_DIVISOR: i32 = 2;
+
 // One user/bridge action on a unit's item interface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ItemAction {
@@ -35,6 +42,14 @@ pub enum ItemAction {
     Buy {
         shop: crate::UnitId,
         item: &'static str,
+    },
+    // Sell a carried item back to a shop: WC3 returns half of its gold cost
+    // and puts the item back on the shop's shelf when the shop trades that
+    // item type (`analysis/tech-lead/PLAYABILITY_GAP_2026_11_16.md`
+    // `items.shop-sell` -> `items_shop_sell_returns_gold_and_restocks`).
+    Sell {
+        item: crate::ItemId,
+        shop: crate::UnitId,
     },
 }
 
@@ -67,6 +82,7 @@ pub enum ItemActionError {
     OnCooldown { item: &'static str, remaining_ticks: u32 },
     Ability { item: &'static str, reason: &'static str },
     NoEffect { item: &'static str },
+    NotSellable { item: &'static str },
 }
 
 impl ItemActionError {
@@ -113,6 +129,7 @@ impl ItemActionError {
             } => format!("{item} is on cooldown for {remaining_ticks} ticks"),
             Self::Ability { item, reason } => format!("{item} ability failed: {reason}"),
             Self::NoEffect { item } => format!("{item} has no usable effect"),
+            Self::NotSellable { item } => format!("{item} cannot be sold to a shop"),
         }
     }
 }
@@ -139,6 +156,11 @@ pub enum ItemOutcome {
         item: crate::ItemId,
         shop: crate::UnitId,
         cost: i32,
+    },
+    Sold {
+        item: crate::ItemId,
+        shop: crate::UnitId,
+        refund: i32,
     },
 }
 
@@ -182,6 +204,7 @@ impl crate::Sim {
                 point,
             } => self.item_use(unit, item, target, point),
             ItemAction::Buy { shop, item } => self.item_buy(unit, shop, item),
+            ItemAction::Sell { item, shop } => self.item_sell(unit, item, shop),
         }
     }
 
@@ -202,7 +225,7 @@ impl crate::Sim {
         if self.items[item_index].owner.is_some() {
             return Err(ItemActionError::AlreadyHeld);
         }
-        if self.units[unit_index].items.len() >= 6 {
+        if self.units[unit_index].items.len() >= INVENTORY_SLOTS {
             return Err(ItemActionError::InventoryFull);
         }
         if self.units[unit_index]
@@ -265,6 +288,9 @@ impl crate::Sim {
             .position(|entry| entry.id == item)
             .ok_or(ItemActionError::NoItem)?;
         let def = self.items[item_index].def();
+        if !def.usable {
+            return Err(ItemActionError::NoEffect { item: def.id });
+        }
         let ability = crate::generic_ability(def.ability_id);
         let cooldown_ticks = ability.map(|ability| ability.cooldown_ticks).unwrap_or(0);
         // `ItemData.slk` groups items by `cooldownID` (healing potion and
@@ -362,6 +388,74 @@ impl crate::Sim {
         })
     }
 
+    // Sells one carried item to a shop.  The unit must be alive, the item must
+    // be `sellable`, and the shop must be a live item shop within `SHOP_RANGE`.
+    // The refund is half the item's `goldcost`; the item leaves the world and
+    // returns to the shop's shelf when the shop trades that item type (stock is
+    // capped at `stockMax`).  Passive bonuses are removed with the item.
+    fn item_sell(
+        &mut self,
+        unit: crate::UnitId,
+        item: crate::ItemId,
+        shop: crate::UnitId,
+    ) -> Result<ItemOutcome, ItemActionError> {
+        let unit_index = self.unit_index(unit).ok_or(ItemActionError::NoUnit)?;
+        if !self.units[unit_index].alive {
+            return Err(ItemActionError::UnitDead);
+        }
+        let slot = self.units[unit_index]
+            .items
+            .iter()
+            .position(|id| *id == item)
+            .ok_or(ItemActionError::NotCarried)?;
+        let item_index = self
+            .items
+            .iter()
+            .position(|entry| entry.id == item)
+            .ok_or(ItemActionError::NoItem)?;
+        let def = self.items[item_index].def();
+        if !def.sellable {
+            return Err(ItemActionError::NotSellable { item: def.id });
+        }
+        let shop_index = self.unit_index(shop).ok_or(ItemActionError::NoShop)?;
+        if !self.units[shop_index].alive {
+            return Err(ItemActionError::ShopDead);
+        }
+        let shop_def = self.units[shop_index].def();
+        if shop_def.sells_items.is_empty() {
+            return Err(ItemActionError::NotAShop);
+        }
+        if self.units[unit_index]
+            .pos
+            .distance(self.units[shop_index].pos)
+            > crate::SHOP_RANGE + self.units[shop_index].radius()
+        {
+            return Err(ItemActionError::ShopTooFar);
+        }
+        let owner = self.units[unit_index].owner;
+        if crate::seat_row(owner).is_none() {
+            return Err(ItemActionError::NoOwner);
+        }
+        let refund = (def.cost / SELL_REFUND_DIVISOR).max(0);
+        self.add_gold(owner, refund);
+        remove_item_stats(&mut self.units[unit_index], def);
+        self.units[unit_index].items.remove(slot);
+        self.items.remove(item_index);
+        // The shop takes the item back onto its shelf when it trades that type.
+        if let Some(stock) = self.shops.iter_mut().find(|entry| entry.shop == shop) {
+            if let Some(slot) = stock.slots.iter_mut().find(|slot| slot.item == def.id) {
+                if slot.stock < def.stock_max.max(1) {
+                    slot.stock += 1;
+                }
+            }
+        }
+        Ok(ItemOutcome::Sold {
+            item,
+            shop,
+            refund,
+        })
+    }
+
     fn item_buy(
         &mut self,
         buyer: crate::UnitId,
@@ -391,17 +485,18 @@ impl crate::Sim {
         {
             return Err(ItemActionError::ShopTooFar);
         }
-        let owner = self.units[buyer_index].owner as usize;
-        if owner >= self.resources.len() {
+        let owner = self.units[buyer_index].owner;
+        if crate::seat_row(owner).is_none() {
             return Err(ItemActionError::NoOwner);
         }
-        if self.resources[owner] < def.cost {
+        let gold = self.gold(owner);
+        if gold < def.cost {
             return Err(ItemActionError::NotEnoughGold {
                 need: def.cost,
-                have: self.resources[owner],
+                have: gold,
             });
         }
-        if self.units[buyer_index].items.len() >= 6 {
+        if self.units[buyer_index].items.len() >= INVENTORY_SLOTS {
             return Err(ItemActionError::InventoryFull);
         }
         let owner = self.units[buyer_index].owner;
@@ -427,7 +522,7 @@ impl crate::Sim {
         if self.shops[stock_index].slots[slot_index].stock <= 0 {
             return Err(ItemActionError::OutOfStock { item: def.id });
         }
-        self.resources[owner as usize] -= def.cost;
+        self.add_gold(owner, -def.cost);
         {
             let slot = &mut self.shops[stock_index].slots[slot_index];
             slot.stock -= 1;

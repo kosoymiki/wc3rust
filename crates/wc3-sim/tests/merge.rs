@@ -797,7 +797,7 @@ fn creep_camp_aggros_within_500_and_leashes_home() {
         sim.camps[0]
             .units
             .iter()
-            .all(|unit| { sim.unit(*unit).map(|unit| unit.owner == 2).unwrap_or(false) })
+            .all(|unit| { sim.unit(*unit).map(|unit| unit.owner == wc3_sim::NEUTRAL_OWNER).unwrap_or(false) })
     );
     let mut aggro = false;
     for _ in 0..60 {
@@ -1002,12 +1002,15 @@ fn ruleset_tft() {
 #[test]
 fn neutral_map_units_cluster_into_creep_camps() {
     let mut sim = Sim::new(227, 64, 64);
-    // Two proximity camps of two creeps plus one lone neutral unit.
-    sim.spawn_def(2, "nftr", Vec2::new(600.0, 600.0));
-    sim.spawn_def(2, "nban", Vec2::new(650.0, 620.0));
-    sim.spawn_def(2, "nftr", Vec2::new(3000.0, 600.0));
-    sim.spawn_def(2, "nban", Vec2::new(3040.0, 640.0));
-    sim.spawn_def(2, "nftr", Vec2::new(5200.0, 5200.0));
+    // Two proximity camps of two creeps plus one lone neutral unit. Creeps
+    // belong to the neutral-hostile seat, `NEUTRAL_OWNER` (12), not to the
+    // legacy owner 2: `cluster_neutral_camps` clusters that seat.
+    let neutral = wc3_sim::NEUTRAL_OWNER;
+    sim.spawn_def(neutral, "nftr", Vec2::new(600.0, 600.0));
+    sim.spawn_def(neutral, "nban", Vec2::new(650.0, 620.0));
+    sim.spawn_def(neutral, "nftr", Vec2::new(3000.0, 600.0));
+    sim.spawn_def(neutral, "nban", Vec2::new(3040.0, 640.0));
+    sim.spawn_def(neutral, "nftr", Vec2::new(5200.0, 5200.0));
     let created = sim.cluster_neutral_camps();
     assert_eq!(created, 3, "three proximity groups");
     assert_eq!(sim.camps.len(), 3);

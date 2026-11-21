@@ -70,7 +70,7 @@ fn melee_matrix_4_races_sizes_1_4() {
                 assert_eq!(
                     sim.units
                         .iter()
-                        .filter(|unit| unit.alive && unit.owner == 2)
+                        .filter(|unit| unit.alive && unit.owner == wc3_sim::NEUTRAL_OWNER)
                         .count(),
                     (team_size * 2 + 4) * 5,
                     "five neutral guards per camp"
@@ -168,4 +168,76 @@ fn melee_matrix_4_races_sizes_1_4() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../analysis/tech-lead/melee_matrix.json");
     std::fs::write(&path, json).expect("write melee_matrix.json");
+}
+
+/// `melee.matrix`: the melee elimination verdict. A side is defeated when its
+/// last building is gone (not when its town hall falls), the verdict fires
+/// once and latches, and it holds at every team size because `setup_melee`
+/// seats every human on owner 0 and every AI on owner 1.
+#[test]
+fn melee_matrix_victory_elimination_once_at_1v1_and_4v4() {
+    for team_size in [1usize, 4] {
+        let seed = 0x4_1000 + team_size as u64;
+        let mut sim = Sim::new(seed, 128, 128);
+        sim.passive_income = false;
+        let mut seats: Vec<(Race, SeatController)> = Vec::new();
+        for _ in 0..team_size {
+            seats.push((Race::Human, SeatController::Human));
+        }
+        for _ in 0..team_size {
+            seats.push((Race::Orc, SeatController::Ai(ai_config(Race::Orc))));
+        }
+        let setup = sim
+            .setup_melee(&seats, seed)
+            .unwrap_or_else(|error| panic!("{team_size}v{team_size}: {error}"));
+        assert_eq!(setup.seats, team_size * 2);
+        assert_eq!(sim.victory, None, "no verdict while both sides build");
+
+        let halls: Vec<wc3_sim::UnitId> = sim
+            .units
+            .iter()
+            .filter(|unit| unit.alive && unit.owner == 1 && unit.def().main_hall)
+            .map(|unit| unit.id)
+            .collect();
+        assert_eq!(halls.len(), team_size, "one AI hall per AI seat");
+
+        // Losing one hall of a side that still has another is not defeat.
+        for hall in &halls[..halls.len() - 1] {
+            sim.kill_unit(*hall);
+            sim.step(&[]);
+            assert_eq!(sim.victory, None, "a side with another hall rebuilds");
+            assert!(
+                !sim.events
+                    .iter()
+                    .any(|event| matches!(event, wc3_sim::Event::Victory(_))),
+                "{team_size}v{team_size}: no verdict while a hall stands"
+            );
+        }
+
+        // The last building decides the game.
+        sim.kill_unit(halls[halls.len() - 1]);
+        sim.step(&[]);
+        assert_eq!(sim.victory, Some(0), "team 0 wins on the last AI building");
+        assert!(
+            sim.events
+                .iter()
+                .any(|event| matches!(event, wc3_sim::Event::Victory(0))),
+            "{team_size}v{team_size}: Victory(0) fires"
+        );
+
+        // The verdict latches: the next tick does not re-announce the game over.
+        sim.step(&[]);
+        assert!(
+            !sim.events
+                .iter()
+                .any(|event| matches!(event, wc3_sim::Event::Victory(_))),
+            "{team_size}v{team_size}: the verdict is not re-fired every tick"
+        );
+
+        // A save taken after the verdict restores as an ended game.
+        let bytes = sim.to_save_bytes();
+        let loaded = wc3_sim::Sim::from_save(&bytes).expect("save round trip");
+        assert_eq!(loaded.victory, Some(0), "verdict survives save/load");
+        assert_eq!(loaded.state_hash(), sim.state_hash());
+    }
 }

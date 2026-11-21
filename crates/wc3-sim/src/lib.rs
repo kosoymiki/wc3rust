@@ -107,12 +107,43 @@ pub const CELL_SIZE: f32 = 128.0;
 pub const PATHING_CELL_SIZE: f32 = 32.0;
 /// Hard food ceiling, matching WC3's 100 supply cap.
 pub const MAX_SUPPLY: i32 = 100;
+/// Player seats the simulation stores per-seat state for: owners `0..MAX_PLAYERS`.
+///
+/// WC3 ships 12 player slots. A campaign mission's human seat is a `war3map.w3i`
+/// slot id and is not limited to the two melee sides — the RoC prologue
+/// (`Maps\Campaign\Prologue01.w3m`) authors its human on seat 4 — so every
+/// per-seat array is sized for eight seats. Eight is also the width of the fog
+/// bitmask (`visibility` is one `u8` per pathing cell), so a ninth seat would
+/// need a wider mask, not just a bigger array.
+pub const MAX_PLAYERS: usize = 8;
+/// Owner id of neutral units, outside the player band.
+///
+/// WC3's `PLAYER_NEUTRAL_AGGRESSIVE` (`Scripts\common.j`) is 12 and that is the
+/// id `war3mapUnits.doo` stores for creep camps (`wc3_re::creeps`), so the sim
+/// uses the same value: a neutral can never collide with a campaign seat the
+/// way the historical `owner 2` shortcut did (owner 2 is player slot 3).
+pub const NEUTRAL_OWNER: u8 = 12;
+/// Owner id of neutral-passive units (`PLAYER_NEUTRAL_PASSIVE` in `common.j`).
+pub const NEUTRAL_PASSIVE_OWNER: u8 = 27;
+
+/// Index of `owner`'s row in the per-seat arrays, or `None` for a neutral.
+#[inline]
+pub const fn seat_row(owner: u8) -> Option<usize> {
+    if (owner as usize) < MAX_PLAYERS {
+        Some(owner as usize)
+    } else {
+        None
+    }
+}
 /// Eight A* requests per tick; the rest keep moving on their previous path.
 pub const PATH_BUDGET: u32 = 8;
 /// Maximum queued orders per unit (shift-click cap).
 pub const ORDER_QUEUE_MAX: usize = 8;
-/// Maximum production queue per building.
-pub const PRODUCTION_QUEUE_MAX: usize = 5;
+/// Maximum production queue per building: WC3 melee queues seven entries
+/// (seven command-card slots), and a cancelled entry refunds 100% of its price
+/// regardless of its position in the queue (`TrainRefundRate=1.0` in
+/// `analysis/war3x_local/Melee_V0/Units/MiscGame.txt:126`).
+pub const PRODUCTION_QUEUE_MAX: usize = 7;
 /// Arrival distance for move orders.
 const ARRIVE_RADIUS: f32 = 24.0;
 /// Gold carried by one worker per trip (`Ahar` Data11).
@@ -445,7 +476,7 @@ impl Unit {
     /// WC3 marks these with zero attack on a mobile neutral body; the sim
     /// derives the flag from the generated unit table instead of a new column.
     pub fn is_critter(&self) -> bool {
-        if self.owner < 2 || self.is_building() {
+        if seat_row(self.owner).is_some() || self.is_building() {
             return false;
         }
         let stats = &self.def().stats;
@@ -891,16 +922,42 @@ pub struct Sim {
     pub next_destructable_id: u32,
     pub next_camp_id: u32,
     pub next_projectile_id: u32,
+    /// Gold for seat 0 and seat 1.
+    ///
+    /// These two seats stay in a two-element array because the shipped callers
+    /// (sim tests, examples, the game probe) assign it directly as `[a, b]`.
+    /// Seats 2..[`MAX_PLAYERS`] live in `seat_gold`; read and write every seat
+    /// through [`Sim::gold`] / [`Sim::add_gold`], which addresses a seat
+    /// uniformly and returns 0 / ignores writes for a neutral owner.
     pub resources: [i32; 2],
-    /// Lumber per player (WC3 second resource).
+    /// Lumber for seat 0 and seat 1 (see [`Sim::resources`]).
     pub lumber: [i32; 2],
+    /// Gold for seats 2..[`MAX_PLAYERS`] (seat 2 is index 0).
+    seat_gold: [i32; MAX_PLAYERS - 2],
+    /// Lumber for seats 2..[`MAX_PLAYERS`] (seat 2 is index 0).
+    seat_lumber: [i32; MAX_PLAYERS - 2],
+    /// The seat the local player commands ([`Sim::bind_human_seat`]).
+    ///
+    /// `None` means unbound, which is the two-side melee default: the local
+    /// player is seat 0 (`Sim::local_player`). A campaign mission binds its
+    /// `war3map.w3i` human slot, which can be any seat up to
+    /// [`MAX_PLAYERS`] — Prologue01's is 4.
+    pub human_seat: Option<u8>,
+    /// Verdict of the melee elimination rule, latched the tick it fires.
+    ///
+    /// WC3 ends a melee game once: `Event::Victory` is pushed on the tick a
+    /// side loses its last building and never again, so the HUD/AI do not see a
+    /// fresh game-over event every frame. `None` while both sides can still
+    /// rebuild. Persisted in the save header (v10) and part of
+    /// [`Sim::state_hash`], because it changes what the next tick emits.
+    pub victory: Option<u8>,
     pub grid: Grid,
     pub visibility: Vec<u8>,
-    pub explored: [Vec<u8>; 2],
+    pub explored: [Vec<u8>; MAX_PLAYERS],
     /// Last position each player observed an enemy unit on (`unit id -> pos`).
     /// Updated by `update_fog`; the HUD draws these as last-known blips and
     /// they survive a save/load round trip by being rebuilt from live sight.
-    pub last_seen: [BTreeMap<u32, LastSeen>; 2],
+    pub last_seen: [BTreeMap<u32, LastSeen>; MAX_PLAYERS],
     pub events: Vec<Event>,
     /// `SPAWN_ADJUST def=<id> from=<cell> to=<cell>` lines: every spawn whose
     /// requested point was moved so the unit stands outside a footprint or on
@@ -927,7 +984,7 @@ pub struct Sim {
     /// Last order issued to a unit on a given tick (spam guard), keyed by unit.
     pub issue_stamps: BTreeMap<u32, (OrderSpec, u64)>,
     /// Per-player researched upgrade levels (`upgrade id -> level`).
-    pub upgrades: [BTreeMap<&'static str, u8>; 2],
+    pub upgrades: [BTreeMap<&'static str, u8>; MAX_PLAYERS],
     /// Map income stipend (1 gold / half second).  Off by default: WC3 melee
     /// income is produced by workers only, and a drip that runs for both
     /// players hides every harvest bug behind a rising counter.  Scripted demo
@@ -994,6 +1051,53 @@ pub fn rotate_towards(current: f32, target: f32, max_delta: f32) -> f32 {
     }
 }
 
+/// Receipt of [`Sim::bind_human_seat`]: the seat now drives the local view,
+/// and this is what it owns and sees at the moment of binding.
+///
+/// The game layer logs one line from it (`CAMPAIGN_HUMAN_SLOT … sim_bound=true
+/// units=… visible=…`) instead of re-deriving ownership from the unit list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatBinding {
+    /// The bound seat (0..[`MAX_PLAYERS`]).
+    pub seat: u8,
+    /// Living units owned by the seat.
+    pub units: usize,
+    /// Of `units`, the living buildings.
+    pub buildings: usize,
+    /// Of `units`, the ones inside the seat's freshly stamped sight.
+    ///
+    /// `visible_units == units` is the binding's contract: a seat always sees
+    /// its own units, which is what the failing campaign run got wrong (seat 4
+    /// bound to nothing, so its hero was culled with the rest of the world).
+    pub visible_units: usize,
+    /// Pathing cells the seat currently has in sight.
+    pub visible_cells: usize,
+    /// Gold of the seat after binding, in the seat's own bank.
+    pub gold: i32,
+    /// Lumber of the seat after binding.
+    pub lumber: i32,
+}
+
+/// Why [`Sim::bind_human_seat`] refused a seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatError {
+    /// `seat` is outside `0..MAX_PLAYERS`; `limit` is [`MAX_PLAYERS`].
+    OutOfRange { seat: u8, limit: usize },
+}
+
+impl std::fmt::Display for SeatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SeatError::OutOfRange { seat, limit } => write!(
+                f,
+                "human seat {seat} is outside the simulation's {limit} player seats"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SeatError {}
+
 impl Sim {
     pub fn new(seed: u64, width: u32, height: u32) -> Self {
         let grid = Grid::new(width, height, CELL_SIZE);
@@ -1023,9 +1127,13 @@ impl Sim {
             next_projectile_id: 1,
             resources: [1000, 1000],
             lumber: [1000, 1000],
+            seat_gold: [1000; MAX_PLAYERS - 2],
+            seat_lumber: [1000; MAX_PLAYERS - 2],
+            human_seat: None,
+            victory: None,
             visibility: vec![0; cells],
-            explored: [vec![0; cells], vec![0; cells]],
-            last_seen: [BTreeMap::new(), BTreeMap::new()],
+            explored: std::array::from_fn(|_| vec![0; cells]),
+            last_seen: std::array::from_fn(|_| BTreeMap::new()),
             grid,
             events: Vec::new(),
             spawn_log: Vec::new(),
@@ -1042,7 +1150,7 @@ impl Sim {
             buffs: Vec::new(),
             next_buff_id: 1,
             issue_stamps: BTreeMap::new(),
-            upgrades: [BTreeMap::new(), BTreeMap::new()],
+            upgrades: std::array::from_fn(|_| BTreeMap::new()),
             passive_income: false,
             ruleset: Ruleset::Tft,
             gameplay: GameplayConfig::default(),
@@ -1062,6 +1170,149 @@ impl Sim {
             fog_stamp: vec![0; cells],
             script: None,
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Player seats
+    // ------------------------------------------------------------------
+
+    /// Gold of `seat`, or 0 when `seat` is a neutral owner.
+    ///
+    /// Seats 0 and 1 are stored in the public [`Sim::resources`] array (kept
+    /// two-wide for the shipped callers that assign `[a, b]`); seats 2..8 are
+    /// stored in the private seat table. Every simulation path reads gold
+    /// through this method, so a seat above 1 is a first-class bank.
+    #[inline]
+    pub fn gold(&self, seat: u8) -> i32 {
+        match seat_row(seat) {
+            Some(0) => self.resources[0],
+            Some(1) => self.resources[1],
+            Some(row) => self.seat_gold[row - 2],
+            None => 0,
+        }
+    }
+
+    /// Writes `seat`'s gold. Returns false (and does nothing) for a neutral.
+    #[inline]
+    pub fn set_gold(&mut self, seat: u8, value: i32) -> bool {
+        match seat_row(seat) {
+            Some(0) => self.resources[0] = value,
+            Some(1) => self.resources[1] = value,
+            Some(row) => self.seat_gold[row - 2] = value,
+            None => return false,
+        }
+        true
+    }
+
+    /// Adds `delta` to `seat`'s gold. Returns false for a neutral owner.
+    #[inline]
+    pub fn add_gold(&mut self, seat: u8, delta: i32) -> bool {
+        match seat_row(seat) {
+            Some(0) => self.resources[0] += delta,
+            Some(1) => self.resources[1] += delta,
+            Some(row) => self.seat_gold[row - 2] += delta,
+            None => return false,
+        }
+        true
+    }
+
+    /// Lumber of `seat`, or 0 when `seat` is a neutral owner.
+    #[inline]
+    pub fn lumber_of(&self, seat: u8) -> i32 {
+        match seat_row(seat) {
+            Some(0) => self.lumber[0],
+            Some(1) => self.lumber[1],
+            Some(row) => self.seat_lumber[row - 2],
+            None => 0,
+        }
+    }
+
+    /// Writes `seat`'s lumber. Returns false (and does nothing) for a neutral.
+    #[inline]
+    pub fn set_lumber(&mut self, seat: u8, value: i32) -> bool {
+        match seat_row(seat) {
+            Some(0) => self.lumber[0] = value,
+            Some(1) => self.lumber[1] = value,
+            Some(row) => self.seat_lumber[row - 2] = value,
+            None => return false,
+        }
+        true
+    }
+
+    /// Adds `delta` to `seat`'s lumber. Returns false for a neutral owner.
+    #[inline]
+    pub fn add_lumber(&mut self, seat: u8, delta: i32) -> bool {
+        match seat_row(seat) {
+            Some(0) => self.lumber[0] += delta,
+            Some(1) => self.lumber[1] += delta,
+            Some(row) => self.seat_lumber[row - 2] += delta,
+            None => return false,
+        }
+        true
+    }
+
+    /// The seat the local view follows: the bound human seat, else seat 0.
+    ///
+    /// This is the player the renderer culls with ([`Sim::is_visible_at`]) and
+    /// the seat the HUD should pass to [`Sim::fog_mask`]; with no explicit bind
+    /// it is the two-side melee default (owner 0), so existing callers see
+    /// exactly the old behaviour.
+    #[inline]
+    pub fn local_player(&self) -> u8 {
+        self.human_seat.unwrap_or(0)
+    }
+
+    /// Makes `seat` the local player and stamps its sight immediately.
+    ///
+    /// A campaign mission's human is a `war3map.w3i` slot id (Prologue01: 4)
+    /// and the whole world used to be culled because the game bound nothing
+    /// above seat 1. Binding here makes the seat a real player: gold and
+    /// lumber live in its own bank, `update_fog` stamps its units' sight, and
+    /// [`Sim::is_visible_at`] / [`Sim::local_player`] follow it for the next
+    /// frame instead of the next tick.
+    ///
+    /// Fails only for a seat outside `0..MAX_PLAYERS`; a seat that currently
+    /// owns nothing still binds (a script may spawn its units on the first
+    /// tick) and reports `units == 0` in the receipt.
+    pub fn bind_human_seat(&mut self, seat: u8) -> Result<SeatBinding, SeatError> {
+        if seat_row(seat).is_none() {
+            return Err(SeatError::OutOfRange {
+                seat,
+                limit: MAX_PLAYERS,
+            });
+        }
+        self.human_seat = Some(seat);
+        self.update_fog();
+        let mut units = 0usize;
+        let mut buildings = 0usize;
+        let mut visible_units = 0usize;
+        for unit in &self.units {
+            if !unit.alive || unit.owner != seat {
+                continue;
+            }
+            units += 1;
+            if unit.is_building() {
+                buildings += 1;
+            }
+            if self.is_visible(seat, unit.pos) {
+                visible_units += 1;
+            }
+        }
+        let bit = 1u8 << seat;
+        let visible_cells = self
+            .visibility
+            .iter()
+            .filter(|mask| **mask & bit != 0)
+            .count();
+        Ok(SeatBinding {
+            seat,
+            units,
+            buildings,
+            visible_units,
+            visible_cells,
+            gold: self.gold(seat),
+            lumber: self.lumber_of(seat),
+        })
     }
 
     // ------------------------------------------------------------------
@@ -1185,8 +1436,8 @@ impl Sim {
             spatial::SpatialHash::new(256.0, width as f32 * cell_size, height as f32 * cell_size);
         let cells = width as usize * height as usize;
         self.visibility = vec![0; cells];
-        self.explored = [vec![0; cells], vec![0; cells]];
-        self.last_seen = [BTreeMap::new(), BTreeMap::new()];
+        self.explored = std::array::from_fn(|_| vec![0; cells]);
+        self.last_seen = std::array::from_fn(|_| BTreeMap::new());
         self.fog_stamp = vec![0; cells];
     }
 
@@ -1212,7 +1463,7 @@ impl Sim {
     ) -> UnitId {
         let def = def_at(def_index).expect("def index");
         let stats = def.stats;
-        let bonus = self.upgrade_bonuses(owner.min(1), def);
+        let bonus = self.upgrade_bonuses(owner, def);
         let percent_damage = stats.damage * bonus.damage_permille / 1000;
         let percent_hp = stats.hp * bonus.hp_permille / 1000;
         let id = UnitId(self.next_id);
@@ -1246,7 +1497,12 @@ impl Sim {
         }
         self.units.push(Unit {
             id,
-            owner: owner.min(2),
+            // No seat clamp: a campaign human seat (Prologue01: 4) and the
+            // neutral band (`NEUTRAL_OWNER`) must survive the spawn. The old
+            // `owner.min(2)` collapsed every unit above seat 1 onto seat 2, so
+            // `bind_human_seat(4)` found an empty seat and the whole world was
+            // culled with seat 0's fog.
+            owner,
             kind: def.kind,
             def_index,
             pos,
@@ -1403,7 +1659,21 @@ impl Sim {
     pub fn step(&mut self, commands: &[Command]) {
         self.events.clear();
         self.path_budget = PATH_BUDGET;
+        let mut applied: Vec<&Command> = Vec::with_capacity(commands.len());
         for command in commands {
+            // A mirrored tap (or a doubled replay frame) can put the same
+            // command in one tick twice. Drop the exact repeat before it
+            // reaches the systems: `CancelTrain` removes by index, so the
+            // duplicate refunds the *next* queue entry, and `Build` spawns a
+            // second building. `Train` and `Cast` stay repeatable by design
+            // (two clicks queue two units / cast twice); every other variant
+            // sets an order whose end state is already idempotent.
+            if applied.iter().any(|seen| *seen == command)
+                && !matches!(command, Command::Train { .. } | Command::Cast { .. })
+            {
+                continue;
+            }
+            applied.push(command);
             self.apply(command);
         }
         self.advance_timers();
@@ -1422,6 +1692,11 @@ impl Sim {
         // Item maintenance on the real 30 Hz grid: dead carriers drop their
         // backpack (allocation-free cursor walk, see `items.rs`).
         self.items_tick();
+        // The elimination verdict is read from the field after the combat and
+        // economy phases and before the AI acts: an AI that lost its last
+        // building cannot undo the defeat by instantly placing a new hall in
+        // the same tick (WC3 ends the game the moment the last building falls).
+        self.check_victory();
         self.advance_ai();
         self.advance_squads();
         self.advance_creeps();
@@ -1561,10 +1836,10 @@ impl Sim {
                 let (cost, lumber) = def_at(item.def)
                     .map(|d| (d.stats.cost, d.stats.lumber_cost))
                     .unwrap_or((0, 0));
-                let owner = self.units[b_index].owner as usize;
-                if owner < self.resources.len() {
-                    self.resources[owner] += cost;
-                    self.lumber[owner] += lumber;
+                let owner = self.units[b_index].owner;
+                if seat_row(owner).is_some() {
+                    self.add_gold(owner, cost);
+                    self.add_lumber(owner, lumber);
                 }
                 self.events.push(Event::Error("production cancelled"));
             }
@@ -3420,7 +3695,7 @@ impl Sim {
     /// guarded by the death transition in `apply_damage`, so a victim can never
     /// be paid for twice.
     fn grant_kill_bounty(&mut self, victim_index: usize, killer_owner: u8) -> i32 {
-        if killer_owner > 1 {
+        if seat_row(killer_owner).is_none() {
             return 0;
         }
         let victim_owner = self.units[victim_index].owner;
@@ -3440,8 +3715,8 @@ impl Sim {
         if gold <= 0 {
             return 0;
         }
-        let owner = killer_owner as usize;
-        self.resources[owner] += gold;
+        let owner = killer_owner;
+        self.add_gold(owner, gold);
         self.events.push(Event::Bounty {
             owner: killer_owner,
             unit: self.units[victim_index].id,
@@ -3645,15 +3920,15 @@ impl Sim {
     /// aggro 500 and leash 900 as in the WC3 creep profile.
     pub fn cluster_neutral_camps(&mut self) -> usize {
         self.cluster_owner_camps(
-            2,
+            NEUTRAL_OWNER,
             CAMP_CLUSTER_RADIUS,
             CAMP_AGGRO_RADIUS,
             CAMP_LEASH_RADIUS,
         )
     }
 
-    /// Spawns neutral creep units (owner 2) around a camp anchor.  `aggro` and
-    /// `leash` default to 500/900 as in a WC3 creep camp.
+    /// Spawns neutral creep units ([`NEUTRAL_OWNER`]) around a camp anchor.
+    /// `aggro` and `leash` default to 500/900 as in a WC3 creep camp.
     pub fn spawn_camp(
         &mut self,
         def_ids: &[&str],
@@ -3670,7 +3945,7 @@ impl Sim {
         for (index, def_id) in def_ids.iter().enumerate() {
             let angle = index as f32 * std::f32::consts::TAU / def_ids.len() as f32;
             let pos = anchor + Vec2::new(angle.cos(), angle.sin()) * 72.0;
-            if let Some(unit) = self.spawn_def(2, def_id, pos) {
+            if let Some(unit) = self.spawn_def(NEUTRAL_OWNER, def_id, pos) {
                 if let Some(unit_index) = self.unit_index(unit) {
                     self.units[unit_index].camp = Some(id);
                 }
@@ -3786,7 +4061,7 @@ impl Sim {
             return 0;
         }
         let paid = (amount * self.upkeep(owner).income_permille() / 1000).max(1);
-        self.lumber[owner as usize] += paid;
+        self.add_lumber(owner, paid);
         self.events.push(Event::LumberDeposited {
             owner,
             amount: paid,
@@ -4085,10 +4360,10 @@ impl Sim {
         let cost = data::def_of(unit_id)
             .map(|def| def.stats.cost)
             .ok_or("no unit def")?;
-        if self.resources[owner as usize] < cost {
+        if self.gold(owner) < cost {
             return Err("not enough gold");
         }
-        self.resources[owner as usize] -= cost;
+        self.add_gold(owner, -cost);
         self.spawn_def(owner, unit_id, pos).ok_or("spawn failed")
     }
 
@@ -4124,11 +4399,11 @@ impl Sim {
         {
             return Err("shop too far");
         }
-        let owner = self.units[buyer_index].owner as usize;
-        if owner >= self.resources.len() {
+        let owner = self.units[buyer_index].owner;
+        if seat_row(owner).is_none() {
             return Err("no owner");
         }
-        if self.resources[owner] < def.cost {
+        if self.gold(owner) < def.cost {
             return Err("not enough gold");
         }
         if self.units[buyer_index].items.len() >= 6 {
@@ -4150,7 +4425,7 @@ impl Sim {
         if self.shops[stock_index].slots[slot_index].stock <= 0 {
             return Err("out of stock");
         }
-        self.resources[owner] -= def.cost;
+        self.add_gold(owner, -def.cost);
         {
             let slot = &mut self.shops[stock_index].slots[slot_index];
             slot.stock -= 1;
@@ -4664,14 +4939,14 @@ impl Sim {
         if self.units[altar_index].def().id != expected.id {
             return Err("wrong altar");
         }
-        let owner = self.units[index].owner as usize;
-        if owner >= self.resources.len() {
+        let owner = self.units[index].owner;
+        if seat_row(owner).is_none() {
             return Err("no owner");
         }
-        if self.resources[owner] < HERO_MAX_REVIVE_COST_GOLD {
+        if self.gold(owner) < HERO_MAX_REVIVE_COST_GOLD {
             return Err("not enough gold");
         }
-        self.resources[owner] -= HERO_MAX_REVIVE_COST_GOLD;
+        self.add_gold(owner, -HERO_MAX_REVIVE_COST_GOLD);
         self.units[index].revive_at =
             self.tick + (HERO_MAX_REVIVE_TIME_SECONDS * TICKS_PER_SECOND as f32).round() as u64;
         self.units[index].revive_altar = Some(altar);
@@ -4829,11 +5104,11 @@ impl Sim {
         }
     }
 
-    /// Nearest living unit of a player (owner < 2) inside `radius` of `pos`.
+    /// Nearest living unit of a player (`0..MAX_PLAYERS`) inside `radius` of `pos`.
     fn nearest_intruder(&self, pos: Vec2, radius: f32) -> Option<UnitId> {
         let mut best: Option<(UnitId, f32)> = None;
         for unit in &self.units {
-            if !unit.alive || unit.owner >= 2 {
+            if !unit.alive || seat_row(unit.owner).is_none() {
                 continue;
             }
             let distance = unit.pos.distance(pos);
@@ -4931,13 +5206,32 @@ impl Sim {
         })
     }
 
+    /// Per-seat upgrade row for `owner`.
+    ///
+    /// A neutral owner (`owner >= MAX_PLAYERS`) researches nothing; returning
+    /// an empty row keeps every upgrade lookup total instead of clamping a
+    /// neutral onto seat 1's row (the old `owner.min(1)`).
+    fn upgrades_of(&self, owner: u8) -> &BTreeMap<&'static str, u8> {
+        static EMPTY: BTreeMap<&'static str, u8> = BTreeMap::new();
+        match seat_row(owner) {
+            Some(row) => &self.upgrades[row],
+            None => &EMPTY,
+        }
+    }
+
+    /// Mutable per-seat upgrade row, or `None` for a neutral owner.
+    fn upgrades_mut(&mut self, owner: u8) -> Option<&mut BTreeMap<&'static str, u8>> {
+        let row = seat_row(owner)?;
+        Some(&mut self.upgrades[row])
+    }
+
     fn upgrade_bonuses(
         &self,
         owner: u8,
         def: &'static UnitDef,
     ) -> data::UpgradeBonus {
         let mut bonus = data::UpgradeBonus::default();
-        for (id, level) in &self.upgrades[owner.min(1) as usize] {
+        for (id, level) in self.upgrades_of(owner) {
             let Some(upgrade) = data::upgrade_def(id) else {
                 continue;
             };
@@ -4985,7 +5279,7 @@ impl Sim {
     }
 
     pub fn upgrade_level(&self, owner: u8, id: &str) -> u8 {
-        self.upgrades[owner.min(1) as usize]
+        self.upgrades_of(owner)
             .get(id)
             .copied()
             .unwrap_or(0)
@@ -5029,11 +5323,11 @@ impl Sim {
             return Err("already researching");
         }
         let cost = upgrade.gold_cost(level + 1);
-        if self.resources[owner as usize] < cost {
+        if self.gold(owner) < cost {
             self.events.push(Event::Error("not enough gold"));
             return Err("not enough gold");
         }
-        self.resources[owner as usize] -= cost;
+        self.add_gold(owner, -cost);
         self.units[index].research.push(Research {
             id: upgrade_id,
             remaining: upgrade.research_ticks(level + 1).max(1),
@@ -5085,11 +5379,11 @@ impl Sim {
                 return Some("missing requirement");
             }
         }
-        let owner = unit.owner as usize;
-        if self.resources[owner] < target_def.stats.cost {
+        let owner = unit.owner;
+        if self.gold(owner) < target_def.stats.cost {
             return Some("not enough gold");
         }
-        if self.lumber[owner] < target_def.stats.lumber_cost {
+        if self.lumber_of(owner) < target_def.stats.lumber_cost {
             return Some("not enough lumber");
         }
         None
@@ -5123,9 +5417,9 @@ impl Sim {
             return Err("unknown building");
         };
         let target_def = def_at(target_index).ok_or("unknown building")?;
-        let owner = self.units[index].owner as usize;
-        self.resources[owner] -= target_def.stats.cost;
-        self.lumber[owner] -= target_def.stats.lumber_cost;
+        let owner = self.units[index].owner;
+        self.add_gold(owner, -target_def.stats.cost);
+        self.add_lumber(owner, -target_def.stats.lumber_cost);
         let ticks = target_def.stats.build_ticks.max(1);
         self.units[index].upgrade = Some(UpgradeJob {
             to_def_index: target_index,
@@ -5172,7 +5466,7 @@ impl Sim {
         };
         let owner = self.units[index].owner;
         let pos = self.units[index].pos;
-        let bonus = self.upgrade_bonuses(owner.min(1), def);
+        let bonus = self.upgrade_bonuses(owner, def);
         let stats = def.stats;
         let id = self.units[index].id;
         // Preserve the damaged fraction: a Keep built from a half-dead Town
@@ -5253,7 +5547,9 @@ impl Sim {
         }
         for (owner, id) in completed {
             let level = self.upgrade_level(owner, id) + 1;
-            self.upgrades[owner.min(1) as usize].insert(id, level);
+            if let Some(row) = self.upgrades_mut(owner) {
+                row.insert(id, level);
+            }
             self.apply_upgrade_delta(owner, id, level);
             self.events.push(Event::UpgradeResearched { owner, id });
         }
@@ -5326,9 +5622,9 @@ impl Sim {
             return 0;
         };
         let def = self.units[index].def();
-        let owner = self.units[index].owner.min(1) as usize;
+        let owner = self.units[index].owner;
         let mut bonus = 0;
-        for (id, level) in &self.upgrades[owner] {
+        for (id, level) in self.upgrades_of(owner) {
             let Some(upgrade) = data::upgrade_def(id) else {
                 continue;
             };
@@ -5350,9 +5646,9 @@ impl Sim {
             return 0;
         };
         let def = self.units[index].def();
-        let owner = self.units[index].owner.min(1) as usize;
+        let owner = self.units[index].owner;
         let mut bonus = 0;
-        for (id, level) in &self.upgrades[owner] {
+        for (id, level) in self.upgrades_of(owner) {
             let Some(upgrade) = data::upgrade_def(id) else {
                 continue;
             };
@@ -5373,7 +5669,7 @@ impl Sim {
     pub fn effective_armor_type(&self, index: usize) -> data::ArmorType {
         let unit = &self.units[index];
         let def = unit.def();
-        for (id, _level) in &self.upgrades[unit.owner.min(1) as usize] {
+        for (id, _level) in self.upgrades_of(unit.owner) {
             let Some(upgrade) = data::upgrade_def(id) else {
                 continue;
             };
@@ -5394,7 +5690,7 @@ impl Sim {
         let unit = &self.units[index];
         let def = unit.def();
         let mut damage = 0;
-        for (id, level) in &self.upgrades[unit.owner.min(1) as usize] {
+        for (id, level) in self.upgrades_of(unit.owner) {
             let Some(upgrade) = data::upgrade_def(id) else {
                 continue;
             };
@@ -5471,16 +5767,16 @@ impl Sim {
                 }
             }
         }
-        if self.resources[owner as usize] < def.stats.cost {
+        if self.gold(owner) < def.stats.cost {
             self.events.push(Event::Error("not enough gold"));
             return Err("not enough gold");
         }
-        if self.lumber[owner as usize] < def.stats.lumber_cost {
+        if self.lumber_of(owner) < def.stats.lumber_cost {
             self.events.push(Event::Error("not enough lumber"));
             return Err("not enough lumber");
         }
-        self.resources[owner as usize] -= def.stats.cost;
-        self.lumber[owner as usize] -= def.stats.lumber_cost;
+        self.add_gold(owner, -def.stats.cost);
+        self.add_lumber(owner, -def.stats.lumber_cost);
         self.units[index].production.push(Production {
             kind: def.kind,
             remaining: def.stats.train_ticks.max(1),
@@ -5688,7 +5984,7 @@ impl Sim {
                     self.grid.walkable(cell.0, cell.1)
                 });
             if let Some(pos) = pos
-                && let Some(unit) = self.spawn_def(2, id, pos)
+                && let Some(unit) = self.spawn_def(NEUTRAL_OWNER, id, pos)
             {
                 ids.push(unit);
             }
@@ -5732,16 +6028,16 @@ impl Sim {
         if !self.requirements_met(owner, def) {
             return Err("missing requirement");
         }
-        if self.resources[owner as usize] < def.stats.cost {
+        if self.gold(owner) < def.stats.cost {
             self.events.push(Event::Error(insufficient));
             return Err(insufficient);
         }
-        if self.lumber[owner as usize] < def.stats.lumber_cost {
+        if self.lumber_of(owner) < def.stats.lumber_cost {
             self.events.push(Event::Error("not enough lumber"));
             return Err("not enough lumber");
         }
-        self.resources[owner as usize] -= def.stats.cost;
-        self.lumber[owner as usize] -= def.stats.lumber_cost;
+        self.add_gold(owner, -def.stats.cost);
+        self.add_lumber(owner, -def.stats.lumber_cost);
         let id = self.spawn_def_index(owner, def_index_value, at, true);
         self.events.push(Event::BuildingComplete(id));
         Ok(id)
@@ -5819,10 +6115,10 @@ impl Sim {
         if !self.requirements_met(owner, def) {
             return Some("missing requirement");
         }
-        if self.resources[owner as usize] < def.stats.cost {
+        if self.gold(owner) < def.stats.cost {
             return Some("not enough gold");
         }
-        if self.lumber[owner as usize] < def.stats.lumber_cost {
+        if self.lumber_of(owner) < def.stats.lumber_cost {
             return Some("not enough lumber");
         }
         None
@@ -5836,8 +6132,8 @@ impl Sim {
         };
         def.stats.is_building
             && self.requirements_met(owner, def)
-            && self.resources[owner as usize] >= def.stats.cost
-            && self.lumber[owner as usize] >= def.stats.lumber_cost
+            && self.gold(owner) >= def.stats.cost
+            && self.lumber_of(owner) >= def.stats.lumber_cost
     }
 
     pub fn can_place(&self, def_id: &str, at: Vec2) -> bool {
@@ -5904,8 +6200,8 @@ impl Sim {
         if let Some(reason) = self.place_denial_ignoring(owner, def_id, at, Some(builder)) {
             return Err(reason);
         }
-        self.resources[owner as usize] -= def.stats.cost;
-        self.lumber[owner as usize] -= def.stats.lumber_cost;
+        self.add_gold(owner, -def.stats.cost);
+        self.add_lumber(owner, -def.stats.lumber_cost);
         let id = self.spawn_def_index(owner, def_index_value, at, false);
         if let Some(site_index) = self.unit_index(id) {
             self.start_order(builder_index, OrderSpec::Build(id));
@@ -5926,6 +6222,11 @@ impl Sim {
             let stats = self.units[index].def().stats;
             (stats.cost, stats.lumber_cost)
         };
+        // `ConstructionRefundRate=0.75` (MiscGame.txt:123): a cancelled site
+        // returns three quarters of its price no matter how far it got.
+        // Integer truncation is the sim's money rule; the remainder is lost.
+        let refund_gold = cost.saturating_mul(3) / 4;
+        let refund_lumber = lumber.saturating_mul(3) / 4;
         let cells = std::mem::take(&mut self.units[index].blocked_cells);
         for (cx, cy) in cells {
             let occupied = self
@@ -5939,8 +6240,8 @@ impl Sim {
         self.units[index].alive = false;
         self.units[index].order = Order::Idle;
         self.events.push(Event::Error("construction cancelled"));
-        self.resources[owner as usize] += cost;
-        self.lumber[owner as usize] += lumber;
+        self.add_gold(owner, refund_gold);
+        self.add_lumber(owner, refund_lumber);
         true
     }
 
@@ -5983,15 +6284,15 @@ impl Sim {
                 / (1000 * max_hp as i64)) as i32;
             let lumber_cost = (stats.lumber_cost as i64 * gain as i64 * REPAIR_COST_PERMILLE as i64
                 / (1000 * max_hp as i64)) as i32;
-            let owner = self.units[index].owner as usize;
-            if self.resources[owner] < gold_cost || self.lumber[owner] < lumber_cost {
+            let owner = self.units[index].owner;
+            if self.gold(owner) < gold_cost || self.lumber_of(owner) < lumber_cost {
                 finished.push(index);
                 self.events
                     .push(Event::Error("not enough resources to repair"));
                 continue;
             }
-            self.resources[owner] -= gold_cost;
-            self.lumber[owner] -= lumber_cost;
+            self.add_gold(owner, -gold_cost);
+            self.add_lumber(owner, -lumber_cost);
             self.units[target_index].hp += gain;
             if self.units[target_index].hp >= self.units[target_index].max_hp {
                 finished.push(index);
@@ -6032,6 +6333,17 @@ impl Sim {
                 .count()
                 .min(2) as u32;
             if workers == 0 {
+                // `ConstructionLifeDrainRate=10.0` (MiscGame.txt:129): a site
+                // nobody is working on loses 10 hp per second. At 30 Hz that is
+                // one point every third tick, so the decay is tick-deterministic
+                // and identical on both lockstep peers. The site stops at 1 hp:
+                // the shipped constants do not say what happens at zero, so the
+                // foundation stays resumable instead of vanishing (documented
+                // boundary, not an invented death rule).
+                if self.tick % 3 == 0 {
+                    self.units[index].hp = (self.units[index].hp - 1).max(1);
+                }
+                self.units[index].construct = Some(construction);
                 continue;
             }
             construction.remaining = construction.remaining.saturating_sub(workers);
@@ -6078,8 +6390,8 @@ impl Sim {
 
     fn advance_economy(&mut self) {
         if self.passive_income && self.tick % 15 == 0 {
-            for player in 0..2 {
-                self.resources[player] += 1;
+            for player in 0..MAX_PLAYERS {
+                self.add_gold(player as u8, 1);
             }
         }
         for index in 0..self.units.len() {
@@ -6317,7 +6629,7 @@ impl Sim {
             return 0;
         }
         let paid = (amount * self.upkeep(owner).income_permille() / 1000).max(1);
-        self.resources[owner as usize] += paid;
+        self.add_gold(owner, paid);
         self.events.push(Event::GoldDeposited {
             owner,
             amount: paid,
@@ -6425,7 +6737,7 @@ impl Sim {
 
     pub fn can_afford(&self, owner: u8, def_id: &str) -> bool {
         def_of(def_id)
-            .map(|def| self.resources[owner as usize] >= def.stats.cost)
+            .map(|def| self.gold(owner) >= def.stats.cost)
             .unwrap_or(false)
     }
 
@@ -6487,15 +6799,21 @@ impl Sim {
     fn update_fog(&mut self) {
         self.visibility.fill(0);
         for unit in self.units.iter() {
-            if !unit.alive || unit.owner > 1 {
+            let Some(seat) = seat_row(unit.owner) else {
+                continue;
+            };
+            if !unit.alive {
                 continue;
             }
+            // The stamp dedupes one owner's discs across a tick, so its stride
+            // must cover every seat: `tick * 4` aliased once a seat above 3
+            // existed and silently dropped cells for the next owner.
             let marker = (self.tick as u32)
-                .wrapping_mul(4)
-                .wrapping_add(unit.owner as u32 + 1);
+                .wrapping_mul(MAX_PLAYERS as u32)
+                .wrapping_add(seat as u32 + 1);
             let radius = ((unit.sight / self.grid.cell_size).ceil() as usize).min(64);
             let (cx, cy) = self.grid.world_to_cell(unit.pos);
-            let bit = 1u8 << unit.owner;
+            let bit = 1u8 << seat;
             for &(dx, dy) in &self.fog_offsets[radius] {
                 let x = cx as i32 + dx;
                 let y = cy as i32 + dy;
@@ -6508,18 +6826,20 @@ impl Sim {
                 }
                 self.fog_stamp[index] = marker;
                 self.visibility[index] |= bit;
-                self.explored[unit.owner as usize][index] = 1;
+                self.explored[seat][index] = 1;
             }
         }
         // Last-known enemy positions: a unit seen this tick overwrites the
-        // stored blip; units hidden by fog keep their older entry.
+        // stored blip; units hidden by fog keep their older entry. Creeps
+        // (`NEUTRAL_OWNER`) and neutral-passive units are blipped too, which is
+        // how a camp stays on the minimap after the hero walks away.
         for index in 0..self.units.len() {
             let unit = &self.units[index];
-            if !unit.alive || unit.owner > 2 {
+            if !unit.alive || (seat_row(unit.owner).is_none() && unit.owner != NEUTRAL_OWNER) {
                 continue;
             }
             let (id, pos, owner) = (unit.id.0, unit.pos, unit.owner);
-            for player in 0..2u8 {
+            for player in 0..MAX_PLAYERS as u8 {
                 if owner == player {
                     continue;
                 }
@@ -6537,42 +6857,43 @@ impl Sim {
     }
 
     pub fn is_visible(&self, owner: u8, pos: Vec2) -> bool {
-        if owner > 1 {
+        let Some(seat) = seat_row(owner) else {
+            // A neutral/omniscient owner (creeps, the editor) sees everything.
             return true;
-        }
+        };
         let (x, y) = self.grid.world_to_cell(pos);
         if x >= self.grid.width || y >= self.grid.height {
             return false;
         }
-        self.visibility[y as usize * self.grid.width as usize + x as usize] & (1 << owner) != 0
+        self.visibility[y as usize * self.grid.width as usize + x as usize] & (1 << seat) != 0
     }
 
     pub fn is_explored(&self, owner: u8, pos: Vec2) -> bool {
-        if owner > 1 {
+        let Some(seat) = seat_row(owner) else {
             return true;
-        }
+        };
         let (x, y) = self.grid.world_to_cell(pos);
         if x >= self.grid.width || y >= self.grid.height {
             return false;
         }
-        self.explored[owner as usize][y as usize * self.grid.width as usize + x as usize] != 0
+        self.explored[seat][y as usize * self.grid.width as usize + x as usize] != 0
     }
 
     /// Three-state fog at a pathing cell (`Unexplored | Explored | Visible`).
     /// Out-of-grid cells read as `Unexplored` for a player and `Visible` for a
     /// non-player owner (the neutral/omniscient view).
     pub fn visibility(&self, player: u8, cell: (u32, u32)) -> Visibility {
-        if player > 1 {
+        let Some(seat) = seat_row(player) else {
             return Visibility::Visible;
-        }
+        };
         let (x, y) = cell;
         if x >= self.grid.width || y >= self.grid.height {
             return Visibility::Unexplored;
         }
         let index = y as usize * self.grid.width as usize + x as usize;
-        if self.visibility[index] & (1 << player) != 0 {
+        if self.visibility[index] & (1 << seat) != 0 {
             Visibility::Visible
-        } else if self.explored[player as usize][index] != 0 {
+        } else if self.explored[seat][index] != 0 {
             Visibility::Explored
         } else {
             Visibility::Unexplored
@@ -6584,13 +6905,15 @@ impl Sim {
         self.visibility(player, self.grid.world_to_cell(pos))
     }
 
-    /// Single-point visibility for the observing player (owner 0).
+    /// Single-point visibility for the local player ([`Sim::local_player`]).
     ///
-    /// This is the hook the renderer uses to skip enemy models in fog; the
-    /// two-player form above (`is_visible(player, pos)`) stays the canonical
-    /// per-player query for the HUD and the minimap.
+    /// This is the hook the renderer uses to skip enemy models in fog; it
+    /// follows the bound human seat, so a campaign mission on seat 4 culls
+    /// with seat 4's sight instead of seat 0's black map. The two-player form
+    /// (`is_visible(player, pos)`) stays the canonical per-player query for the
+    /// HUD and the minimap.
     pub fn is_visible_at(&self, pos: Vec2) -> bool {
-        self.is_visible(0, pos)
+        self.is_visible(self.local_player(), pos)
     }
 
     /// Whether `player` hears a sound emitted at `pos` with an audible
@@ -6608,10 +6931,10 @@ impl Sim {
 
     /// Fraction of the grid the player has explored (0.0..=1.0).
     pub fn explored_fraction(&self, player: u8) -> f32 {
-        if player > 1 {
+        let Some(seat) = seat_row(player) else {
             return 1.0;
-        }
-        let grid = &self.explored[player as usize];
+        };
+        let grid = &self.explored[seat];
         if grid.is_empty() {
             return 0.0;
         }
@@ -6621,10 +6944,9 @@ impl Sim {
 
     /// Monotonic explored grid for `player` (one byte per pathing cell).
     pub fn explored_grid(&self, player: u8) -> &[u8] {
-        if player > 1 {
-            &[]
-        } else {
-            &self.explored[player as usize]
+        match seat_row(player) {
+            Some(seat) => &self.explored[seat],
+            None => &[],
         }
     }
 
@@ -6633,14 +6955,14 @@ impl Sim {
     pub fn fog_mask(&self, player: u8) -> Vec<u8> {
         let cells = self.grid.width as usize * self.grid.height as usize;
         let mut mask = vec![0u8; cells];
-        if player > 1 {
+        let Some(seat) = seat_row(player) else {
             mask.fill(Visibility::Visible.as_u8());
             return mask;
-        }
+        };
         for (index, state) in mask.iter_mut().enumerate() {
-            *state = if self.visibility[index] & (1 << player) != 0 {
+            *state = if self.visibility[index] & (1 << seat) != 0 {
                 Visibility::Visible.as_u8()
-            } else if self.explored[player as usize][index] != 0 {
+            } else if self.explored[seat][index] != 0 {
                 Visibility::Explored.as_u8()
             } else {
                 Visibility::Unexplored.as_u8()
@@ -6656,18 +6978,16 @@ impl Sim {
 
     /// Last-seen position plus the tick it was observed on.
     pub fn last_seen_entry(&self, player: u8, unit: UnitId) -> Option<LastSeen> {
-        if player > 1 {
-            return None;
-        }
-        self.last_seen[player as usize].get(&unit.0).copied()
+        let seat = seat_row(player)?;
+        self.last_seen[seat].get(&unit.0).copied()
     }
 
     /// Every last-known enemy blip for `player`, ordered by unit id.
     pub fn last_seen_all(&self, player: u8) -> Vec<(UnitId, LastSeen)> {
-        if player > 1 {
+        let Some(seat) = seat_row(player) else {
             return Vec::new();
-        }
-        self.last_seen[player as usize]
+        };
+        self.last_seen[seat]
             .iter()
             .map(|(id, seen)| (UnitId(*id), *seen))
             .collect()
@@ -6706,7 +7026,10 @@ impl Sim {
         let Some(index) = self.unit_index(id) else {
             return;
         };
-        self.units[index].owner = owner.min(1);
+        // Any seat in `0..MAX_PLAYERS` (and the neutral ids) is a legal owner:
+        // clamping to 0/1 was the two-seat assumption that made a campaign
+        // `SetUnitOwner(…, Player(4))` silently reassign the unit to seat 1.
+        self.units[index].owner = owner;
     }
 
     /// Teleports a unit (JASS `SetUnitPosition*`), cancelling its current path.
@@ -6767,6 +7090,15 @@ impl Sim {
         // buildings left — not when its town hall falls. A seat with a
         // barracks, an altar or a farm still rebuilds (this is why the game
         // layer could not use the old hall-only verdict for melee).
+        //
+        // `setup_melee` seats every human on owner 0 and every AI on owner 1
+        // (1v1 and 4v4 alike), so the two melee sides are owner 0 and owner 1
+        // at every team size. The verdict latches: WC3 ends the game once, and
+        // a per-tick verdict made the HUD/AI see a fresh Victory every frame
+        // after elimination.
+        if self.victory.is_some() {
+            return;
+        }
         let has_buildings = |units: &[Unit], owner: u8| {
             units
                 .iter()
@@ -6774,10 +7106,16 @@ impl Sim {
         };
         let side0 = has_buildings(&self.units, 0);
         let side1 = has_buildings(&self.units, 1);
-        if !side0 && side1 {
-            self.events.push(Event::Victory(1));
+        let winner = if !side0 && side1 {
+            Some(1u8)
         } else if side0 && !side1 {
-            self.events.push(Event::Victory(0));
+            Some(0u8)
+        } else {
+            None
+        };
+        if let Some(winner) = winner {
+            self.victory = Some(winner);
+            self.events.push(Event::Victory(winner));
         }
     }
 
@@ -6790,211 +7128,21 @@ impl Sim {
         if max == 0 { 0 } else { (x % max as u64) as u32 }
     }
     /// Deterministic FNV-1a hash of the simulation state.
+    ///
+    /// The digest is taken over the canonical save payload
+    /// (`crate::save::simulation_digest`), so it covers every field the save
+    /// stores: carried gold and lumber, gather/stun/channel timers, hero XP and
+    /// learned abilities, research, items and their charges, goals,
+    /// queued-order payloads, per-seat tech, destructables, item and
+    /// projectile payloads, shops, AI/squad state and the spam-guard stamps. A
+    /// mutation to any of them changes the hash, and a save/load round trip
+    /// keeps it because the restored simulation re-encodes the same bytes.
+    ///
+    /// The bound human seat is deliberately *not* fed: it is a view parameter
+    /// (two lockstep peers may bind different seats), and the save carries it
+    /// in its own `SEC_SEATS` frame instead.
     pub fn state_hash(&self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        let mut feed = |value: u64| {
-            hash ^= value;
-            hash = hash.wrapping_mul(0x1000_0000_01b3);
-        };
-        feed(self.tick);
-        feed(self.resources[0] as u64);
-        feed(self.resources[1] as u64);
-        feed(self.lumber[0] as u64);
-        feed(self.lumber[1] as u64);
-        feed(self.rng_state);
-        for mine in &self.gold_mines {
-            feed(mine.pos.x.to_bits() as u64);
-            feed(mine.pos.y.to_bits() as u64);
-            feed(mine.remaining as u64);
-        }
-        for unit in &self.units {
-            feed(unit.id.0 as u64);
-            feed(unit.owner as u64);
-            feed(unit.def_index as u64);
-            feed(unit.pos.x.to_bits() as u64);
-            feed(unit.pos.y.to_bits() as u64);
-            feed(unit.hp as u64);
-            feed(unit.mana as u64);
-            feed(unit.cooldown as u64);
-            feed(unit.alive as u64);
-            feed(unit.carrying as u64);
-            feed(unit.facing.to_bits() as u64);
-            if let Some((a, b)) = unit.patrol {
-                feed(a.x.to_bits() as u64);
-                feed(a.y.to_bits() as u64);
-                feed(b.x.to_bits() as u64);
-                feed(b.y.to_bits() as u64);
-            }
-            match unit.order {
-                Order::Idle => feed(0),
-                Order::Move(to) => {
-                    feed(1);
-                    feed(to.x.to_bits() as u64);
-                    feed(to.y.to_bits() as u64);
-                }
-                Order::Attack(target) => {
-                    feed(2);
-                    feed(target.0 as u64);
-                }
-                Order::MoveAttack(to) => {
-                    feed(3);
-                    feed(to.x.to_bits() as u64);
-                    feed(to.y.to_bits() as u64);
-                }
-                Order::Hold => feed(4),
-                Order::Patrol { a, b, forward } => {
-                    feed(5);
-                    feed(a.x.to_bits() as u64);
-                    feed(a.y.to_bits() as u64);
-                    feed(b.x.to_bits() as u64);
-                    feed(b.y.to_bits() as u64);
-                    feed(forward as u64);
-                }
-                Order::Harvest { mine, phase } => {
-                    feed(6);
-                    feed(mine.x.to_bits() as u64);
-                    feed(mine.y.to_bits() as u64);
-                    feed(phase as u64);
-                }
-                Order::HarvestLumber { tree, phase } => {
-                    feed(8);
-                    feed(tree.x.to_bits() as u64);
-                    feed(tree.y.to_bits() as u64);
-                    feed(phase as u64);
-                }
-                Order::Build(site) => {
-                    feed(7);
-                    feed(site.0 as u64);
-                }
-                Order::Repair(target) => {
-                    feed(10);
-                    feed(target.0 as u64);
-                }
-            }
-            // An in-flight building upgrade is live state: a save/load pair that
-            // dropped it would produce a different match from the same seed.
-            if let Some(job) = unit.upgrade {
-                feed(11);
-                feed(job.to_def_index as u64);
-                feed(job.remaining as u64);
-            }
-            for spec in &unit.order_queue {
-                feed(match spec {
-                    OrderSpec::Move(_) => 1,
-                    OrderSpec::Attack(_) => 2,
-                    OrderSpec::AttackMove(_) => 3,
-                    OrderSpec::Patrol(_, _) => 4,
-                    OrderSpec::Hold => 5,
-                    OrderSpec::Stop => 6,
-                    OrderSpec::Harvest(_) => 7,
-                    OrderSpec::HarvestLumber(_) => 9,
-                    OrderSpec::Build(_) => 8,
-                    OrderSpec::Repair(_) => 10,
-                });
-            }
-            for production in &unit.production {
-                feed(production.def as u64);
-                feed(production.remaining as u64);
-            }
-            if let Some(construction) = unit.construct {
-                feed(construction.remaining as u64);
-            }
-            for cooldown in unit.spell_cd {
-                feed(cooldown as u64);
-            }
-            feed(unit.rooted_until);
-            feed(unit.invulnerable_until);
-            feed(unit.ethereal as u64);
-        }
-        for cast in &self.pending_casts {
-            feed(cast.due);
-            // Pending waves are typed spells only (Blizzard); its stable
-            // SpellDef index keeps the hash independent of enum layout.
-            feed(cast.spell.index() as u64);
-            feed(cast.at.x.to_bits() as u64);
-            feed(cast.at.y.to_bits() as u64);
-            feed(cast.waves_left as u64);
-        }
-        for state in &self.ai {
-            feed(state.owner as u64);
-            feed(state.waves as u64);
-            feed(state.next_wave);
-            feed(state.next_train);
-            feed(state.next_build);
-            feed(match state.mode {
-                AiMode::Build => 0,
-                AiMode::Attack => 1,
-                AiMode::Retreat => 2,
-            });
-        }
-        for buff in &self.buffs {
-            feed(buff.id.0 as u64);
-            feed(buff.unit.0 as u64);
-            feed(buff.source.0 as u64);
-            feed(buff.level as u64);
-            feed(fnv_str(buff.tag));
-            feed(buff.armor as u64);
-            feed(buff.damage_permille as u64);
-            feed(buff.attack_speed_permille as u64);
-            feed(buff.move_speed_permille as u64);
-            feed(buff.damage_taken_permille as u64);
-            feed(buff.bonus_life as u64);
-            feed(buff.root as u64);
-            feed(buff.stun as u64);
-            feed(buff.invulnerable as u64);
-            match buff.kind {
-                BuffKind::Timed { expire_tick } => {
-                    feed(1);
-                    feed(expire_tick);
-                }
-                BuffKind::TimedLife { expire_tick } => {
-                    feed(2);
-                    feed(expire_tick);
-                }
-                BuffKind::AuraSource {
-                    radius,
-                    hostile,
-                    next_refresh,
-                } => {
-                    feed(3);
-                    feed(radius.to_bits() as u64);
-                    feed(hostile as u64);
-                    feed(next_refresh);
-                }
-                BuffKind::AuraTarget {
-                    source,
-                    radius,
-                    next_refresh,
-                } => {
-                    feed(4);
-                    feed(source.0 as u64);
-                    feed(radius.to_bits() as u64);
-                    feed(next_refresh);
-                }
-            }
-        }
-        for manager in &self.squads {
-            feed(manager.owner as u64);
-            for squad in &manager.squads {
-                feed(squad.id as u64);
-                feed(match squad.kind {
-                    SquadKind::Assault => 1,
-                    SquadKind::Rush => 2,
-                    SquadKind::Protection => 3,
-                });
-                feed(match squad.state {
-                    SquadState::Idle => 1,
-                    SquadState::AttackMove => 2,
-                    SquadState::Attack => 3,
-                    SquadState::Flee => 4,
-                });
-                feed(squad.target.map(|id| id.0 as u64).unwrap_or(0));
-                for unit in &squad.units {
-                    feed(unit.0 as u64);
-                }
-            }
-        }
-        hash
+        crate::save::simulation_digest(self)
     }
 
     pub fn player(&self, raw: u8) -> Option<PlayerId> {
