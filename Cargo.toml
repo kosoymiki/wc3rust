@@ -32,6 +32,7 @@ members = [
     "apps/headless",
     "apps/bench",
     "tools/mdx-gltf",
+    "tools/hud-pack",
 ]
 
 [workspace.package]

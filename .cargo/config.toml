@@ -1,0 +1,30 @@
+# Reproducible release builds on the Termux aarch64 workspace (K-03).
+#
+# rustc embeds the absolute checkout/registry/prefix paths in panic locations
+# and diagnostics, so the same source tree produced different libmain.so bytes
+# in another checkout. Remapping every device path to a stable /build/... prefix
+# makes the compiled bytes depend on the sources, not on where they live.
+#
+# This lives in .cargo/config.toml (not an env export in one script) so *every*
+# cargo invocation in this repository - including scripts/h2-cargo calls from
+# other lanes - uses the same RUSTFLAGS. Alternating flag sets would otherwise
+# invalidate the whole shared target/ cache on every switch.
+#
+# The rules MUST be under [target.aarch64-linux-android]: cargo gives
+# target-specific rustflags precedence over [build] rustflags, and the device's
+# global ~/.cargo/config.toml already sets a target rustflags array. Arrays are
+# not merged, so the environment's mold linker flag is repeated here; dropping
+# it would silently change how every lane links.
+#
+# The paths are the Termux workspace identity of this project. On a host where
+# they do not match, rustc performs no substitution (harmless); the release
+# artifact is built here.
+[target.aarch64-linux-android]
+rustflags = [
+    "--remap-path-prefix=/data/data/com.termux/files/home/src/wc3rust=/build/wc3rust",
+    "--remap-path-prefix=/data/data/com.termux/files/home/.cargo=/build/cargo-registry",
+    "--remap-path-prefix=/data/data/com.termux/files/usr=/build/prefix",
+    "--remap-path-prefix=/data/data/com.termux/files/home=/build/home",
+    "-C",
+    "link-arg=-fuse-ld=mold",
+]

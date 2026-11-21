@@ -27,6 +27,9 @@ use wc3_input::lifecycle::{Effects, Lifecycle};
 use wc3_input::sdl::{event as sdl_event, hint as sdl_hint};
 use wc3_input::session::{InputEvent, InputSink, InputState};
 
+mod checkpoint_fs;
+use checkpoint_fs::SaveOutcome;
+
 const SDL_INIT_VIDEO: u32 = 0x0000_0020;
 const SDL_WINDOW_FULLSCREEN: u64 = 0x0000_0001;
 const SDL_WINDOW_RESIZABLE: u64 = 0x0000_0020;
@@ -89,6 +92,15 @@ impl SdlEvent {
 
     fn finger_id(&self) -> i64 {
         i64::from_ne_bytes(self.bytes[24..32].try_into().expect("8 bytes"))
+    }
+
+    /// `SDL_Event.timestamp`: nanoseconds since `SDL_Init`, set by the platform
+    /// backend when the event was queued (SDL3 `SDL_events.h`: `Uint64
+    /// timestamp; /**< In nanoseconds, populated using SDL_GetTicksNS() */`).
+    /// Measuring a tap against this clock is the only way to see the delay the
+    /// OS + SDL queue add before the host dequeues the finger event.
+    fn timestamp_ns(&self) -> u64 {
+        u64::from_ne_bytes(self.bytes[8..16].try_into().expect("8 bytes"))
     }
 
     fn finger_x(&self) -> f32 {
@@ -193,8 +205,17 @@ unsafe extern "C" fn on_sdl_event(_userdata: *mut c_void, event: *mut SdlEvent) 
             if !game.is_null() {
                 // SAFETY: the watcher runs on the main thread inside
                 // SDL_PumpEvents, so nothing else borrows the game.
-                save_checkpoint(unsafe { &*game });
-                WATCHER_SAVED.store(true, Ordering::Release);
+                let outcome = save_checkpoint(unsafe { &*game });
+                match &outcome {
+                    // I-008: a failed write must not look like a completed one.
+                    // Leave WATCHER_SAVED false so the loop retries this frame.
+                    SaveOutcome::Failed(error) => log(&format!(
+                        "GAME_CHECKPOINT_FAILED callback=background retry=1 err={error}"
+                    )),
+                    SaveOutcome::Saved | SaveOutcome::Skipped(_) => {
+                        WATCHER_SAVED.store(true, Ordering::Release);
+                    }
+                }
             }
         } else {
             PENDING_CHECKPOINT.store(true, Ordering::Release);
@@ -231,10 +252,18 @@ fn finger_pos(event: &SdlEvent, config: &wgpu::SurfaceConfiguration) -> Vec2 {
     )
 }
 
+/// `SDL_version` (`SDL_version.h`): three `Uint8` fields.
+#[repr(C)]
+struct SdlVersion {
+    major: u8,
+    minor: u8,
+    patch: u8,
+}
+
 unsafe extern "C" {
     fn SDL_Init(flags: u32) -> bool;
     fn SDL_Quit();
-    fn SDL_CreateWindow(
+    fn SDL_GetVersion(version: *mut SdlVersion);    fn SDL_CreateWindow(
         title: *const c_char,
         width: c_int,
         height: c_int,
@@ -282,6 +311,7 @@ unsafe extern "C" {
     fn SDL_AddEventWatch(filter: SdlEventFilter, userdata: *mut c_void) -> bool;
     fn SDL_RemoveEventWatch(filter: SdlEventFilter, userdata: *mut c_void);
     fn SDL_Delay(milliseconds: u32);
+    fn SDL_GetTicksNS() -> u64;
 }
 
 #[repr(C)]
@@ -758,30 +788,65 @@ fn configure_turnip() {
     }
 }
 
+/// The package this binary ships in. Only a fallback: the running process name
+/// is authoritative because the same sources are packaged under the project's
+/// package ids (`org.wc3rust.p0` today, `org.herofolends.p0` during the
+/// rename).
+const PACKAGE_NAME: &str = "org.wc3rust.p0";
+/// The other package id the project shipped under; its files directory may
+/// still hold the operator's data after a rename round-trip.
+const LEGACY_PACKAGE_NAME: &str = "org.herofolends.p0";
+
+/// `org.<name>` from `/proc/self/cmdline`.
+///
+/// The native thread runs inside the app process, so its cmdline is the package
+/// id (or `<pkg>:<service>`). Reading it removes every hardcoded path: the
+/// previous build hardcoded `org.wc3rust.p0`, which after the rename pointed
+/// `data_dir()` at another package's external directory and made the checkpoint
+/// write fail with EACCES.
+fn package_name() -> String {
+    if let Ok(raw) = std::fs::read("/proc/self/cmdline") {
+        if let Some(first) = raw.split(|byte| *byte == 0).next() {
+            if let Ok(name) = std::str::from_utf8(first) {
+                let name = name.trim();
+                let base = name.split(':').next().unwrap_or(name);
+                if base.contains('.') && !base.contains('/') {
+                    return base.to_string();
+                }
+            }
+        }
+    }
+    PACKAGE_NAME.to_string()
+}
+
 fn data_dir() -> PathBuf {
     // Writes to `/sdcard/Android/data/<pkg>/files` are denied to this process
     // by scoped storage (observed: GAME_CHECKPOINT_FAILED ... Permission denied
     // os error 13), so the app's internal files dir is the writable home. The
     // external dir stays reachable for `adb push` during setup.
-    let internal = PathBuf::from("/data/data/org.wc3rust.p0/files");
+    let package = package_name();
+    let internal = PathBuf::from(format!("/data/data/{package}/files"));
     if internal.is_dir() {
         internal
     } else {
-        PathBuf::from("/sdcard/Android/data/org.wc3rust.p0/files")
+        PathBuf::from(format!("/sdcard/Android/data/{package}/files"))
     }
 }
 
 /// Checkpoint paths that are actually writable on this device.
 fn checkpoint_paths() -> [PathBuf; 2] {
+    let package = package_name();
     [
         checkpoint_path(),
-        PathBuf::from("/sdcard/Android/data/org.wc3rust.p0/files/wc3rust-resume.sav"),
+        PathBuf::from(format!(
+            "/sdcard/Android/data/{package}/files/wc3rust-resume.sav"
+        )),
     ]
 }
 
 /// Every checkpoint a launch may resume from: the writable pair first, then the
-/// file a pre-rename install (`org.herofolends.p0`) left in the app files dir,
-/// so migrated game data resumes the operator's run instead of starting over.
+/// file a pre-rename install (`org.wc3rust.p0`) left in the app files dir, so
+/// migrated game data resumes the operator's run instead of starting over.
 fn resume_candidates() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = checkpoint_paths().into_iter().collect();
     if let Some(previous) = pre_rename_checkpoint() {
@@ -790,17 +855,100 @@ fn resume_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// The checkpoint file name this app used before the move to `org.wc3rust.p0`.
+/// The checkpoint files an earlier build left behind: the pre-rename *file
+/// name* in this package's own files dir (the data migration copied it there),
+/// plus the pre-rename package's dir for a device that never migrated.
 fn pre_rename_checkpoint() -> Option<PathBuf> {
-    let path = data_dir().join("herofolends-resume.sav");
-    path.is_file().then_some(path)
+    let own_old_name = data_dir().join("herofolends-resume.sav");
+    if own_old_name.is_file() {
+        return Some(own_old_name);
+    }
+    let legacy = PathBuf::from(format!(
+        "/data/data/{LEGACY_PACKAGE_NAME}/files/herofolends-resume.sav"
+    ));
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    let legacy_external = PathBuf::from(format!(
+        "/storage/emulated/0/Android/data/{LEGACY_PACKAGE_NAME}/files/herofolends-resume.sav"
+    ));
+    legacy_external.is_file().then_some(legacy_external)
+}
+
+/// Device QA selectors, one file per decision so an installer/probe can set
+/// exactly one thing:
+///
+/// * `files/map.select` — the map to load (a name `find_file` resolves, e.g.
+///   `Orc01.w3m`). Without it the host picks the campaign chapter when the
+///   operator's files contain one, then the melee arena.
+/// * `files/boot.select` — `battle` enters the already-spawned scenario
+///   (`Game::enter_battle`, the documented headless/probe entry point) instead
+///   of opening the retail glue screen. The product default stays `menu`.
+#[derive(Clone, Debug, Default)]
+struct DeviceSelectors {
+    map: Option<String>,
+    boot_battle: bool,
+    /// `files/boot.select` = `resume`: restore the autosave on launch. The
+    /// product default is the main menu (retail behaviour); the checkpoint is
+    /// reachable from the menu through CONTINUE.
+    boot_resume: bool,
+}
+
+impl DeviceSelectors {
+    fn read() -> Self {
+        let map = read_selector("map.select");
+        let boot = read_selector("boot.select");
+        let boot_battle = boot.as_deref().is_some_and(|boot| boot == "battle");
+        let boot_resume = boot.as_deref().is_some_and(|boot| boot == "resume");
+        if map.is_some() || boot_battle {
+            log(&format!(
+                "GAME_SELECT key=map value={:?}",
+                map.as_deref().unwrap_or("-")
+            ));
+            log(&format!("GAME_SELECT key=boot value={}", if boot_battle { "battle" } else { "menu" }));
+        }
+        Self {
+            map,
+            boot_battle,
+            boot_resume,
+        }
+    }
+}
+
+/// First non-empty, non-comment line of `files/<name>`.
+fn read_selector(name: &str) -> Option<String> {
+    let path = data_dir().join(name);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log(&format!(
+                    "GAME_SELECT_MISS {} ({})",
+                    path.display(),
+                    error.kind() as i32
+                ));
+            }
+            return None;
+        }
+    };
+    let value = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))?
+        .to_string();
+    log(&format!("GAME_SELECT_FILE path={} value={value:?}", path.display()));
+    Some(value)
 }
 
 fn find_file(names: &[&str]) -> Option<PathBuf> {
+    // `data_dir()` is this package's own files dir; the external dir is the
+    // pre-scoped-storage fallback the operator may have used to stage data.
     let bases = vec![
-        PathBuf::from("/data/data/org.wc3rust.p0/files"),
         data_dir(),
-        PathBuf::from("/storage/emulated/0/Android/data/org.wc3rust.p0/files"),
+        PathBuf::from(format!(
+            "/storage/emulated/0/Android/data/{}/files",
+            PACKAGE_NAME
+        )),
         PathBuf::from("/sdcard"),
     ];
     for base in bases {
@@ -841,40 +989,44 @@ fn find_file(names: &[&str]) -> Option<PathBuf> {
 // anything a previous build or another map wrote.
 
 fn checkpoint_path() -> PathBuf {
-    data_dir().join("wc3rust-resume.sav")
+    // The autosave sits in the same directory the menu's save slots use, so a
+    // cold start can offer it as CONTINUE instead of silently resuming a
+    // twenty-minute-old battle over the main menu.
+    data_dir().join("autosave.sav")
 }
 
 /// `wc3rust-resume.sav` -> `wc3rust-resume.sav.meta`.
 fn meta_path(save: &std::path::Path) -> PathBuf {
-    let mut name = save.as_os_str().to_owned();
-    name.push(".meta");
-    PathBuf::from(name)
+    checkpoint_fs::sidecar(save, ".meta")
 }
 
-fn read_meta(save: &std::path::Path) -> Option<CheckpointMeta> {
-    let text = std::fs::read_to_string(meta_path(save)).ok()?;
-    CheckpointMeta::decode(&text)
-}
-
-fn write_meta(save: &std::path::Path, meta: &CheckpointMeta) -> std::io::Result<()> {
-    std::fs::write(meta_path(save), meta.encode())
-}
-
-/// Identity of the map this process loaded (`Assets.debug` carries the
-/// `map=<path>` line). Computed once per process: the map is fixed at launch.
-fn cached_map_stamp(game: &Game) -> Option<&'static MapStamp> {
-    static STAMP: OnceLock<Option<MapStamp>> = OnceLock::new();
-    STAMP
-        .get_or_init(|| {
-            let path = game
-                .assets
-                .debug
-                .iter()
-                .find_map(|line| line.strip_prefix("map="))
-                .map(PathBuf::from)?;
-            MapStamp::of_file(&path)
-        })
-        .as_ref()
+/// Identity of the map currently loaded (`Assets.debug` carries the
+/// `map=<path>` line).
+///
+/// Recomputed when the map identity changes: the menu can replace the map in
+/// the same process, and the old once-per-process `OnceLock` stamped the
+/// autosave with the *first* map, so resume rejected it with a MapStamp
+/// mismatch and silently discarded the run (K-05). Hashing the same map again
+/// is avoided with a one-entry cache keyed by the path line.
+fn current_map_stamp(game: &Game) -> Option<MapStamp> {
+    static CACHE: Mutex<Option<(String, Option<MapStamp>)>> = Mutex::new(None);
+    let path = game
+        .assets
+        .debug
+        .iter()
+        .find_map(|line| line.strip_prefix("map="))
+        .map(str::to_owned)?;
+    if let Ok(cache) = CACHE.lock()
+        && let Some((cached_path, stamp)) = cache.as_ref()
+        && cached_path == &path
+    {
+        return stamp.clone();
+    }
+    let stamp = MapStamp::of_file(std::path::Path::new(&path));
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((path, stamp.clone()));
+    }
+    stamp
 }
 
 /// Mirrors `Game::phase` into the checkpoint phase vocabulary.
@@ -886,7 +1038,7 @@ fn phase_name(phase: wc3_game::game::Phase) -> &'static str {
     }
 }
 
-fn save_checkpoint(game: &Game) {
+fn save_checkpoint(game: &Game) -> SaveOutcome {
     // A finished match is not resumable: drop the stale checkpoint instead of
     // writing one that would resurrect a won/lost board on the next launch.
     if game.phase != wc3_game::game::Phase::Playing {
@@ -896,41 +1048,53 @@ fn save_checkpoint(game: &Game) {
             "GAME_CHECKPOINT_SKIPPED reason=finished phase={}",
             phase_name(game.phase)
         ));
-        return;
+        return SaveOutcome::Skipped("finished");
     }
-    if !game.melee {
-        return;
+    if !game.melee && game.engine.is_some() {
+        // K-04: a campaign sim is checkpointed like melee (units, economy,
+        // tick), but the JASS script world is not part of the sim payload. The
+        // meta records the real map/phase/tick; restore_checkpoint() parks the
+        // script so it cannot replay over the restored board.
+        log(&format!(
+            "GAME_CHECKPOINT campaign=1 tick={} note=sim-only",
+            game.sim.tick
+        ));
     }
-    let Some(stamp) = cached_map_stamp(game) else {
+    let Some(stamp) = current_map_stamp(game) else {
         log("GAME_CHECKPOINT_SKIPPED reason=no_map");
-        return;
+        return SaveOutcome::Skipped("no_map");
     };
     // The watcher and the lifecycle effect can both ask for a save on one
-    // background transition; an unchanged tick writes identical bytes, so the
-    // second request is dropped instead of storming the disk.
+    // background transition; an unchanged *successful* save writes identical
+    // bytes, so the second request is dropped instead of storming the disk.
+    // The tick is recorded only after a pair is committed: a failed write must
+    // leave the retry available (I-008).
     let tick = game.sim.tick;
-    if LAST_SAVED_TICK.swap(tick, Ordering::AcqRel) == tick {
+    if LAST_SAVED_TICK.load(Ordering::Acquire) == tick {
         log(&format!(
             "GAME_CHECKPOINT_SKIP reason=same_tick tick={tick}"
         ));
-        return;
+        return SaveOutcome::Skipped("same_tick");
     }
     let grid = (game.sim.grid.width, game.sim.grid.height);
     let meta = CheckpointMeta::new(
-        stamp.clone(),
+        stamp,
         grid,
         phase_name(game.phase),
         tick,
         game.sim.save_digest(),
     );
-    let mut last: Option<(PathBuf, String)> = None;
+    let meta_bytes = meta.encode();
+    let mut failures: Vec<String> = Vec::new();
+    let mut saved = false;
     for path in checkpoint_paths() {
-        match game.sim.save_to_path(&path) {
+        // I-008: pair = payload + meta through temp files, fsync, rename. The
+        // previous pair survives a failed write and the tick is not recorded.
+        match checkpoint_fs::publish_pair(&path, meta_bytes.as_bytes(), |tmp| {
+            game.sim.save_to_path(tmp).map_err(|error| format!("{error}"))
+        }) {
             Ok(()) => {
-                if let Err(error) = write_meta(&path, &meta) {
-                    last = Some((meta_path(&path), format!("{error}")));
-                    continue;
-                }
+                saved = true;
                 log(&format!(
                     "GAME_CHECKPOINT path={} digest={:016x} units={} tick={} map={} phase={}",
                     path.display(),
@@ -940,116 +1104,178 @@ fn save_checkpoint(game: &Game) {
                     meta.map.path,
                     meta.phase
                 ));
-                return;
             }
-            Err(error) => last = Some((path, format!("{error:?}"))),
+            Err(error) => {
+                failures.push(format!("{}: {error}", path.display()));
+                log(&format!(
+                    "GAME_CHECKPOINT_FAILED path={} err={error}",
+                    path.display()
+                ));
+            }
         }
     }
-    LAST_SAVED_TICK.store(u64::MAX, Ordering::Release);
-    if let Some((path, error)) = last {
-        log(&format!(
-            "GAME_CHECKPOINT_FAILED path={} err={error}",
-            path.display()
-        ));
+    if saved {
+        LAST_SAVED_TICK.store(tick, Ordering::Release);
+        SaveOutcome::Saved
+    } else {
+        SaveOutcome::Failed(failures.join("; "))
     }
 }
 
-fn restore_checkpoint(game: &mut Game) {
-    if !game.melee {
-        return;
-    }
-    // The first candidate that carries readable metadata wins; a save without
-    // metadata (written by an older build) is reported, never guessed at.
-    let mut found: Option<(PathBuf, CheckpointMeta)> = None;
-    let mut legacy: Option<PathBuf> = None;
-    for candidate in resume_candidates() {
-        if !candidate.is_file() {
-            continue;
-        }
-        match read_meta(&candidate) {
-            Some(meta) => {
-                found = Some((candidate, meta));
-                break;
-            }
-            None => {
-                legacy.get_or_insert(candidate);
-            }
-        }
-    }
-    let Some((path, meta)) = found else {
-        if let Some(path) = legacy {
-            log(&format!(
-                "GAME_RESUME_REJECT path={} reason=missing_meta",
-                path.display()
-            ));
-        }
-        return;
-    };
-    let stamp = cached_map_stamp(game).cloned();
-    if let Err(reject) = meta.verdict(stamp.as_ref(), (game.sim.grid.width, game.sim.grid.height)) {
-        if reject == ResumeReject::Finished {
-            // Never resurrect a finished match: remove the stale pair.
-            clear_checkpoint();
-        }
+/// Move a legacy checkpoint under the name the menu can load.
+///
+/// I-007: the old build was installed under a different applicationId
+/// (`org.herofolends.p0`). Android does not share private data between
+/// applicationIds and scoped storage hides the other app's external dir, so
+/// "look in `data_dir()`" is *this* package, not the old sandbox. The sources
+/// below are ordered by what this process can actually read:
+///   1. the pre-rename file names in this package's own files dir (an earlier
+///      build of the same package wrote them),
+///   2. the old package's external files dir (readable only when the platform
+///      still permits it),
+///   3. the old package's private sandbox (denied without root; reported as
+///      unreadable, never as "no checkpoint").
+/// The legacy sandbox state is logged explicitly so a failed migration cannot
+/// look like "the old install had no save".
+fn migrate_legacy_checkpoint() {
+    let target = checkpoint_path();
+    let legacy = LEGACY_PACKAGE_NAME;
+    let sources: Vec<PathBuf> = vec![
+        data_dir().join("wc3rust-resume.sav"),
+        data_dir().join("herofolends-resume.sav"),
+        PathBuf::from(format!(
+            "/storage/emulated/0/Android/data/{legacy}/files/wc3rust-resume.sav"
+        )),
+        PathBuf::from(format!(
+            "/storage/emulated/0/Android/data/{legacy}/files/herofolends-resume.sav"
+        )),
+        // Another applicationId's private data: expected EACCES, kept last so
+        // a readable channel wins first.
+        PathBuf::from(format!("/data/data/{legacy}/files/wc3rust-resume.sav")),
+        PathBuf::from(format!("/data/data/{legacy}/files/herofolends-resume.sav")),
+    ];
+    let mut sink = |line: &str| log(line);
+    if let Some(source) = checkpoint_fs::migrate_pair(&target, &sources, &mut sink) {
         log(&format!(
-            "GAME_RESUME_REJECT path={} reason={} saved_phase={} saved_grid={}x{} current_grid={}x{} saved_map={}",
-            path.display(),
-            reject.reason(),
-            meta.phase,
-            meta.grid.0,
-            meta.grid.1,
-            game.sim.grid.width,
-            game.sim.grid.height,
-            meta.map.path
+            "GAME_CHECKPOINT_MIGRATION source={} target={}",
+            source.display(),
+            target.display()
         ));
-        return;
     }
-    match wc3_sim::Sim::from_save_path(&path) {
-        Ok(sim) => {
-            if !meta.matches(sim.tick, sim.save_digest()) {
-                log(&format!(
-                    "GAME_RESUME_REJECT path={} reason=digest saved_tick={} loaded_tick={} saved_digest={:016x} loaded_digest={:016x}",
-                    path.display(),
-                    meta.tick,
-                    sim.tick,
-                    meta.digest,
-                    sim.save_digest()
-                ));
-                return;
-            }
-            game.sim = sim;
-            // The phase is restored as `Playing` explicitly: `reset_scenario`
-            // already produced it, and a rejected phase cannot reach here.
-            game.phase = wc3_game::game::Phase::Playing;
-            LAST_SAVED_TICK.store(game.sim.tick, Ordering::Release);
-            log(&format!(
-                "GAME_RESUME path={} units={} tick={} digest={:016x} map={} phase={}",
-                path.display(),
-                game.sim.units.iter().filter(|unit| unit.alive).count(),
-                game.sim.tick,
-                game.sim.save_digest(),
-                meta.map.path,
-                phase_name(game.phase)
-            ));
-        }
+    let sandbox = PathBuf::from(format!("/data/data/{legacy}/files"));
+    match std::fs::read_dir(&sandbox) {
+        Ok(_) => log(&format!(
+            "GAME_CHECKPOINT_MIGRATE_LEGACY_SANDBOX path={} access=readable",
+            sandbox.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => log(&format!(
+            "GAME_CHECKPOINT_MIGRATE_LEGACY_SANDBOX path={} access=denied err={error} note=android-sandbox-not-shared",
+            sandbox.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => log(&format!(
+            "GAME_CHECKPOINT_MIGRATE_LEGACY_SANDBOX path={} access=absent",
+            sandbox.display()
+        )),
         Err(error) => log(&format!(
-            "GAME_RESUME_FAILED path={} err={error:?}",
-            path.display()
+            "GAME_CHECKPOINT_MIGRATE_LEGACY_SANDBOX path={} access=error err={error}",
+            sandbox.display()
         )),
     }
 }
 
+fn restore_checkpoint(game: &mut Game) {
+    // I-006: every candidate is a transaction — metadata, verdict, digest,
+    // deserialize — and a corrupt/stale file moves to the next candidate
+    // instead of aborting the restore. Each rejection is logged with its path
+    // and reason; a fallback is never overwritten.
+    let candidates = resume_candidates();
+    let stamp = current_map_stamp(game);
+    let grid = (game.sim.grid.width, game.sim.grid.height);
+
+    let read_meta = |path: &std::path::Path| -> Result<CheckpointMeta, String> {
+        match std::fs::read_to_string(meta_path(path)) {
+            Ok(text) => CheckpointMeta::decode(&text).ok_or_else(|| "meta_unreadable".to_string()),
+            Err(error) => Err(format!("missing_meta ({})", error.kind() as i32)),
+        }
+    };
+
+    let mut accept = |path: &std::path::Path, meta: &CheckpointMeta| -> Result<u64, String> {
+        if let Err(reject) = meta.verdict(stamp.as_ref(), grid) {
+            if reject == ResumeReject::Finished {
+                // Never resurrect a finished match: remove this pair only.
+                clear_candidate(path);
+            }
+            return Err(format!(
+                "{} saved_phase={} saved_grid={}x{} current_grid={}x{} saved_map={}",
+                reject.reason(),
+                meta.phase,
+                meta.grid.0,
+                meta.grid.1,
+                grid.0,
+                grid.1,
+                meta.map.path
+            ));
+        }
+        let sim = wc3_sim::Sim::from_save_path(path)
+            .map_err(|error| format!("deserialize: {error}"))?;
+        if !meta.matches(sim.tick, sim.save_digest()) {
+            return Err(format!(
+                "digest saved_tick={} loaded_tick={} saved_digest={:016x} loaded_digest={:016x}",
+                meta.tick,
+                sim.tick,
+                meta.digest,
+                sim.save_digest()
+            ));
+        }
+        game.sim = sim;
+        // The phase is restored as `Playing` explicitly: `reset_scenario`
+        // already produced it, and a rejected phase cannot reach here.
+        game.phase = wc3_game::game::Phase::Playing;
+        // K-04: a campaign chapter boots its JASS world in `Game::new`; the
+        // script state is not in the sim payload, and leaving the fresh engine
+        // attached would replay `war3map.j` over the restored board on the next
+        // tick. Park it (and say so in the log) instead of resuming a
+        // desynchronised script; the board itself is the saved run.
+        let engine_parked = game.engine.take().is_some();
+        let bridge_parked = game.bridge.take().is_some();
+        LAST_SAVED_TICK.store(game.sim.tick, Ordering::Release);
+        log(&format!(
+            "GAME_RESUME path={} units={} tick={} digest={:016x} map={} phase={} script={}",
+            path.display(),
+            game.sim.units.iter().filter(|unit| unit.alive).count(),
+            game.sim.tick,
+            game.sim.save_digest(),
+            meta.map.path,
+            phase_name(game.phase),
+            if engine_parked || bridge_parked {
+                "parked-campaign"
+            } else {
+                "none"
+            }
+        ));
+        Ok(game.sim.tick)
+    };
+
+    let mut sink = |line: &str| log(line);
+    let _restored = checkpoint_fs::restore_candidates(&candidates, read_meta, &mut accept, &mut sink);
+}
+
 fn clear_checkpoint() {
     for path in resume_candidates() {
-        for file in [path.clone(), meta_path(&path)] {
-            match std::fs::remove_file(&file) {
-                Ok(()) => log(&format!("GAME_CHECKPOINT_CLEARED path={}", file.display())),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => log(&format!(
-                    "GAME_CHECKPOINT_CLEAR_FAILED path={} err={error}",
-                    file.display()
-                )),
-            }
+        clear_candidate(&path);
+    }
+}
+
+/// Remove one checkpoint pair (payload + `.meta`), logging each file.
+fn clear_candidate(path: &std::path::Path) {
+    for file in [path.to_path_buf(), meta_path(path)] {
+        match std::fs::remove_file(&file) {
+            Ok(()) => log(&format!("GAME_CHECKPOINT_CLEARED path={}", file.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => log(&format!(
+                "GAME_CHECKPOINT_CLEAR_FAILED path={} err={error}",
+                file.display()
+            )),
         }
     }
 }
@@ -1065,6 +1291,9 @@ struct GameSink<'a> {
 
 impl InputSink for GameSink<'_> {
     fn pointer_down(&mut self, at: Vec2) {
+        // Device QA: the platform can deliver one gesture twice; this line names
+        // the source of each press so the mirror is attributed, not guessed.
+        log(&format!("GAME_INPUT src=pointer_down x={:.0} y={:.0}", at.x, at.y));
         self.game.pointer_down(at);
     }
 
@@ -1121,6 +1350,78 @@ impl InputSink for GameSink<'_> {
     fn cycle_subgroups(&mut self, reverse: bool) {
         log(&format!("GAME_TAB reverse={reverse}"));
         self.game.cycle_subgroups(reverse);
+    }
+}
+
+/// Tap → order latency probe.
+///
+/// A tap ends in a game-layer `INTENT ...` line ("the order this tap produced").
+/// The finger event carries the OS timestamp (`SdlEvent::timestamp_ns`), so
+/// measuring it against `SDL_GetTicksNS` when the order is drained reports the
+/// whole input pipeline — OS → SDL queue → host dequeue → gesture router →
+/// order — without inventing a clock of its own.
+///
+/// Samples are logged as `GAME_TAP_LATENCY`; the run summary
+/// (`GAME_TAP_LATENCY_SUMMARY`) carries count/mean/max so a 5-minute session
+/// yields one number even after logcat rotates.
+#[derive(Default)]
+struct TapLatency {
+    /// The outstanding pointer-down: SDL event timestamp + screen point.
+    pending: Option<(u64, Vec2)>,
+    samples: u32,
+    total_ms: f64,
+    max_ms: f64,
+    /// First tap of the process is reported separately: it is the one the
+    /// mission's "first tap after a cold start" check reads.
+    first: Option<f64>,
+}
+
+impl TapLatency {
+    fn down(&mut self, event_ns: u64, at: Vec2) {
+        self.pending = Some((event_ns, at));
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+    }
+
+    /// Feed one game log line; an `INTENT` closes the outstanding tap.
+    fn note(&mut self, line: &str) {
+        if !line.starts_with("INTENT ") {
+            return;
+        }
+        let Some((event_ns, at)) = self.pending.take() else {
+            log(&format!(
+                "GAME_INTENT_NO_TAP order={line} (order from a script, not a touch)"
+            ));
+            return;
+        };
+        // SAFETY: SDL is initialised for the whole run.
+        let now_ns = unsafe { SDL_GetTicksNS() };
+        let total_ms = now_ns.saturating_sub(event_ns) as f64 / 1e6;
+        self.samples += 1;
+        self.total_ms += total_ms;
+        self.max_ms = self.max_ms.max(total_ms);
+        if self.first.is_none() {
+            self.first = Some(total_ms);
+        }
+        log(&format!(
+            "GAME_TAP_LATENCY ms={total_ms:.1} point=({:.0},{:.0}) order={line}",
+            at.x, at.y
+        ));
+    }
+
+    fn summary(&self) -> String {
+        if self.samples == 0 {
+            return "GAME_TAP_LATENCY_SUMMARY taps=0".to_string();
+        }
+        format!(
+            "GAME_TAP_LATENCY_SUMMARY taps={} mean_ms={:.1} max_ms={:.1} first_ms={:.1}",
+            self.samples,
+            self.total_ms / self.samples as f64,
+            self.max_ms,
+            self.first.unwrap_or(0.0)
+        )
     }
 }
 
@@ -1235,7 +1536,68 @@ fn recover_surface(
     Ok(())
 }
 
+/// Failures after which a surface problem is treated as fatal.
+///
+/// A resume can briefly publish a NULL `ANativeWindow` (SDL delivers
+/// `DID_ENTER_FOREGROUND` before the window property is available) and a
+/// `configure` can fail transiently. The old code turned one such failure into
+/// `GAME_FATAL` and exited the match (K-06). 30 attempts with backoff is about
+/// 30 s, long enough for an activity transition, short enough to surface a
+/// genuinely dead driver.
+const SURFACE_RETRY_LIMIT: u32 = 30;
+
+/// Backoff state for surface recovery.
+struct SurfaceRetry {
+    failures: u32,
+    retry_at: Instant,
+}
+
+impl SurfaceRetry {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            retry_at: Instant::now(),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        Instant::now() >= self.retry_at
+    }
+
+    fn recovered(&mut self) {
+        if self.failures > 0 {
+            log(&format!("P0_SURFACE_RETRY_OK failures={}", self.failures));
+        }
+        self.failures = 0;
+    }
+
+    /// Record one failed attempt. Returns `Err` only when the retry budget is
+    /// exhausted; a transient failure schedules the next attempt instead of
+    /// terminating the game.
+    fn failed(&mut self, reason: &str, error: &str) -> Result<(), String> {
+        self.failures += 1;
+        let delay = Duration::from_millis((250u64 << self.failures.min(3)).min(2000));
+        self.retry_at = Instant::now() + delay;
+        log(&format!(
+            "P0_SURFACE_RETRY reason={reason} failures={} retry_ms={} err={error}",
+            self.failures,
+            delay.as_millis()
+        ));
+        if self.failures >= SURFACE_RETRY_LIMIT {
+            return Err(format!(
+                "surface recovery failed {SURFACE_RETRY_LIMIT} times (last: {error})"
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn run() -> Result<(), String> {
+    let started = Instant::now();
+    // Device QA selectors are read before anything is loaded so the log always
+    // states which map/boot mode this process will use (`GAME_SELECT`).
+    let selectors = DeviceSelectors::read();
+    migrate_legacy_checkpoint();
     // Hints that must be set before SDL_Init (SDL reads them when the Android
     // backend initialises):
     //  - BLOCK_ON_PAUSE=1 (default, set explicitly): SDL blocks native pumping
@@ -1275,6 +1637,23 @@ fn run() -> Result<(), String> {
         .to_string_lossy()
         .into_owned();
     log(&format!("P0_SDL_INIT video_driver={driver}"));
+    // K-16: the manual SDL event offsets in this file assume SDL 3.5.0. Record
+    // the runtime version so a different prebuilt libSDL3.so is visible in the
+    // log instead of being a comment.
+    let mut version = SdlVersion {
+        major: 0,
+        minor: 0,
+        patch: 0,
+    };
+    unsafe { SDL_GetVersion(&mut version) };
+    log(&format!(
+        "GAME_SDL version={}.{}.{}",
+        version.major, version.minor, version.patch
+    ));
+    log(&format!(
+        "GAME_TIMING stage=sdl ms={}",
+        started.elapsed().as_millis()
+    ));
 
     // SAFETY: title is static and NUL terminated.
     let window = unsafe {
@@ -1390,28 +1769,49 @@ fn run() -> Result<(), String> {
         "GAME_SURFACE {}x{} format={format:?} present={present_mode:?}",
         config.width, config.height
     ));
+    log(&format!(
+        "GAME_TIMING stage=surface ms={}",
+        started.elapsed().as_millis()
+    ));
 
     // ------------------------------------------------------------ game data
     // Library diagnostics (GAME_SKIN / GAME_TERRAIN_TILES / GAME_DOODADS) go
     // through the app's android logger; SDL does not mirror library stdio.
     wc3_game::set_log_sink(log);
     let mpq = find_file(&["War3.mpq", "war3.mpq"]);
-    // P0 world: the scenario runs the Orc-vs-Human melee arena on a real map.
-    // Ready 1v1 melee map from the library first; campaign maps only as a
-    // fallback when the operator has not installed a melee map.
-    let map = find_file(&[
-        "Melee.w3x",
-        "Maps/Melee.w3x",
-        "(2)Ponds_v1.4.w3x",
-        "Orc01.w3m",
-        "Maps/Campaign/Orc01.w3m",
-        "Human04.w3m",
-        "Maps/Campaign/Human04.w3m",
-    ]);
+    // The acceptance basis is the first orc campaign chapter, so a staged
+    // campaign map wins over the melee arena; `files/map.select` overrides both
+    // and the melee map stays the fallback when no campaign chapter is present.
+    let selected_by = if selectors.map.is_some() {
+        "files/map.select"
+    } else {
+        "default"
+    };
+    let map = selectors
+        .map
+        .as_deref()
+        .and_then(|name| find_file(&[name]))
+        .or_else(|| {
+            find_file(&[
+                "Orc01.w3m",
+                "Maps/Campaign/Orc01.w3m",
+                "Melee.w3x",
+                "Maps/Melee.w3x",
+                "(2)Ponds_v1.4.w3x",
+                "Human04.w3m",
+                "Maps/Campaign/Human04.w3m",
+            ])
+        });
     log(&format!(
         "GAME_DATA mpq={:?} map={:?}",
         mpq.as_ref().map(|p| p.display().to_string()),
         map.as_ref().map(|p| p.display().to_string())
+    ));
+    log(&format!(
+        "GAME_MAP_SELECT source={selected_by} name={:?}",
+        map.as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
     ));
     let assets = Assets::load(mpq.as_deref(), map.as_deref());
     for line in assets.debug.iter().take(12) {
@@ -1430,13 +1830,38 @@ fn run() -> Result<(), String> {
         assets.terrain_atlas.is_some(),
         assets.minimap.is_some()
     ));
+    log(&format!(
+        "GAME_TIMING stage=assets ms={}",
+        started.elapsed().as_millis()
+    ));
 
     let mut game = Game::new(assets, 0xC0FFEE);
+    // The pause-menu save slots must live in the app's own files dir: the
+    // default (`$HOME/.local/share/wc3rust/saves`) does not exist on Android,
+    // so a saved game was never loadable from the menu.
+    game.set_save_dir(data_dir());
     let mut last_metrics: Option<WindowMetrics> = None;
     // First frame: the same snapshot path every resize/density/inset change
     // takes, so the starting HUD is not built from the 2.0 fallback density.
     apply_window_metrics(&mut game, window, &mut last_metrics);
-    restore_checkpoint(&mut game);
+    if selectors.boot_resume {
+        restore_checkpoint(&mut game);
+    } else if resume_candidates().iter().any(|path| path.is_file()) {
+        // Never drop the player into an old battle: the checkpoint is offered
+        // as CONTINUE on the main menu instead.
+        log("GAME_RESUME_SKIP reason=menu-first");
+    }
+    if selectors.boot_battle {
+        // Documented headless/probe entry point (`Game::enter_battle`): the
+        // scenario `Game::new` spawned starts ticking from the first frame
+        // instead of waiting for a tap on the glue screen.
+        game.enter_battle();
+        log("GAME_BOOT battle=1 source=files/boot.select");
+    }
+    log(&format!(
+        "GAME_TIMING stage=game ms={}",
+        started.elapsed().as_millis()
+    ));
     // The pointer is cleared before the game is dropped and is only
     // dereferenced by the event watcher when SDL_IsMainThread() is true.
     GAME_FOR_CHECKPOINT.store(&mut game as *mut Game, Ordering::Release);
@@ -1485,8 +1910,10 @@ fn run() -> Result<(), String> {
     let mut suspended = false;
     let mut clean_exit = false;
     let mut needs_surface = false;
+    let mut surface_retry = SurfaceRetry::new();
     let mut exposed = false;
     let mut input_events: Vec<InputEvent> = Vec::with_capacity(32);
+    let mut taps = TapLatency::default();
     let mut frames = 0u64;
     let mut last = Instant::now();
     let mut last_frame_at = Instant::now();
@@ -1537,9 +1964,11 @@ fn run() -> Result<(), String> {
                     needs_safe_area = true;
                 }
                 SDL_EVENT_FINGER_DOWN => {
+                    let at = finger_pos(&event, &config);
+                    taps.down(event.timestamp_ns(), at);
                     input_events.push(InputEvent::FingerDown {
                         id: event.finger_id(),
-                        pos: finger_pos(&event, &config),
+                        pos: at,
                     });
                 }
                 SDL_EVENT_FINGER_MOTION => {
@@ -1558,16 +1987,25 @@ fn run() -> Result<(), String> {
                     // Android ACTION_CANCEL -> SDL_EVENT_FINGER_CANCELED
                     // (donor src/video/android/SDL_androidtouch.c:102-103).
                     // A canceled finger must never complete a tap/order.
+                    taps.cancel();
                     input_events.push(InputEvent::FingerCancel {
                         id: event.finger_id(),
                         pos: finger_pos(&event, &config),
                     });
                 }
+                // Android: SDL mirrors every finger into a synthetic mouse
+                // button pair (measured: one `input tap` produced two complete
+                // DOWN/UP gestures 4 ms apart, so a menu entry activated twice
+                // and a map loaded twice). Touch is the input device here; the
+                // desktop path below keeps real mice working.
+                SDL_EVENT_MOUSE_BUTTON_DOWN if cfg!(target_os = "android") => {}
+                SDL_EVENT_MOUSE_BUTTON_UP if cfg!(target_os = "android") => {}
+                SDL_EVENT_MOUSE_MOTION if cfg!(target_os = "android") => {}
                 SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if event.mouse_which() != u32::MAX && event.mouse_down() {
-                        input_events.push(InputEvent::MouseDown {
-                            pos: Vec2::new(event.mouse_x(), event.mouse_y()),
-                        });
+                        let at = Vec2::new(event.mouse_x(), event.mouse_y());
+                        taps.down(event.timestamp_ns(), at);
+                        input_events.push(InputEvent::MouseDown { pos: at });
                     }
                 }
                 SDL_EVENT_MOUSE_BUTTON_UP => {
@@ -1624,6 +2062,7 @@ fn run() -> Result<(), String> {
             }
             if suspended {
                 input_events.clear();
+                taps.cancel();
             }
             for input_event in input_events.drain(..) {
                 input.apply(&mut sink, input_event);
@@ -1632,11 +2071,16 @@ fn run() -> Result<(), String> {
         if effects.save_checkpoint || PENDING_CHECKPOINT.swap(false, Ordering::AcqRel) {
             // The watcher writes the checkpoint synchronously on the pause
             // event (before SDL blocks); only save here if it could not (e.g.
-            // a lifecycle event before the game was registered, or a callback
-            // that arrived on a non-main thread).
+            // a lifecycle event before the game was registered, a callback that
+            // arrived on a non-main thread, or a failed write - I-008).
             let watcher_saved = WATCHER_SAVED.swap(false, Ordering::AcqRel);
             if !watcher_saved {
-                save_checkpoint(&game);
+                let outcome = save_checkpoint(&game);
+                if let SaveOutcome::Failed(error) = &outcome {
+                    log(&format!(
+                        "GAME_CHECKPOINT_FAILED loop=1 retry=0 err={error}"
+                    ));
+                }
             }
         } else {
             WATCHER_SAVED.store(false, Ordering::Release);
@@ -1708,7 +2152,14 @@ fn run() -> Result<(), String> {
             let height = (height.max(1) as u32).max(1);
             let reason = if needs_surface { "lifecycle" } else { "resize" };
             if needs_surface || width != config.width || height != config.height {
-                recover_surface(
+                if !surface_retry.ready() {
+                    // A previous attempt failed: wait out the backoff instead
+                    // of hammering a NULL/detached window every frame.
+                    needs_surface = true;
+                    unsafe { SDL_Delay(50) };
+                    continue;
+                }
+                match recover_surface(
                     &instance,
                     window,
                     &mut native_window,
@@ -1718,23 +2169,38 @@ fn run() -> Result<(), String> {
                     width,
                     height,
                     reason,
-                )
-                .map_err(|error| {
-                    log(&format!("P0_SURFACE_FAILED reason={reason} err={error}"));
-                    error
-                })?;
-                renderer.resize(&device, config.width, config.height);
-                apply_window_metrics(&mut game, window, &mut last_metrics);
-                log(&format!(
-                    "GAME_SURFACE_RESIZED {}x{} reason={reason} selection={} phase={:?} tick={}",
-                    config.width,
-                    config.height,
-                    game.selection.len(),
-                    game.phase,
-                    game.sim.tick
-                ));
+                ) {
+                    Ok(()) => {
+                        surface_retry.recovered();
+                        renderer.resize(&device, config.width, config.height);
+                        apply_window_metrics(&mut game, window, &mut last_metrics);
+                        log(&format!(
+                            "GAME_SURFACE_RESIZED {}x{} reason={reason} selection={} phase={:?} tick={}",
+                            config.width,
+                            config.height,
+                            game.selection.len(),
+                            game.phase,
+                            game.sim.tick
+                        ));
+                    }
+                    Err(error) => {
+                        log(&format!("P0_SURFACE_FAILED reason={reason} err={error}"));
+                        surface_retry.failed(reason, &error)?;
+                        // Keep the match alive: skip rendering for this frame
+                        // and retry on the next one. The sim still advances.
+                        needs_surface = true;
+                        last_frame_at = Instant::now();
+                        game.update(1.0 / 60.0);
+                        for line in game.take_log() {
+                            taps.note(&line);
+                            log(&line);
+                        }
+                        continue;
+                    }
+                }
             }
             needs_surface = false;
+            needs_resize = false;
         }
         if needs_safe_area || frames % 30 == 0 {
             apply_window_metrics(&mut game, window, &mut last_metrics);
@@ -1750,7 +2216,14 @@ fn run() -> Result<(), String> {
             continue;
         }
 
-        let live = surface.as_ref().ok_or("surface missing")?;
+        let Some(live) = surface.as_ref() else {
+            // A failed recovery left no surface; retry instead of returning a
+            // fatal error from the render path.
+            surface_retry.failed("missing", "surface is None while a frame is due")?;
+            needs_surface = true;
+            unsafe { SDL_Delay(50) };
+            continue;
+        };
         let frame = match live.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => {
                 last_frame_at = Instant::now();
@@ -1766,14 +2239,14 @@ fn run() -> Result<(), String> {
                 // just times out forever and the loop spins while the sim
                 // stays frozen (observed: `tick=0 fps=0` for minutes). Rebuild
                 // the surface from the live window instead of waiting.
-                if last_frame_at.elapsed() >= Duration::from_millis(1500) {
+                if last_frame_at.elapsed() >= Duration::from_millis(1500) && surface_retry.ready() {
                     let mut width = 0i32;
                     let mut height = 0i32;
                     // SAFETY: window is live; out-pointers are valid.
                     unsafe { SDL_GetWindowSizeInPixels(window, &mut width, &mut height) };
                     let width = (width.max(1) as u32).max(1);
                     let height = (height.max(1) as u32).max(1);
-                    recover_surface(
+                    match recover_surface(
                         &instance,
                         window,
                         &mut native_window,
@@ -1783,21 +2256,28 @@ fn run() -> Result<(), String> {
                         width,
                         height,
                         "watchdog",
-                    )
-                    .map_err(|error| {
-                        log(&format!("P0_SURFACE_FAILED reason=watchdog err={error}"));
-                        error
-                    })?;
-                    renderer.resize(&device, config.width, config.height);
-                    apply_window_metrics(&mut game, window, &mut last_metrics);
-                    last_frame_at = Instant::now();
-                    log("P0_SURFACE_WATCHDOG recreated after 1.5 s without a frame");
+                    ) {
+                        Ok(()) => {
+                            surface_retry.recovered();
+                            renderer.resize(&device, config.width, config.height);
+                            apply_window_metrics(&mut game, window, &mut last_metrics);
+                            last_frame_at = Instant::now();
+                            log("P0_SURFACE_WATCHDOG recreated after 1.5 s without a frame");
+                        }
+                        Err(error) => {
+                            log(&format!("P0_SURFACE_FAILED reason=watchdog err={error}"));
+                            surface_retry.failed("watchdog", &error)?;
+                            needs_surface = true;
+                            last_frame_at = Instant::now();
+                        }
+                    }
                 }
                 // A starved queue must not stop the match: the acquire timeout
                 // (2 s, third_party/wgpu-hal) returns here, so advance the sim
                 // while the surface is being rebuilt.
                 game.update(1.0 / 60.0);
                 for line in game.take_log() {
+                    taps.note(&line);
                     log(&line);
                 }
                 continue;
@@ -1809,7 +2289,12 @@ fn run() -> Result<(), String> {
                 unsafe { SDL_GetWindowSizeInPixels(window, &mut width, &mut height) };
                 let width = (width.max(1) as u32).max(1);
                 let height = (height.max(1) as u32).max(1);
-                recover_surface(
+                if !surface_retry.ready() {
+                    needs_surface = true;
+                    unsafe { SDL_Delay(50) };
+                    continue;
+                }
+                match recover_surface(
                     &instance,
                     window,
                     &mut native_window,
@@ -1819,13 +2304,24 @@ fn run() -> Result<(), String> {
                     width,
                     height,
                     "lost",
-                )
-                .map_err(|error| {
-                    log(&format!("P0_SURFACE_FAILED reason=lost err={error}"));
-                    error
-                })?;
-                renderer.resize(&device, config.width, config.height);
-                apply_window_metrics(&mut game, window, &mut last_metrics);
+                ) {
+                    Ok(()) => {
+                        surface_retry.recovered();
+                        renderer.resize(&device, config.width, config.height);
+                        apply_window_metrics(&mut game, window, &mut last_metrics);
+                    }
+                    Err(error) => {
+                        log(&format!("P0_SURFACE_FAILED reason=lost err={error}"));
+                        surface_retry.failed("lost", &error)?;
+                        needs_surface = true;
+                        last_frame_at = Instant::now();
+                        game.update(1.0 / 60.0);
+                        for line in game.take_log() {
+                            taps.note(&line);
+                            log(&line);
+                        }
+                    }
+                }
                 continue;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -1850,6 +2346,7 @@ fn run() -> Result<(), String> {
             haptics::play(cue.duration_ms());
         }
         for line in game.take_log() {
+            taps.note(&line);
             log(&line);
         }
         let scene = game.scene();
@@ -1891,6 +2388,12 @@ fn run() -> Result<(), String> {
                 scene.units.len(),
                 game.phase
             ));
+            // Cold start = process entry (SDL_main) to the first presented
+            // frame, broken down by the `GAME_TIMING stage=…` lines above.
+            log(&format!(
+                "GAME_COLD_START first_frame_ms={} stage=first_frame",
+                started.elapsed().as_millis()
+            ));
         }
         if status_at.elapsed() >= Duration::from_secs(2) {
             status_at = Instant::now();
@@ -1925,6 +2428,7 @@ fn run() -> Result<(), String> {
         "GAME_CLOSED frames={frames} clean={clean_exit} phase={:?} suspended={suspended}",
         lifecycle.phase()
     ));
+    log(&taps.summary());
     drop(renderer);
     drop(surface);
     // SAFETY: window is live and owned here.
@@ -1943,6 +2447,12 @@ pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
             c"SDL_ORIENTATIONS".as_ptr(),
             c"LandscapeLeft LandscapeRight".as_ptr(),
         );
+        // Touch must not be mirrored into synthetic mouse events: SDL emits a
+        // MOUSE_BUTTON_DOWN/UP pair for every finger, and the host routes both,
+        // so one tap activated a menu entry twice (evidence: two identical
+        // `GAME_MENU action=custom-game id=18` lines 3 ms apart from one
+        // `input tap`). Real mice (dock, USB, Chromebook) still deliver events.
+        SDL_SetHint(c"SDL_TOUCH_MOUSE_EVENTS".as_ptr(), c"0".as_ptr());
     }
     configure_turnip();
     match run() {

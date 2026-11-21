@@ -1377,6 +1377,15 @@ name = "wc3-guest"
 version = "0.1.0"
 
 [[package]]
+name = "wc3-hud-pack"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "serde_json",
+ "wc3-game",
+]
+
+[[package]]
 name = "wc3-input"
 version = "0.1.0"
 dependencies = [
@@ -1422,6 +1431,7 @@ dependencies = [
  "sha2",
  "wc3-data",
  "wc3-formats",
+ "wc3-guest",
  "wc3-mpq",
 ]
 

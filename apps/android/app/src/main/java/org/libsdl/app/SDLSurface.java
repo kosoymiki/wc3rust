@@ -395,7 +395,19 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             }
 
             if (Build.VERSION.SDK_INT >= 36 /* Android 16 */ && mDisplay.isHdrSdrRatioAvailable()) {
-                float highest = mDisplay.getHighestHdrSdrRatio();
+                // Display.getHighestHdrSdrRatio() is API 36; this module is compiled
+                // against android-35, so resolve it reflectively. On API 35 the
+                // reflective call simply fails and the luminance estimate stands.
+                float highest = -1.0f;
+                try {
+                    java.lang.reflect.Method m = Display.class.getMethod("getHighestHdrSdrRatio");
+                    Object v = m.invoke(mDisplay);
+                    if (v instanceof Number) {
+                        highest = ((Number) v).floatValue();
+                    }
+                } catch (Exception noApi) {
+                    highest = -1.0f;
+                }
                 if (highest > 1.0f) {
                     if (headroom > 1.0f) {
                         // Use the minimum of our estimate and the highest possible headroom
