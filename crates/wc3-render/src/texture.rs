@@ -94,7 +94,17 @@ impl TextureImage {
     /// Returns the (possibly downsampled) image and whether it was resized.
     /// Sizes snap to powers of two because every WC3 texture and every mip chain
     /// is pow2, and non-pow2 mip levels waste a level on odd dimensions.
+    ///
+    /// Colour data is treated as sRGB-encoded (the default); use
+    /// [`Self::fit_for`] with [`Role::Coverage`] for alpha/coverage sheets,
+    /// which must average linearly (WC3-I-018).
     pub fn fit(&self, max: u32) -> (Self, bool) {
+        self.fit_for(max, Role::Color)
+    }
+
+    /// [`Self::fit`] with the texture's role: colour averages in linear light,
+    /// coverage averages raw bytes.
+    pub fn fit_for(&self, max: u32, role: Role) -> (Self, bool) {
         let max = max.max(1);
         let width = self.width.max(1);
         let height = self.height.max(1);
@@ -103,7 +113,15 @@ impl TextureImage {
         }
         let target_w = pow2_at_most(width.min(max));
         let target_h = pow2_at_most(height.min(max));
-        (resize_box(self, target_w, target_h), true)
+        let resized = match role {
+            // Averaging sRGB bytes directly darkens every downsized albedo
+            // sheet (the encoded average of a black/white checker is 128, the
+            // linear-light average encodes to 188). The mip generator already
+            // decoded first; the pre-resize path now agrees with it (WC3-I-018).
+            Role::Color => resize_box_srgb(self, target_w, target_h),
+            Role::Coverage => resize_box(self, target_w, target_h),
+        };
+        (resized, true)
     }
 }
 
@@ -113,7 +131,82 @@ pub fn pow2_at_most(value: u32) -> u32 {
     1u32 << (31 - value.leading_zeros())
 }
 
-/// Box-filter resize (area averaging). Never upscales: callers fit first.
+/// Area-weighted box reduction of `rgba` from `src_w`x`src_h` to
+/// `dst_w`x`dst_h`, covering the **full source footprint** of every destination
+/// texel.
+///
+/// The footprint is `[x*src/dst, (x+1)*src/dst)`, so a 3x3 source reduced to 1x1
+/// averages all nine texels and 5x3 -> 2x1 covers columns 0..2 and 2..5. The old
+/// 2x2 chain used `w/2` and dropped the last row/column of every odd level
+/// (WC3-I-019).
+///
+/// `linear_light` decodes RGB with the sRGB curve before averaging and re-encodes
+/// after (colour); alpha always averages linearly (coverage).
+fn resample_area(
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    rgba: &[u8],
+    linear_light: bool,
+) -> Vec<u8> {
+    let dst_w = dst_w.max(1);
+    let dst_h = dst_h.max(1);
+    let src_w = src_w.max(1);
+    let src_h = src_h.max(1);
+    let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+    let decode = decode_lut();
+    for y in 0..dst_h {
+        let sy0 = (y as u64 * src_h as u64 / dst_h as u64) as u32;
+        let sy1 = (((y + 1) as u64 * src_h as u64 / dst_h as u64) as u32)
+            .max(sy0 + 1)
+            .min(src_h);
+        for x in 0..dst_w {
+            let sx0 = (x as u64 * src_w as u64 / dst_w as u64) as u32;
+            let sx1 = (((x + 1) as u64 * src_w as u64 / dst_w as u64) as u32)
+                .max(sx0 + 1)
+                .min(src_w);
+            let mut raw = [0u32; 4];
+            let mut linear = [0.0f32; 3];
+            let mut count = 0u32;
+            for sy in sy0..sy1 {
+                for sx in sx0..sx1 {
+                    let index = ((sy * src_w + sx) * 4) as usize;
+                    if index + 3 < rgba.len() {
+                        raw[3] += rgba[index + 3] as u32;
+                        if linear_light {
+                            for channel in 0..3 {
+                                linear[channel] += decode[rgba[index + channel] as usize];
+                            }
+                        } else {
+                            for channel in 0..3 {
+                                raw[channel] += rgba[index + channel] as u32;
+                            }
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            let dst = ((y * dst_w + x) * 4) as usize;
+            if count > 0 {
+                if linear_light {
+                    for channel in 0..3 {
+                        out[dst + channel] = encode_srgb(linear[channel] / count as f32);
+                    }
+                } else {
+                    for channel in 0..3 {
+                        out[dst + channel] = (raw[channel] / count) as u8;
+                    }
+                }
+                out[dst + 3] = (raw[3] / count) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Box-filter resize (area averaging, raw bytes). Never upscales: callers fit
+/// first. Coverage/alpha sheets use this; colour uses [`resize_box_srgb`].
 pub fn resize_box(image: &TextureImage, width: u32, height: u32) -> TextureImage {
     let width = width.max(1);
     let height = height.max(1);
@@ -122,38 +215,21 @@ pub fn resize_box(image: &TextureImage, width: u32, height: u32) -> TextureImage
     if width == src_w && height == src_h {
         return image.clone();
     }
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
-    for y in 0..height {
-        let sy0 = (y as u64 * src_h as u64 / height as u64) as u32;
-        let sy1 = (((y + 1) as u64 * src_h as u64 / height as u64) as u32)
-            .max(sy0 + 1)
-            .min(src_h);
-        for x in 0..width {
-            let sx0 = (x as u64 * src_w as u64 / width as u64) as u32;
-            let sx1 = (((x + 1) as u64 * src_w as u64 / width as u64) as u32)
-                .max(sx0 + 1)
-                .min(src_w);
-            let mut acc = [0u32; 4];
-            let mut count = 0u32;
-            for sy in sy0..sy1 {
-                for sx in sx0..sx1 {
-                    let index = ((sy * src_w + sx) * 4) as usize;
-                    if index + 3 < image.rgba.len() {
-                        for channel in 0..4 {
-                            acc[channel] += image.rgba[index + channel] as u32;
-                        }
-                        count += 1;
-                    }
-                }
-            }
-            let dst = ((y * width + x) * 4) as usize;
-            if count > 0 {
-                for channel in 0..4 {
-                    rgba[dst + channel] = (acc[channel] / count) as u8;
-                }
-            }
-        }
+    let rgba = resample_area(src_w, src_h, width, height, &image.rgba, false);
+    TextureImage::new(width, height, rgba)
+}
+
+/// Box-filter resize for sRGB colour: RGB averages in linear light, alpha
+/// linearly. Same footprint as [`resize_box`].
+pub fn resize_box_srgb(image: &TextureImage, width: u32, height: u32) -> TextureImage {
+    let width = width.max(1);
+    let height = height.max(1);
+    let src_w = image.width.max(1);
+    let src_h = image.height.max(1);
+    if width == src_w && height == src_h {
+        return image.clone();
     }
+    let rgba = resample_area(src_w, src_h, width, height, &image.rgba, true);
     TextureImage::new(width, height, rgba)
 }
 
@@ -283,39 +359,15 @@ pub fn generate_mips(width: u32, height: u32, rgba: &[u8]) -> Vec<Mip> {
         height,
         rgba: pixels.clone(),
     });
-    let decode = decode_lut();
     let (mut w, mut h) = (width, height);
     while w > 1 || h > 1 {
         let nw = (w / 2).max(1);
         let nh = (h / 2).max(1);
-        let mut next = vec![0u8; (nw * nh * 4) as usize];
-        for y in 0..nh {
-            let sy0 = (y * 2).min(h - 1);
-            let sy1 = (sy0 + 1).min(h - 1);
-            for x in 0..nw {
-                let sx0 = (x * 2).min(w - 1);
-                let sx1 = (sx0 + 1).min(w - 1);
-                let i00 = ((sy0 * w + sx0) * 4) as usize;
-                let i10 = ((sy0 * w + sx1) * 4) as usize;
-                let i01 = ((sy1 * w + sx0) * 4) as usize;
-                let i11 = ((sy1 * w + sx1) * 4) as usize;
-                let dst = ((y * nw + x) * 4) as usize;
-                for channel in 0..3 {
-                    let linear = (decode[pixels[i00 + channel] as usize]
-                        + decode[pixels[i10 + channel] as usize]
-                        + decode[pixels[i01 + channel] as usize]
-                        + decode[pixels[i11 + channel] as usize])
-                        * 0.25;
-                    next[dst + channel] = encode_srgb(linear);
-                }
-                let alpha = (pixels[i00 + 3] as u32
-                    + pixels[i10 + 3] as u32
-                    + pixels[i01 + 3] as u32
-                    + pixels[i11 + 3] as u32)
-                    / 4;
-                next[dst + 3] = alpha as u8;
-            }
-        }
+        // Area-weighted, full-footprint reduction: every source texel lands in
+        // exactly one destination texel, including the last row/column of an
+        // odd level (3x3 -> 1x1 averages all nine, not the top-left four;
+        // WC3-I-019).
+        let next = resample_area(w, h, nw, nh, &pixels, true);
         pixels = next;
         w = nw;
         h = nh;
@@ -817,7 +869,7 @@ impl TextureStore {
         let mut stats = TextureStats::default();
         let mut bind_groups = Vec::with_capacity(images.len());
         for image in images {
-            let (fitted, resized) = image.fit(max_size);
+            let (fitted, resized) = image.fit_for(max_size, role);
             if resized {
                 stats.resized += 1;
             }
@@ -912,7 +964,10 @@ impl TextureStore {
         for source in sources {
             match source {
                 TextureSource::Rgba(image) => {
-                    let (fitted, resized) = image.fit(max_size);
+                    // Every RGBA source uploaded here is bound as `Role::Color`
+                    // (see the upload below), so the pre-resize filter decodes
+                    // sRGB first (WC3-I-018).
+                    let (fitted, resized) = image.fit_for(max_size, Role::Color);
                     if resized {
                         stats.resized += 1;
                     }
@@ -1047,7 +1102,7 @@ pub fn upload_texture_mipped(
     role: Role,
     max_size: u32,
 ) -> wgpu::BindGroup {
-    let (fitted, _) = image.fit(max_size);
+    let (fitted, _) = image.fit_for(max_size, role);
     let levels = generate_mips(fitted.width, fitted.height, &fitted.rgba);
     upload_levels(device, queue, layout, sampler, role, &levels)
 }

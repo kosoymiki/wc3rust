@@ -154,19 +154,23 @@ impl Counters {
 }
 
 /// CPU wall time of one scope, in milliseconds.
-pub struct CpuScope {
+///
+/// The scope holds a real borrow of the destination, so the compiler enforces
+/// the lifetime the old `*mut f32` erased: a scope cannot outlive the `f32` it
+/// writes on drop.
+pub struct CpuScope<'a> {
     label: &'static str,
     start: Instant,
-    out: *mut f32,
+    out: &'a mut f32,
 }
 
-impl CpuScope {
+impl<'a> CpuScope<'a> {
     /// Times a scope and stores the elapsed milliseconds into `out`.
-    pub fn new(label: &'static str, out: &mut f32) -> Self {
+    pub fn new(label: &'static str, out: &'a mut f32) -> Self {
         Self {
             label,
             start: Instant::now(),
-            out: out as *mut f32,
+            out,
         }
     }
 
@@ -175,11 +179,9 @@ impl CpuScope {
     }
 }
 
-impl Drop for CpuScope {
+impl Drop for CpuScope<'_> {
     fn drop(&mut self) {
-        // SAFETY: `out` points at a live `f32` borrowed for the scope's lifetime;
-        // `CpuScope` cannot outlive it because it is not `Send` and holds the borrow.
-        unsafe { *self.out = self.start.elapsed().as_secs_f64() as f32 * 1000.0 }
+        *self.out = self.start.elapsed().as_secs_f64() as f32 * 1000.0;
     }
 }
 

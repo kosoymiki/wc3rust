@@ -20,7 +20,7 @@
 //!   storage buffers.
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 
 use crate::frame::{DynamicBuffer, Scratch};
 use crate::perf::Counters;
@@ -264,6 +264,33 @@ pub struct DrawParams {
     /// every caller that does not know its geometry (terrain, doodads, rings)
     /// keeps.
     pub contact: [f32; 4],
+    /// Inverse-transpose of `world`'s linear part, three vec3 columns padded to
+    /// 16 B (`mat3x3<f32>` in WGSL). Normals are transformed with this, not
+    /// with `world`, or a non-uniform scale/shear tilts them (WC3-I-017:
+    /// doodads carry a per-axis scale). A singular/near-zero scale keeps the
+    /// plain linear part; the fragment shader normalizes, so the degenerate
+    /// instance shades as a flat-ish surface instead of NaN.
+    pub normal: [[f32; 4]; 3],
+}
+
+/// Inverse-transpose of a world matrix's linear part, laid out as WGSL
+/// `mat3x3<f32>` columns.
+pub fn normal_matrix(world: Mat4) -> [[f32; 4]; 3] {
+    let linear = Mat3::from_mat4(world);
+    let determinant = linear.determinant();
+    let normal = if determinant.is_finite() && determinant.abs() > 1e-8 {
+        linear.inverse().transpose()
+    } else {
+        // Degenerate scale: no inverse exists. The linear part keeps the
+        // direction/axis mapping; the shader's normalize cannot produce NaN
+        // from a non-zero axis, and a fully collapsed instance is invisible.
+        linear
+    };
+    [
+        [normal.x_axis.x, normal.x_axis.y, normal.x_axis.z, 0.0],
+        [normal.y_axis.x, normal.y_axis.y, normal.y_axis.z, 0.0],
+        [normal.z_axis.x, normal.z_axis.y, normal.z_axis.z, 0.0],
+    ]
 }
 
 impl DrawParams {
@@ -275,6 +302,7 @@ impl DrawParams {
             // flags.w = texture-coordinate set (0 = TEXCOORD0, 1 = TEXCOORD1).
             flags: [color_scale, palette_base as f32, 0.0, 0.0],
             contact: [0.0; 4],
+            normal: normal_matrix(world),
         }
     }
 
@@ -296,6 +324,48 @@ impl DrawParams {
     pub fn identity(tint: [f32; 4]) -> Self {
         Self::new(Mat4::IDENTITY, tint, 1.0, 0)
     }
+}
+
+/// Derive a contact band from the geometry a static spec actually draws.
+///
+/// Returns `[base_y, band, strength, 1]` in the layout `fs_main::contact_scale`
+/// expects, or `[0; 4]` when the range is empty / has no height. `base_y` is the
+/// lowest authored vertex of this spec (world space: the doodad builder bakes
+/// the instance transform into `position`), `band` is 8 % of its height with a
+/// 6-unit floor and a 24-unit cap, and `strength` is 0.55 at the base. This is
+/// the same shape the unit path passes to [`DrawParams::with_contact`], so a
+/// tree now fades into its own shadow the way a building does.
+///
+/// This is a rendering fix, not new art: the authored BLP textures and vertex
+/// colours are untouched; only the bottom of the silhouette is darkened.
+pub fn static_contact_band(
+    vertices: &[MeshVertex],
+    indices: &[u32],
+    index_start: u32,
+    index_count: u32,
+) -> [f32; 4] {
+    let start = index_start as usize;
+    let end = start.saturating_add(index_count as usize).min(indices.len());
+    if start >= end {
+        return [0.0; 4];
+    }
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for &index in &indices[start..end] {
+        let Some(vertex) = vertices.get(index as usize) else {
+            continue;
+        };
+        let y = vertex.position[1];
+        if y.is_finite() {
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+    }
+    if !min_y.is_finite() || !max_y.is_finite() || max_y <= min_y {
+        return [0.0; 4];
+    }
+    let band = ((max_y - min_y) * 0.08).clamp(6.0, 24.0);
+    [min_y, band, 0.55, 1.0]
 }
 
 /// Knee of the highlight shoulder in linear light.
@@ -372,6 +442,19 @@ fn legacy_light() -> bool {
 fn legacy_contact() -> bool {
     static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| legacy_switch("H2_WORLD_ART_LEGACY_CONTACT", true))
+}
+
+/// A/B switch for the Agent A static grounding fix (doodad shadow pipeline +
+/// geometry-derived contact band). Cached once so a capture pair from one
+/// process cannot disagree halfway through a frame.
+fn legacy_static_grounding() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        matches!(
+            std::env::var("H2_STATIC_GROUNDING_LEGACY").as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    })
 }
 
 /// Fit the DNC directional term into the range a fixed-function pipeline can
@@ -465,6 +548,8 @@ pub fn wgsl_struct_size(source: &str, name: &str) -> usize {
             .unwrap_or_else(|| panic!("WGSL member without a type: `{field}`"));
         let (size, align) = match ty {
             "mat4x4<f32>" => (64, 16),
+            // A mat3x3 is three vec3 columns, each padded to 16 B: 48 B total.
+            "mat3x3<f32>" => (48, 16),
             "vec4<f32>" => (16, 16),
             "vec3<f32>" => (12, 16),
             "vec2<f32>" => (8, 8),
@@ -565,6 +650,11 @@ struct Draw {
     // x = world Y of the model's lowest visible vertex, y = contact band height
     // in world units, z = brightness at the base, w = 1 enables the term.
     contact: vec4<f32>,
+    // Inverse-transpose of `world`'s linear part (CPU-built, WC3-I-017): a
+    // normal is a covector, so applying the world matrix itself tilts it under
+    // a non-uniform scale. Skinned normals are blended in model space by the
+    // bone palette first, then mapped by this matrix exactly like a plain one.
+    normal_mat: mat3x3<f32>,
 };
 @group(2) @binding(0) var<uniform> draw: Draw;
 
@@ -650,7 +740,7 @@ fn vs_skinned(input: VsIn) -> VsOut {
     out.clip = camera.view_proj * world;
     out.uv = layer_uv(input);
     out.color = input.color * draw.tint;
-    out.normal = (draw.world * vec4<f32>(normal, 0.0)).xyz;
+    out.normal = draw.normal_mat * normal;
     out.world = world.xyz;
     return out;
 }
@@ -663,7 +753,7 @@ fn vs_plain(input: VsIn) -> VsOut {
     out.clip = camera.view_proj * world;
     out.uv = layer_uv(input);
     out.color = input.color * draw.tint;
-    out.normal = (draw.world * vec4<f32>(input.normal.xyz, 0.0)).xyz;
+    out.normal = draw.normal_mat * input.normal.xyz;
     out.world = world.xyz;
     return out;
 }
@@ -1991,6 +2081,28 @@ impl MeshRenderer {
         }
     }
 
+    /// Pipeline for one static draw spec.
+    ///
+    /// Group 2 is the renderer's own decal group (the doodad ground-shadow fan
+    /// emitted by `wc3-game`'s `build_doodad_geometry`). It carries a blend
+    /// mode of 2 so it sorts with the translucent group, but its vertices carry
+    /// the blob alpha in the vertex colour and it binds texture 0 only because
+    /// every draw needs *some* bind group. Routing it through `from_blend(2)`
+    /// therefore drew it with `fs_main`: the shadow was multiplied by texture 0
+    /// and by the surface light instead of being the flat dark blob the unit
+    /// path gets from `fs_shadow`. Decals go to [`PipelineKind::Shadow`]
+    /// explicitly; authored material layers keep their engine filter mode.
+    ///
+    /// `H2_STATIC_GROUNDING_LEGACY=1` restores the pre-fix routing so the
+    /// before/after frames share one binary (A/B capture, agent A art push).
+    pub fn static_pipeline(spec: &StaticDrawSpec) -> PipelineKind {
+        if spec.group == 2 && !legacy_static_grounding() {
+            PipelineKind::Shadow
+        } else {
+            PipelineKind::from_blend(spec.blend)
+        }
+    }
+
     /// Build a static batch: geometry that never changes (terrain, merged
     /// doodads). The vertex stream uses the canonical [`MeshVertex`] layout, so
     /// the batch shares the mesh pipelines and needs no per-frame upload.
@@ -2020,8 +2132,21 @@ impl MeshRenderer {
         let mut staging = vec![0u8; (specs.len().max(1)) * stride as usize];
         let mut draws = Vec::with_capacity(specs.len());
         for (slot, spec) in specs.iter().enumerate() {
-            let params = DrawParams::new(Mat4::IDENTITY, spec.tint, spec.color_scale, 0)
+            let mut params = DrawParams::new(Mat4::IDENTITY, spec.tint, spec.color_scale, 0)
                 .with_layer(PipelineKind::alpha_ref(spec.blend), 0);
+            // A merged object batch carries one spec per authored layer. The
+            // terrain batch is the single spec spanning the whole index stream
+            // (`specs.len() == 1`): it IS the ground, so a contact band there
+            // would darken every low tile. Decals (group 2) are the shadow fans;
+            // `fs_shadow` ignores contact anyway. The gate therefore selects
+            // only authored object layers in a merged (multi-spec) batch.
+            if specs.len() > 1 && spec.group < 2 && !legacy_static_grounding() {
+                let contact =
+                    static_contact_band(vertices, indices, spec.index_start, spec.index_count);
+                if contact[3] > 0.0 {
+                    params = params.with_contact(contact[0], contact[1], contact[2]);
+                }
+            }
             let dst = slot * stride as usize;
             staging[dst..dst + std::mem::size_of::<DrawParams>()]
                 .copy_from_slice(bytemuck::bytes_of(&params));
@@ -2030,7 +2155,7 @@ impl MeshRenderer {
                 index_start: spec.index_start,
                 index_count: spec.index_count,
                 texture: spec.texture as u32,
-                pipeline: PipelineKind::from_blend(spec.blend) as u8,
+                pipeline: Self::static_pipeline(spec) as u8,
                 params: slot as u32,
             });
         }
@@ -2979,7 +3104,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<MeshVertex>(), 60);
         // Per-draw uniform: world 64 + tint 16 + flags 16 + contact 16 = 112,
         // which is also what the WGSL `Draw` struct costs (`draw_uniform_matches_wgsl`).
-        assert_eq!(std::mem::size_of::<DrawParams>(), 112);
+        assert_eq!(std::mem::size_of::<DrawParams>(), 160);
         assert_eq!(VERTEX_STRIDE, 60);
     }
 
@@ -3015,8 +3140,8 @@ mod tests {
     /// matrix and every model collapses to the origin.
     #[test]
     fn draw_uniform_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<DrawParams>(), 112);
-        assert_eq!(wgsl_struct_size(MESH_SHADER, "Draw"), 112);
+        assert_eq!(std::mem::size_of::<DrawParams>(), 160);
+        assert_eq!(wgsl_struct_size(MESH_SHADER, "Draw"), 160);
         let params = DrawParams::identity([1.0; 4])
             .with_contact(-12.5, 40.0, 0.55);
         assert_eq!(params.contact, [-12.5, 40.0, 0.55, 1.0]);

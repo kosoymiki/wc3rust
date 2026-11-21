@@ -97,7 +97,17 @@ fn rendering_fog_mask_states() {
     let mask = FogMask::new(4, 4, 1.0, cells);
 
     let mut fog = FogRenderer::new(&device, FORMAT);
-    fog.prepare(&device, &queue, &mask, view_proj.inverse(), glam::Vec2::new(W as f32, H as f32), &depth_view);
+    // `depth_epoch` 0: this test never resizes the depth view, so the bind
+    // group is built once (the per-frame path is `FogRenderer::update_params`).
+    fog.prepare(
+        &device,
+        &queue,
+        &mask,
+        view_proj.inverse(),
+        glam::Vec2::new(W as f32, H as f32),
+        &depth_view,
+        0,
+    );
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("fog-test"),

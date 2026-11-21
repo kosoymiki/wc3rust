@@ -45,30 +45,146 @@ pub fn remaining_ratio(darkness: f32) -> f32 {
 }
 
 /// Per-player fog grid. `cells` values: 0 unexplored, 1 explored, 2 visible.
+///
+/// The fields are private on purpose: the mask sizes a texture upload from
+/// `width * height` and the shader indexes the table with it, so a table that
+/// disagrees with its dimensions is not a representable value. The old
+/// constructor kept its only check in a `debug_assert`; release builds accepted
+/// the mismatch, and the two failure modes were "fog silently disappears"
+/// (`darkness_grid` zero-fills, 0.0 = visible) and SIGABRT in `state_at`
+/// (`panic = "abort"`). Build with [`FogMask::try_new`]; [`FogMask::new`] is the
+/// repairing compatibility wrapper.
 #[derive(Clone, Debug)]
 pub struct FogMask {
-    pub width: u32,
-    pub height: u32,
-    pub cell_size: f32,
-    pub cells: Vec<u8>,
+    width: u32,
+    height: u32,
+    cell_size: f32,
+    cells: Vec<u8>,
+}
+
+/// Why [`FogMask::try_new`] rejected a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FogMaskError {
+    /// `cells.len()` must equal `width * height`.
+    CellCount { expected: usize, got: usize },
+}
+
+impl std::fmt::Display for FogMaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CellCount { expected, got } => write!(
+                f,
+                "FogMask cell count mismatch: expected {expected} cells, got {got}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FogMaskError {}
+
+/// Most cells a repaired mask allocates (64 MiB of state). A declared size
+/// beyond this is a caller bug, not a mask.
+const MAX_REPAIRED_CELLS: usize = 64 << 20;
+
+/// One diagnostic per process: a repairing constructor is a caller bug, not a
+/// per-frame condition.
+fn log_repair_once(line: &str) {
+    use std::sync::OnceLock;
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    if LOGGED.set(()).is_ok() {
+        eprintln!("{line}");
+    }
 }
 
 impl FogMask {
-    pub fn new(width: u32, height: u32, cell_size: f32, cells: Vec<u8>) -> Self {
-        debug_assert_eq!(cells.len(), (width * height) as usize);
-        Self {
+    /// Validated constructor: the only way to build a mask whose `cells` and
+    /// dimensions agree in every profile (release included).
+    pub fn try_new(
+        width: u32,
+        height: u32,
+        cell_size: f32,
+        cells: Vec<u8>,
+    ) -> Result<Self, FogMaskError> {
+        let expected = (width as usize).saturating_mul(height as usize);
+        if cells.len() != expected {
+            return Err(FogMaskError::CellCount {
+                expected,
+                got: cells.len(),
+            });
+        }
+        Ok(Self {
             width,
             height,
             cell_size,
             cells,
+        })
+    }
+
+    /// Compatibility constructor. Mismatches are repaired instead of accepted:
+    /// extra cells are dropped, a short table is padded with `0` (unexplored =
+    /// opaque black, the fail-dark state), and the repair is logged once. A
+    /// declared size beyond [`MAX_REPAIRED_CELLS`] becomes an empty mask (no
+    /// veil) rather than a multi-gigabyte allocation.
+    pub fn new(width: u32, height: u32, cell_size: f32, mut cells: Vec<u8>) -> Self {
+        let expected = (width as usize).saturating_mul(height as usize);
+        if cells.len() == expected {
+            return Self {
+                width,
+                height,
+                cell_size,
+                cells,
+            };
+        }
+        log_repair_once(&format!(
+            "GAME_FOG_MASK_MISMATCH expected={expected} got={} width={width} height={height} action=repair",
+            cells.len()
+        ));
+        if expected <= MAX_REPAIRED_CELLS {
+            cells.resize(expected, 0);
+            Self {
+                width,
+                height,
+                cell_size,
+                cells,
+            }
+        } else {
+            Self {
+                width: 0,
+                height: 0,
+                cell_size,
+                cells: Vec::new(),
+            }
         }
     }
 
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn cell_size(&self) -> f32 {
+        self.cell_size
+    }
+
+    pub fn cells(&self) -> &[u8] {
+        &self.cells
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// State of one cell. Out-of-bounds reads and short tables answer `0`
+    /// (unexplored): an accessor never aborts the process.
     pub fn state_at(&self, x: u32, y: u32) -> u8 {
         if x >= self.width || y >= self.height {
             return 0;
         }
-        self.cells[(y * self.width + x) as usize]
+        let index = (y as usize) * (self.width as usize) + (x as usize);
+        self.cells.get(index).copied().unwrap_or(0)
     }
 
     pub fn visible_fraction(&self) -> f32 {
@@ -102,6 +218,58 @@ impl FogMask {
     }
 }
 
+/// Change gate for the fog-mask upload path.
+///
+/// The renderer asks once per frame whether the resident mask must be rebuilt
+/// (`FogRenderer::prepare`: 25-tap blur over every cell, full texture upload,
+/// bind-group allocation). Identical masks — the common frame, because
+/// visibility changes a few times per second — answer `false`, and the frame
+/// rewrites only the 96 B uniform (the view matrix does move every frame).
+///
+/// This is the caller of [`FogMask::differs_from`]: before the gate existed the
+/// game dropped the previous mask in `set_fog` every frame, so nothing could
+/// ever be compared and the full path ran at 60 Hz (WC3-RENDER-002).
+#[derive(Default)]
+pub struct FogMaskCache {
+    resident: Option<FogMask>,
+    rebuilds: u64,
+}
+
+impl FogMaskCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Store `mask` when it differs from the resident one. `true` means the
+    /// texture must be rebuilt this frame.
+    pub fn accept(&mut self, mask: &FogMask) -> bool {
+        let changed = match &self.resident {
+            Some(previous) => mask.differs_from(previous),
+            None => true,
+        };
+        if changed {
+            self.rebuilds += 1;
+            self.resident = Some(mask.clone());
+        }
+        changed
+    }
+
+    /// The mask currently uploaded (last accepted one).
+    pub fn resident(&self) -> Option<&FogMask> {
+        self.resident.as_ref()
+    }
+
+    /// Accepted (changed) masks since construction: the rebuild count.
+    pub fn rebuilds(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// Drop the resident mask (fog disabled for the next frame).
+    pub fn clear(&mut self) {
+        self.resident = None;
+    }
+}
+
 /// `H2_FOW=off|0` disables the fog-of-war pass (diagnostics / A-B captures).
 pub fn enabled() -> bool {
     !matches!(
@@ -118,9 +286,20 @@ pub fn enabled() -> bool {
 /// CPU gives the ~2-cell gradient WC3 has.
 pub fn darkness_grid(mask: &FogMask) -> Vec<f32> {
     let (gw, gh) = (mask.width.max(1) as usize, mask.height.max(1) as usize);
-    let mut darkness = vec![0.0f32; gw * gh];
-    for (index, state) in mask.cells.iter().enumerate().take(gw * gh) {
-        darkness[index] = match state {
+    let expected = gw * gh;
+    if mask.cells.len() != expected {
+        log_repair_once(&format!(
+            "GAME_FOG_MASK_MISMATCH expected={expected} got={} width={} height={} action=dark-fill",
+            mask.cells.len(),
+            mask.width,
+            mask.height
+        ));
+    }
+    let mut darkness = vec![0.0f32; expected];
+    for (index, darkness) in darkness.iter_mut().enumerate() {
+        // Missing states read as unexplored (fail dark, never "silently
+        // visible"): the old `take(gw*gh)` loop left the tail at 0.0.
+        *darkness = match mask.cells.get(index).copied().unwrap_or(0) {
             2 => 0.0,
             1 => EXPLORED_DARKNESS,
             _ => UNEXPLORED_DARKNESS,
@@ -176,15 +355,25 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pixel.xy / params.view.xy;
     let depth = textureLoad(depth_tex, vec2<i32>(pixel.xy), 0);
+    // 1.0 is the cleared depth value (no geometry at this pixel: sky, or a
+    // hole in the world). It unprojects to a point at infinity, so "the pixel
+    // has no world position" — that is a *missing mapping*, not an unexplored
+    // cell, and painting it opaque black deleted the atmospheric colour the
+    // world pass cleared the target to. Leave it untouched (WC3-GAME-001).
+    if (depth >= 0.9999999) {
+        discard;
+    }
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let world4 = params.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
     if (world4.w <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        discard;
     }
     let world = world4.xyz / world4.w;
     let cell = floor(world.xz / params.grid.x);
     if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= params.view.z || cell.y >= params.view.w) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        // Outside the playfield the mask has no data. WC3 only darkens ground
+        // that exists; the far field keeps the atmosphere (WC3-GAME-001).
+        discard;
     }
     // The mask stores darkness (0 = fully visible, 0.55 = explored, 1 =
     // unexplored) and is sampled **bilinearly**: a per-cell nearest lookup made
@@ -218,6 +407,9 @@ pub struct FogRenderer {
     mask_size: (u32, u32),
     sampler: wgpu::Sampler,
     bind: Option<wgpu::BindGroup>,
+    /// Depth-view generation the current bind group was built against. The
+    /// resize path replaces the depth texture; the bind group must follow.
+    bound_depth_epoch: u64,
 }
 
 impl FogRenderer {
@@ -329,10 +521,22 @@ impl FogRenderer {
             mask_size: (0, 0),
             sampler,
             bind: None,
+            bound_depth_epoch: u64::MAX,
         }
     }
 
-    /// Upload the mask and parameters for this frame.
+    /// Rebuild the mask texture, upload it and refresh the per-frame uniform.
+    ///
+    /// Call only when the mask actually changed ([`FogMaskCache::accept`]
+    /// returned `true`) or when the depth view was replaced; every other frame
+    /// goes through [`Self::update_params`], which writes 96 B and nothing else
+    /// (WC3-RENDER-002: the full path is 1.6–452 ms of CPU plus a 64–262 KB
+    /// upload plus a bind-group allocation, for a mask that changes at most a
+    /// few times per second).
+    ///
+    /// `depth_epoch` identifies the depth texture generation; the bind group
+    /// that samples it is recreated only when the texture or the depth view
+    /// changed.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -341,13 +545,16 @@ impl FogRenderer {
         inv_view_proj: glam::Mat4,
         viewport: glam::Vec2,
         depth: &wgpu::TextureView,
+        depth_epoch: u64,
     ) {
-        if self.mask_size != (mask.width, mask.height) {
+        let size = (mask.width().max(1), mask.height().max(1));
+        let resized = self.mask_size != size;
+        if resized {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("fog-mask"),
                 size: wgpu::Extent3d {
-                    width: mask.width.max(1),
-                    height: mask.height.max(1),
+                    width: size.0,
+                    height: size.1,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -362,12 +569,11 @@ impl FogRenderer {
                 view_formats: &[],
             });
             self.mask = Some(texture);
-            self.mask_size = (mask.width, mask.height);
+            self.mask_size = size;
         }
         let texture = self.mask.as_ref().expect("fog mask");
-        let (gw, gh) = (mask.width.max(1) as usize, mask.height.max(1) as usize);
         let blurred = darkness_grid(mask);
-        let mut bytes = Vec::with_capacity(gw * gh);
+        let mut bytes = Vec::with_capacity(blurred.len());
         for value in &blurred {
             bytes.push((value.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
@@ -381,44 +587,81 @@ impl FogRenderer {
             &bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(mask.width.max(1)),
-                rows_per_image: Some(mask.height.max(1)),
+                bytes_per_row: Some(size.0),
+                rows_per_image: Some(size.1),
             },
             wgpu::Extent3d {
-                width: mask.width.max(1),
-                height: mask.height.max(1),
+                width: size.0,
+                height: size.1,
                 depth_or_array_layers: 1,
             },
         );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fog-bind"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        }));
+        if resized || self.bound_depth_epoch != depth_epoch {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fog-bind"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+            self.bound_depth_epoch = depth_epoch;
+        }
+        self.write_params(queue, inv_view_proj, viewport, mask);
+    }
+
+    /// Per-frame refresh of the uniform only.
+    ///
+    /// The inverse view-projection moves every frame; the mask texture and the
+    /// bind group that samples it do not, so the unchanged-mask frame writes
+    /// 96 B instead of re-blurring and re-uploading the grid.
+    pub fn update_params(
+        &self,
+        queue: &wgpu::Queue,
+        inv_view_proj: glam::Mat4,
+        viewport: glam::Vec2,
+        mask: &FogMask,
+    ) {
+        self.write_params(queue, inv_view_proj, viewport, mask);
+    }
+
+    fn write_params(
+        &self,
+        queue: &wgpu::Queue,
+        inv_view_proj: glam::Mat4,
+        viewport: glam::Vec2,
+        mask: &FogMask,
+    ) {
         let params = FogParams {
             inv_view_proj: inv_view_proj.to_cols_array(),
-            view: [viewport.x, viewport.y, mask.width as f32, mask.height as f32],
-            grid: [mask.cell_size.max(1.0), 0.0, 0.0, 0.0],
+            view: [viewport.x, viewport.y, mask.width() as f32, mask.height() as f32],
+            grid: [mask.cell_size().max(1.0), 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&params));
+    }
+
+    /// Drop the resident mask: the next frame draws no veil until a new mask is
+    /// prepared.
+    pub fn clear(&mut self) {
+        self.mask = None;
+        self.mask_size = (0, 0);
+        self.bind = None;
+        self.bound_depth_epoch = u64::MAX;
     }
 
     /// Record the overlay into a colour pass. The depth texture is bound as a
@@ -489,6 +732,6 @@ mod tests {
         assert_eq!(mask.state_at(0, 1), 2, "visible");
         assert_eq!(mask.state_at(9, 9), 0, "out of bounds is unexplored");
         assert!((mask.visible_fraction() - 0.25).abs() < 1e-6);
-        assert_eq!(mask.cell_size, 128.0);
+        assert_eq!(mask.cell_size(), 128.0);
     }
 }

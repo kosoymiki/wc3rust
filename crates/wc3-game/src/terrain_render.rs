@@ -674,6 +674,82 @@ fn push_water_vertex(target: &mut Vec<TerrainVertex>, vertex: overlay::Vertex) {
     });
 }
 
+/// Colour of one map-edge water continuation vertex (Agent A art push, bug #14).
+///
+/// `t` is the 0..1 distance across the 8-cell frame, `depth` the real W3E depth
+/// at the map's edge corner, `alpha` the authored fade (0..1) from
+/// `water_border`, and `(wx, wz)` the vertex's world position.
+///
+/// The old path blended the corner ramp into `deep` with `t * 2`, saturating at
+/// t = 0.5. On a map whose edge is already deep water the corner ramp *is*
+/// `deep`, so all eight cells carried one colour: the flat blue band reported
+/// at 06's left edge. The fix stretches the authored shallow→deep ramp over the
+/// whole frame and adds a low-frequency tint from world position, so a deep
+/// edge reads as continuous open water instead of a rectangle. The palette and
+/// the animated Water.slk surface texture are untouched; this is a procedural
+/// *rendering* fix, not hand-drawn art.
+///
+/// `legacy = true` reproduces the old path so one binary yields the A/B pair
+/// (`H2_WATER_EDGE_LEGACY=1`).
+pub fn water_edge_colour(
+    water: &WaterMaterial,
+    t: f32,
+    depth: f32,
+    alpha: f32,
+    wx: f32,
+    wz: f32,
+    legacy: bool,
+) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    let deep = water_ramp(water, WATER_MAX_DEPTH);
+    let ramp = water_ramp(water, depth);
+    if legacy {
+        let blend = (t * 2.0).clamp(0.0, 1.0);
+        return [
+            ramp[0] + (deep[0] - ramp[0]) * blend,
+            ramp[1] + (deep[1] - ramp[1]) * blend,
+            ramp[2] + (deep[2] - ramp[2]) * blend,
+            (ramp[3] + (deep[3] - ramp[3]) * blend) * alpha,
+        ];
+    }
+    // Continue the authored shallow→deep ramp across the entire frame instead
+    // of the first half. The start is the real boundary depth (not clamped):
+    // `t = 0` must reproduce the interior surface exactly, including a shore
+    // corner shallower than `WATER_MIN_DEPTH`. Only the outward end is pinned
+    // to the deep level; a boundary already deeper than it stays constant.
+    let start = depth.max(0.0);
+    let frame_depth = start + t * (WATER_DEEP_LEVEL - start).max(0.0);
+    let frame = water_ramp(water, frame_depth);
+    // Long-wave modulation only, 10 % amplitude at the outer rim: no authored
+    // colour is replaced, but a deep edge no longer collapses to a single
+    // value across the whole frame. The amplitude ramps in with `t` so the
+    // map boundary (t = 0) stays *exactly* the interior water colour: a tint
+    // at the inner edge would draw a hard line between the border frame and
+    // the surface it continues (measured 2026-11-21: mean blue 168 -> 146
+    // across the boundary before this ramp).
+    let wave = 0.5
+        + 0.5 * ((wx * 0.006 + wz * 0.004).sin() * (wz * 0.007 - wx * 0.003).cos());
+    let tint = 1.0 + (wave - 0.5) * 0.20 * t;
+    let blend = t * t;
+    [
+        (frame[0] + (deep[0] - frame[0]) * blend) * tint,
+        (frame[1] + (deep[1] - frame[1]) * blend) * tint,
+        (frame[2] + (deep[2] - frame[2]) * blend) * tint,
+        (frame[3] + (deep[3] - frame[3]) * blend) * alpha,
+    ]
+}
+
+/// A/B switch for the water edge fix; cached once per process.
+fn water_edge_legacy() -> bool {
+    static LEGACY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LEGACY.get_or_init(|| {
+        matches!(
+            std::env::var("H2_WATER_EDGE_LEGACY").as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    })
+}
+
 fn build_water_border(grid: &overlay::Grid, water: &WaterMaterial, mesh: &mut TerrainMesh) {
     let deep = water_ramp(water, WATER_MAX_DEPTH);
     let border = overlay::water_border(
@@ -684,11 +760,11 @@ fn build_water_border(grid: &overlay::Grid, water: &WaterMaterial, mesh: &mut Te
         deep,
     );
     let fade_reference = deep[3].max(1e-6);
+    let legacy = water_edge_legacy();
     for mut vertex in border.vertices {
         // Match the interior water vertex at the same corner exactly at the map
-        // boundary, then blend into open deep water over two tiles: the frame is
-        // a continuation of the surface (no seam), and the shallow ramp alpha at
-        // a beach edge cannot leave the engine clear colour visible through it.
+        // boundary; the authored fade from `water_border` is reused unchanged so
+        // the frame still dissolves into the clear colour at its outer edge.
         let cx = (vertex.position[0] / TERRAIN_TILE_SIZE)
             .round()
             .clamp(0.0, (grid.width - 1) as f32) as usize;
@@ -697,19 +773,16 @@ fn build_water_border(grid: &overlay::Grid, water: &WaterMaterial, mesh: &mut Te
             .clamp(0.0, (grid.height - 1) as f32) as usize;
         if let Some(corner) = grid.at(cx, cz) {
             let depth = (corner.water - corner.height).max(0.0);
-            let ramp = water_ramp(water, depth);
-            // `tag[0]` is the 0..1 distance across the border; 8 border cells,
-            // so the deep-water blend completes four tiles out and the alpha
-            // fade only starts at five.
-            let blend = (vertex.tag[0] * 2.0).clamp(0.0, 1.0);
-            let mix = |a: f32, b: f32| a + (b - a) * blend;
             let fade = (vertex.color[3] / fade_reference).clamp(0.0, 1.0);
-            vertex.color = [
-                mix(ramp[0], deep[0]),
-                mix(ramp[1], deep[1]),
-                mix(ramp[2], deep[2]),
-                mix(ramp[3], deep[3]) * fade,
-            ];
+            vertex.color = water_edge_colour(
+                water,
+                vertex.tag[0],
+                depth,
+                fade,
+                vertex.position[0],
+                vertex.position[2],
+                legacy,
+            );
         }
         push_water_vertex(&mut mesh.border_vertices, vertex);
     }
@@ -981,8 +1054,7 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     // HiveWE `get_tile_variation` (terrain.ixx:795-810).
     let raw_variant = min(textureLoad(variants, clamped, 0).r, 31u);
     let variant = select(select(0u, 15u, raw_variant == 16u), raw_variant, raw_variant <= 15u);
-    let slot = vec2<f32>(f32(variant % 4u), f32(variant / 4u)) * 0.25;
-    let uv = fract(input.uv) * 0.25 + slot;
+    var slot = vec2<f32>(f32(variant % 4u), f32(variant / 4u)) * 0.25;
     // Explicit LOD from the *continuous* cell UV. `fract()` jumps at every W3E
     // cell border; implicit derivatives there selected the smallest mip (the
     // whole-sheet average) and drew a seam on every 128-unit cell edge.
@@ -998,6 +1070,23 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     let ddy = dpdy(input.uv) * texel_scale;
     let max_lod = max(log2(sheet), 0.0);
     let lod = clamp(0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy))), 0.0, max_lod);
+    // Authored per-cell variation has no distance falloff by construction: each
+    // 128-unit cell picks its own 16x16 quadrant out of the sheet. A mip chain
+    // turns a 16x16 quadrant into one flat colour, so at distance the frame is a
+    // grid of flat colours that differs cell by cell — on an isometric camera
+    // that reads as an achromatic 45 degree moiré (measured `crop-trees.png`).
+    // Slide the quadrant toward one reference quadrant as LOD grows: near the
+    // camera every authored variation stays, far away the cell pattern is gone.
+    // `params.water.w` is the fade start (0 disables it for the A/B). The span
+    // is 0.9 mips: the device camera's far half sits at LOD ~1.5-2.5, so a
+    // 1.75-mip span would only act on the fogged horizon (measured 2026-11-21:
+    // a 1.5 + 1.75 fade left the 2414x1080 far-field cell variance unchanged).
+    let fade_start = params.water.w;
+    if (fade_start > 0.0) {
+        let fade = smoothstep(fade_start, fade_start + 0.9, lod);
+        slot = mix(slot, vec2<f32>(0.0), fade);
+    }
+    let uv = fract(input.uv) * 0.25 + slot;
     let t0 = textureSampleLevel(tiles, samp, uv, 0, lod);
     let t1 = textureSampleLevel(tiles, samp, uv, 1, lod);
     let t2 = textureSampleLevel(tiles, samp, uv, 2, lod);
@@ -2192,6 +2281,27 @@ struct TerrainParamsUniform {
     water: [f32; 4],
 }
 
+/// LOD at which the authored per-cell ground variation starts fading out.
+///
+/// WC3 has no mip chain, so its per-cell variation never aliases. A modern
+/// chain turns the 16x16 quadrant into a near-flat colour at distance, and
+/// neighbouring cells then differ by that flat colour: measured on the Orc01
+/// frame as an achromatic moiré on the cell diagonal (45° in the isometric
+/// view). Fading the quadrant toward one reference quadrant with LOD keeps the
+/// authored variation under the camera and removes the far-field cell noise.
+///
+/// `H2_TERRAIN_VARIATION_FADE=0` disables the fade (the pre-fix behaviour) so a
+/// single binary produces both halves of the A/B. The default (0.9) is where the
+/// device camera's far half sits; a 1.5 start left the measured far-field cell
+/// variance unchanged at 2414×1080.
+fn variation_fade_start() -> f32 {
+    std::env::var("H2_TERRAIN_VARIATION_FADE")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.9)
+}
+
 impl Default for TerrainParamsUniform {
     fn default() -> Self {
         Self { water: [0.0; 4] }
@@ -2895,7 +3005,7 @@ impl TerrainRenderer {
             tiles.water.rate,
             0.0,
             tiles.water.frames.len().max(1) as f32,
-            0.0,
+            variation_fade_start(),
         ];
         let water_frames: Vec<TextureImage> = if tiles.water.frames.is_empty() {
             vec![tiles
@@ -2976,7 +3086,7 @@ impl TerrainRenderer {
             self.water_rate,
             seconds,
             self.water_frames as f32,
-            0.0,
+            variation_fade_start(),
         ];
         // `TerrainParams` is the Water.slk animation vector only; the former
         // 16-slot per-layer material array is gone (ground has no specular).
@@ -3060,6 +3170,46 @@ mod tests {
             return None;
         }
         Some((mpq, map))
+    }
+
+    /// One full asset load per test binary.
+    ///
+    /// `Assets::load` decodes the whole terrain art set, the model roster and
+    /// every texture out of the shipped MPQ (2-3 GB of transient allocation).
+    /// The default harness runs eight tests at once, so a filtered run of this
+    /// module used to start up to eight concurrent loads; on the 11 GB phone
+    /// that is swap thrash, and two tests that each cost ~40 s of decode looked
+    /// like a >15 min hang that held the shared `h2-cargo` lock for every lane.
+    /// Tests that only read the assets now share one load; tests that hand
+    /// ownership to `Game::new` keep their own (they need it).
+    ///
+    /// The cache is a leaked `Box<Assets>` behind a mutex: `Assets` owns an
+    /// audio engine whose command `Receiver` is `Send` but not `Sync`, so an
+    /// `Arc<Assets>`/`OnceLock<Assets>` static does not type-check. The box is
+    /// allocated once, never moved and never freed, so the shared `&'static`
+    /// reference is stable; only the address is stored, and only the first
+    /// caller writes it.
+    fn shared_assets(mpq: &std::path::Path, map: &std::path::Path) -> &'static Assets {
+        static SHARED: Mutex<Option<(String, usize)>> = Mutex::new(None);
+        // The key matters: the module loads two fixtures (Human04 with
+        // `War3.mpq`, Melee.w3x with the melee archives). An unkeyed cache
+        // handed the first map's assets to the second and its cliff-layer
+        // assertion read the wrong terrain.
+        let want = format!("{}|{}", mpq.display(), map.display());
+        let mut guard = SHARED.lock().unwrap_or_else(|poison| poison.into_inner());
+        let address = match guard.as_ref() {
+            Some((key, address)) if *key == want => *address,
+            _ => {
+                let address = Box::into_raw(Box::new(Assets::load(Some(mpq), Some(map)))) as usize;
+                *guard = Some((want, address));
+                address
+            }
+        };
+        drop(guard);
+        // SAFETY: the pointer comes from `Box::into_raw` above, is written once
+        // per fixture under the mutex, is never freed or moved, and every caller
+        // only takes a shared reference to it.
+        unsafe { &*(address as *const Assets) }
     }
 
     fn out_dir() -> PathBuf {
@@ -4425,7 +4575,7 @@ mod tests {
             crate::dev_log!("SKIP agent_world_water_palette: user War3.mpq/map not present");
             return;
         };
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         let tiles = load_tile_set(&assets);
         assert_eq!(tiles.source, "terrainart");
         assert!(
@@ -4451,7 +4601,7 @@ mod tests {
             return;
         };
         let _guard = GPU.lock().unwrap_or_else(|poison| poison.into_inner());
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         // Find a water cell with water on three sides so the camera target is
         // solidly over the lake rather than a one-cell puddle.
         let cells_w = assets.map_width_cells as usize;
@@ -4578,14 +4728,468 @@ mod tests {
         }
     }
 
+    /// `render.cliff.top-material`: every cliff plateau top must carry the
+    /// ground material of the cell it covers (real layer weights + a cell-space
+    /// UV), not a bare colour.
+    ///
+    /// The plateau tops come from `terrain_geometry::cliff_blocks`; the vertex
+    /// builder copies the ground weights of the corner cell so the shader
+    /// samples the same tile layers as the ground below. A top with an empty
+    /// weight vector samples nothing and renders as a flat rectangle, which is
+    /// exactly the "pasted tan slab" the Orc01 frame showed.
     #[test]
+    fn render_cliff_top_material() {
+        let Some((mpq, map)) = data() else {
+            crate::dev_log!("SKIP render.cliff.top-material: install/map missing");
+            return;
+        };
+        let assets = shared_assets(&mpq, &map);
+        let tiles = load_tile_set(assets);
+        let mesh = build_terrain(assets, &tiles);
+        let cells_w = assets.map_width_cells.max(1) as f32;
+        let cells_h = assets.map_height_cells.max(1) as f32;
+        let mut tops = 0usize;
+        let mut walls = 0usize;
+        let mut empty_weight = 0usize;
+        let mut bad_uv = 0usize;
+        let mut flat_weight = 0usize;
+        for vertex in &mesh.cliff_vertices {
+            if vertex.weights[0] > 100.0 {
+                walls += 1;
+                continue;
+            }
+            tops += 1;
+            let sum: f32 = vertex.weights.iter().chain(vertex.weights2.iter()).sum();
+            if sum < 0.5 {
+                empty_weight += 1;
+            }
+            if vertex.weights.iter().chain(vertex.weights2.iter()).filter(|w| **w > 0.01).count() == 1
+            {
+                flat_weight += 1;
+            }
+            if vertex.uv[0] < -0.001
+                || vertex.uv[1] < -0.001
+                || vertex.uv[0] > cells_w + 0.001
+                || vertex.uv[1] > cells_h + 0.001
+            {
+                bad_uv += 1;
+            }
+        }
+        println!(
+            "CLIFF_TOPS tops={tops} walls={walls} empty_weight={empty_weight} \
+             single_layer={flat_weight} bad_uv={bad_uv}"
+        );
+        assert!(tops > 0, "the map has no cliff plateau tops to shade");
+        assert_eq!(empty_weight, 0, "cliff tops without ground weights");
+        assert_eq!(bad_uv, 0, "cliff top UV is not in cell space");
+    }
+
+    /// `render.terrain.variation-fade`: the per-cell authored variation must
+    /// fade out with distance, and the A/B switch must be honoured.
+    ///
+    /// WC3 has no mip chain, so its per-cell variation never aliases. A modern
+    /// chain collapses a 16x16 quadrant to one flat colour at distance, and the
+    /// per-cell choice then becomes a grid of flat colours: the measured
+    /// achromatic 45° moiré. The shader slides the quadrant toward one
+    /// reference quadrant with LOD; `H2_TERRAIN_VARIATION_FADE=0` disables it so
+    /// one binary can produce both halves of the A/B.
+    #[test]
+    fn render_terrain_variation_fade() {
+        let shader = TERRAIN_SHADER;
+        assert!(
+            shader.contains("let fade_start = params.water.w;"),
+            "the variation fade lost its uniform slot"
+        );
+        assert!(
+            shader.contains("slot = mix(slot, vec2<f32>(0.0), fade);"),
+            "the variation fade no longer slides the quadrant"
+        );
+        assert!(
+            shader.contains("smoothstep(fade_start, fade_start + 0.9, lod)"),
+            "the fade span must stay inside the device camera's LOD range"
+        );
+        // The uniform actually carries the switch: 0 disables, default > 0.
+        unsafe { std::env::set_var("H2_TERRAIN_VARIATION_FADE", "0") };
+        assert_eq!(variation_fade_start(), 0.0);
+        unsafe { std::env::remove_var("H2_TERRAIN_VARIATION_FADE") };
+        let default = variation_fade_start();
+        assert!(
+            (default - 0.9).abs() < 1e-6,
+            "variation fade start {default} must sit at the device far-field LOD"
+        );
+    }
+
+    /// `art14_terrain_shoulder_mesh`: the shoulder must act on the real map
+    /// mesh, not only on a synthetic `N·L` sweep.
+    ///
+    /// The terrain shader evaluates `shoulder(ambient + sun · saturate(N·L))`
+    /// with the raw DNC terrain light (`sun ~1.3`, `ambient ~0.2` at noon).
+    /// This walks every vertex of the real `Human04` ground mesh, applies the
+    /// same day/night sample the renderer uploads, and counts what the old
+    /// clamp did to the frame: a sun-facing slope whose raw value passed 1.0
+    /// was pinned to one value (a white shape), while the shoulder keeps a
+    /// distinct value for every one of them. The curve is the CPU mirror of the
+    /// shader (`wc3_render::mesh::shoulder_cpu`), so no GPU is needed; the GPU
+    /// pixel proof is the 2414×1080 A/B frame set in
+    /// `analysis/agent-world-art/all-layers-20261121/`.
+    #[test]
+    fn art14_terrain_shoulder_mesh() {
+        use wc3_render::daynight::{DayNightCurve, Preset};
+        use wc3_render::mesh::{shoulder_cpu, LIGHT_KNEE};
+        let Some((mpq, map)) = data() else {
+            crate::dev_log!("SKIP art14_terrain_shoulder_mesh: install/map missing");
+            return;
+        };
+        let assets = shared_assets(&mpq, &map);
+        let tiles = load_tile_set(assets);
+        let mesh = build_terrain(assets, &tiles);
+        assert!(
+            mesh.vertices.len() > 1000,
+            "the real map mesh must have vertices, got {}",
+            mesh.vertices.len()
+        );
+        let curve = DayNightCurve::new(Preset::Lordaeron);
+        let sample = curve.sample(12.0);
+        let (sun, ambient) = (sample.terrain.sun, sample.terrain.ambient);
+        let light = glam::Vec3::from_slice(&sample.sun_direction).normalize();
+        let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let mut clipped_before = 0usize;
+        let mut over_knee = 0usize;
+        let mut plateau_before = 0usize;
+        let mut plateau_after = 0usize;
+        let mut clipped_values_after = std::collections::BTreeSet::new();
+        let mut sun_facing_before = 0.0f32;
+        let mut sun_facing_after = 0.0f32;
+        for vertex in &mesh.vertices {
+            let normal = glam::Vec3::from_slice(&vertex.normal).normalize_or_zero();
+            let ndl = normal.dot(light).clamp(0.0, 1.0);
+            let raw = [
+                ambient[0] + sun[0] * ndl,
+                ambient[1] + sun[1] * ndl,
+                ambient[2] + sun[2] * ndl,
+            ];
+            let clamped = [raw[0].clamp(0.0, 1.0), raw[1].clamp(0.0, 1.0), raw[2].clamp(0.0, 1.0)];
+            let clipped =
+                raw.iter().zip(clamped.iter()).any(|(raw, clamp)| raw - clamp > 1e-4);
+            if clipped {
+                clipped_before += 1;
+            }
+            if raw.iter().any(|value| *value > LIGHT_KNEE) {
+                over_knee += 1;
+            }
+            let after = [
+                shoulder_cpu(raw[0], LIGHT_KNEE),
+                shoulder_cpu(raw[1], LIGHT_KNEE),
+                shoulder_cpu(raw[2], LIGHT_KNEE),
+            ];
+            let before_luma = luma(clamped);
+            let after_luma = luma(after);
+            if before_luma >= 0.999 {
+                plateau_before += 1;
+            }
+            if after_luma >= 0.999 {
+                plateau_after += 1;
+            }
+            if clipped {
+                clipped_values_after.insert((after_luma * 1000.0).round() as i64);
+            }
+            if ndl >= 0.9 {
+                sun_facing_before = sun_facing_before.max(before_luma);
+                sun_facing_after = sun_facing_after.max(after_luma);
+            }
+        }
+        println!(
+            "ART14_SHOULDER_MESH verts={} over_knee={} clipped_before={} plateau_before={} \
+             plateau_after={} clipped_luma_values_after={} sun_facing_before={:.3} \
+             sun_facing_after={:.3}",
+            mesh.vertices.len(),
+            over_knee,
+            clipped_before,
+            plateau_before,
+            plateau_after,
+            clipped_values_after.len(),
+            sun_facing_before,
+            sun_facing_after
+        );
+        assert!(
+            over_knee > 0,
+            "the real map has no vertex above the knee; the shoulder would never act"
+        );
+        assert!(
+            clipped_before > 0,
+            "the raw DNC light never passes 1.0 on this map; nothing to compress"
+        );
+        assert!(
+            plateau_before > 100,
+            "the legacy clamp has no plateau on the real mesh ({plateau_before} vertices at 1.0)"
+        );
+        assert_eq!(
+            plateau_after, 0,
+            "the shoulder must never reach white (plateau after = {plateau_after})"
+        );
+        assert!(
+            clipped_values_after.len() > 20,
+            "the former clip plateau must spread over many values, got {}",
+            clipped_values_after.len()
+        );
+        assert!(
+            sun_facing_after < 1.0,
+            "a sun-facing slope must not reach white, got {sun_facing_after:.3}"
+        );
+        assert!(
+            sun_facing_after > 0.85,
+            "the shoulder must keep authored brightness, got {sun_facing_after:.3}"
+        );
+    }
+
+    #[test]
+    #[ignore = "heavy: 2414x1080 terrain-only A/B frame + per-cell metric; needs War3.mpq + GPU; run_layer_gates.sh --ignored"]
+    fn art14_terrain_frame_2414() {
+        let Some((mpq, map)) = data() else {
+            crate::dev_log!("SKIP art14_terrain_frame_2414: install/map missing");
+            return;
+        };
+        let _guard = GPU.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut game = Game::new(Assets::load(Some(&mpq), Some(&map)), 0x5EED);
+        let width = 2414u32;
+        let height = 1080u32;
+        game.resize(width as f32, height as f32);
+        for _ in 0..30 {
+            game.update(1.0 / 30.0);
+        }
+        let scene = game.scene();
+        let view_proj = scene.view_proj.to_cols_array_2d();
+        let cells_w = game.assets.map_width_cells as usize;
+        let cells_h = game.assets.map_height_cells as usize;
+        let stride = cells_w + 1;
+        let corner_height = |x: usize, z: usize| -> f32 {
+            game.assets
+                .terrain_tiles
+                .get(z * stride + x)
+                .map(final_height)
+                .unwrap_or(0.0)
+        };
+        let project = |x: f32, y: f32, z: f32| -> Option<(f32, f32)> {
+            let m = glam::Mat4::from_cols_array_2d(&view_proj);
+            let clip = m * glam::Vec4::new(x, y, z, 1.0);
+            if clip.w <= 1e-3 {
+                return None;
+            }
+            let ndc = clip.truncate() / clip.w;
+            Some((
+                (ndc.x * 0.5 + 0.5) * width as f32,
+                (1.0 - (ndc.y * 0.5 + 0.5)) * height as f32,
+            ))
+        };
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../analysis/agent-world-art/all-layers-20261121");
+        let _ = std::fs::create_dir_all(&out);
+        let options = crate::render::RenderOptions {
+            skip_units: true,
+            skip_ui: true,
+            skip_doodads: true,
+            ..Default::default()
+        };
+        let luma = |r: u8, g: u8, b: u8| 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+        let render = |tag: &str| -> Option<Vec<u8>> {
+            let rgba = match crate::render::render_scene_to_rgba_with(
+                &game.assets,
+                &game.font.atlas,
+                None,
+                &scene,
+                width,
+                height,
+                options,
+            ) {
+                Ok(rgba) => rgba,
+                Err(error) => {
+                    crate::dev_log!("SKIP art14_terrain_frame_2414: {error}");
+                    return None;
+                }
+            };
+            crate::render::write_ppm(
+                out.join(format!("art14-frame-{tag}-2414x1080.ppm"))
+                    .to_str()
+                    .unwrap(),
+                width,
+                height,
+                &rgba,
+            );
+            Some(rgba)
+        };
+        let measure = |rgba: &[u8], tag: &str| {
+            let mut full = 0.0f64;
+            let mut full_n = 0u64;
+            for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+                if index % 7 == 0 {
+                    full += luma(pixel[0], pixel[1], pixel[2]) as f64;
+                    full_n += 1;
+                }
+            }
+            // Per-cell mean luma at the projected cell centre. A 5x5 pixel box
+            // is the authored tile's own detail; the cell-to-cell difference is
+            // what the mip chain cannot remove and what reads as the grid.
+            let mut cell = vec![f32::NAN; cells_w * cells_h];
+            let mut far_y = Vec::new();
+            let mut near_y = Vec::new();
+            let mut far_x = Vec::new();
+            let mut near_x = Vec::new();
+            for z in 0..cells_h {
+                for x in 0..cells_w {
+                    let cx = (x as f32 + 0.5) * TERRAIN_TILE_SIZE;
+                    let cz = (z as f32 + 0.5) * TERRAIN_TILE_SIZE;
+                    let cy = (corner_height(x, z)
+                        + corner_height(x + 1, z)
+                        + corner_height(x, z + 1)
+                        + corner_height(x + 1, z + 1))
+                        * 0.25;
+                    let Some((sx, sy)) = project(cx, cy, cz) else {
+                        continue;
+                    };
+                    if sx < 6.0
+                        || sy < 6.0
+                        || sx > width as f32 - 6.0
+                        || sy > height as f32 - 6.0
+                    {
+                        continue;
+                    }
+                    let px = sx.round() as i32;
+                    let py = sy.round() as i32;
+                    let mut sum = 0.0;
+                    let mut n = 0;
+                    for dy in -2i32..=2 {
+                        for dx in -2i32..=2 {
+                            let ix = (px + dx).clamp(0, width as i32 - 1) as usize;
+                            let iy = (py + dy).clamp(0, height as i32 - 1) as usize;
+                            let i = (iy * width as usize + ix) * 4;
+                            sum += luma(rgba[i], rgba[i + 1], rgba[i + 2]);
+                            n += 1;
+                        }
+                    }
+                    cell[z * cells_w + x] = sum / n as f32;
+                    if sy < height as f32 * 0.45 {
+                        far_x.push(x);
+                        far_y.push(z);
+                    } else if sy > height as f32 * 0.55 {
+                        near_x.push(x);
+                        near_y.push(z);
+                    }
+                }
+            }
+            let band_stats = |xs: &[usize], zs: &[usize]| -> (f32, f32, f32) {
+                let values: Vec<f32> = xs
+                    .iter()
+                    .zip(zs.iter())
+                    .map(|(x, z)| cell[*z * cells_w + *x])
+                    .filter(|v| v.is_finite())
+                    .collect();
+                if values.len() < 2 {
+                    return (f32::NAN, f32::NAN, 0.0);
+                }
+                let mean = values.iter().sum::<f32>() / values.len() as f32;
+                let var = values.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
+                    / values.len() as f32;
+                // Adjacent cell difference (grid neighbours on this band).
+                let mut delta = 0.0f64;
+                let mut pairs = 0u64;
+                for (x, z) in xs.iter().zip(zs.iter()) {
+                    let a = cell[*z * cells_w + *x];
+                    if !a.is_finite() {
+                        continue;
+                    }
+                    for (nx, nz) in [(*x + 1, *z), (*x, *z + 1)] {
+                        if nx >= cells_w || nz >= cells_h {
+                            continue;
+                        }
+                        let b = cell[nz * cells_w + nx];
+                        if b.is_finite() {
+                            delta += (a - b).abs() as f64;
+                            pairs += 1;
+                        }
+                    }
+                }
+                (mean, var.sqrt(), (delta / pairs.max(1) as f64) as f32)
+            };
+            let (far_mean, far_std, far_adj) = band_stats(&far_x, &far_y);
+            let (near_mean, near_std, near_adj) = band_stats(&near_x, &near_y);
+            let patch_w = (width as f32 * 200.0 / 2414.0) as u32;
+            let patch_h = (height as f32 * 140.0 / 1080.0) as u32;
+            let x0 = (width as f32 * 0.26) as u32;
+            let y0 = (height as f32 * 0.34) as u32;
+            let stats = patch_stats(rgba, width, x0, y0, patch_w.max(3), patch_h.max(3));
+            crate::dev_log!(
+                "ART14_FRAME tag={tag} size={width}x{height} full_luma={:.2} patch_mean=({:.1},{:.1},{:.1}) \
+                 patch_std=({:.1},{:.1},{:.1}) patch_edge={:.3} far_cells={} far_std={:.2} far_adj={:.2} \
+                 near_cells={} near_std={:.2} near_adj={:.2} path={}",
+                full / full_n.max(1) as f64,
+                stats.mean[0],
+                stats.mean[1],
+                stats.mean[2],
+                stats.std[0],
+                stats.std[1],
+                stats.std[2],
+                stats.edge,
+                far_x.len(),
+                far_std,
+                far_adj,
+                near_x.len(),
+                near_std,
+                near_adj,
+                out.join(format!("art14-frame-{tag}-2414x1080.ppm")).display()
+            );
+            (far_std, far_adj, near_std, near_adj)
+        };
+        // A/B in one process: the renderer is created per call, and the fade
+        // start is read there, so each frame differs only by the switch. A small
+        // sweep proves the chosen default acts on this camera, not only on a
+        // synthetic far distance.
+        let mut measured = Vec::new();
+        for (tag, fade) in [("legacy", 0.0f32), ("fade06", 0.6), ("default", 0.9), ("fade12", 1.2)] {
+            unsafe { std::env::set_var("H2_TERRAIN_VARIATION_FADE", format!("{fade}")) };
+            let Some(rgba) = render(tag) else { return };
+            measured.push((tag, fade, measure(&rgba, tag)));
+        }
+        unsafe { std::env::remove_var("H2_TERRAIN_VARIATION_FADE") };
+        let find = |tag: &str| {
+            measured
+                .iter()
+                .find(|(name, _, _)| *name == tag)
+                .map(|(_, _, stats)| *stats)
+                .expect("fade sweep entry")
+        };
+        let legacy = find("legacy");
+        let shipped = find("default");
+        assert!(legacy.0.is_finite(), "no far-field cells were sampled");
+        assert!(
+            shipped.0 <= legacy.0,
+            "the far-field cell variance must not grow: {} -> {}",
+            legacy.0,
+            shipped.0
+        );
+        assert!(
+            shipped.1 < legacy.1 * 0.99,
+            "the far-field cell grid must lose its per-cell colour steps: \
+             adjacent delta {} -> {}",
+            legacy.1,
+            shipped.1
+        );
+        assert!(
+            shipped.2 <= legacy.2 * 1.02 + 0.5,
+            "near-field variation must survive the fade: {} -> {}",
+            legacy.2,
+            shipped.2
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic: headless GPU hero close-up; needs War3.mpq + a Vulkan adapter; run_layer_gates.sh --ignored"]
     fn agent_world_hero_models_closeup() {
         let Some((mpq, map)) = data() else {
             crate::dev_log!("SKIP agent_world_hero_models: user War3.mpq/map not present");
             return;
         };
         let _guard = GPU.lock().unwrap_or_else(|poison| poison.into_inner());
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         let center = glam::Vec2::new(2000.0, 2000.0);
         let mut camera = crate::Camera::new(assets.world_size);
         camera.viewport = glam::Vec2::new(1200.0, 800.0);
@@ -4654,7 +5258,7 @@ mod tests {
             crate::dev_log!("SKIP agent_world_doodads: user War3.mpq/map not present");
             return;
         };
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         let doodads = crate::doodads::DoodadWorld::load(&assets);
         println!(
             "DOODADS parsed={} placed={} models={} model_failures={} textures={} instances={}",
@@ -4690,7 +5294,7 @@ mod tests {
             crate::dev_log!("SKIP asset_debug: install/map missing");
             return;
         };
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         for line in assets.debug.iter().take(40) {
             crate::dev_log!("ASSET_DEBUG {line}");
         }
@@ -4820,6 +5424,7 @@ mod tests {
     /// water cells, at each cell's own `water_height()`, and the terrain bed is
     /// below the surface on deep water. No translucent sheet over dry land.
     #[test]
+    #[ignore = "diagnostic: headless GPU water-plane close-up; needs War3.mpq + a Vulkan adapter; run_layer_gates.sh --ignored"]
     fn rendering_terrain_water_plane() {
         let Some((mpq, _human, _orc)) = melee_fixtures() else {
             crate::dev_log!("SKIP rendering_terrain_water_plane: fixtures missing");
@@ -4841,7 +5446,7 @@ mod tests {
         assert!(!maps.is_empty(), "water-plane fixtures");
         let mut deep_total = 0usize;
         for map in &maps {
-            let assets = Assets::load(Some(&mpq), Some(map));
+            let assets = shared_assets(&mpq, map);
             let tiles = load_tile_set(&assets);
             let mesh = build_terrain(&assets, &tiles);
             let offset = tiles.water.offset;
@@ -4934,6 +5539,7 @@ mod tests {
     /// `rendering.terrain.cliffs`: numeric mesh/height seams and cliff/ramp
     /// continuity on the melee maps (Human04/Orc01).
     #[test]
+    #[ignore = "diagnostic: headless GPU cliff close-up; needs War3.mpq + a Vulkan adapter; run_layer_gates.sh --ignored"]
     fn rendering_terrain_cliffs() {
         let Some((mpq, human, orc)) = melee_fixtures() else {
             crate::dev_log!("SKIP rendering_terrain_cliffs: fixtures missing");
@@ -5052,7 +5658,7 @@ mod tests {
             crate::dev_log!("SKIP hivewe cliff layers: Melee.w3x fixtures missing");
             return;
         };
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         let tiles = load_tile_set(&assets);
         let mesh = build_terrain(&assets, &tiles);
         let width = assets.map_width_cells as usize + 1;
@@ -5108,7 +5714,7 @@ mod tests {
             crate::dev_log!("SKIP hivewe water ramp: Melee.w3x fixtures missing");
             return;
         };
-        let assets = Assets::load(Some(&mpq), Some(&map));
+        let assets = shared_assets(&mpq, &map);
         let tiles = load_tile_set(&assets);
         let water = &tiles.water;
         crate::dev_log!(
@@ -5678,6 +6284,59 @@ mod light_curve_tests {
         assert!(
             !TERRAIN_SHADER.contains("return clamp(camera.ambient.rgb + camera.sun.rgb * ndl"),
             "the old hard clamp is still in the shader"
+        );
+    }
+
+    /// The map boundary (t = 0) must be *exactly* the interior water colour:
+    /// the frame continues the surface, so any tint at the inner edge draws a
+    /// hard line between border and water. Measured on the Orc01 edge frame
+    /// 2026-11-21: a 10 % constant tint put mean blue 168 far from the
+    /// interior's 146 at the seam; the tint now ramps in with `t`.
+    #[test]
+    fn art14_water_edge_continuity() {
+        let water = super::WaterMaterial::default();
+        for (depth, wx, wz) in [
+            (100.0f32, 512.0f32, 0.0f32),
+            (12.0, 1024.0, 2048.0),
+            (40.0, 4096.0, 1024.0),
+            (72.0, 0.0, 0.0),
+            (4.0, 2048.0, 512.0),
+        ] {
+            let legacy = super::water_edge_colour(&water, 0.0, depth, 1.0, wx, wz, true);
+            let fixed = super::water_edge_colour(&water, 0.0, depth, 1.0, wx, wz, false);
+            for channel in 0..4 {
+                assert!(
+                    (legacy[channel] - fixed[channel]).abs() < 1e-6,
+                    "boundary channel {channel} diverges (depth {depth}): {} vs {}",
+                    legacy[channel],
+                    fixed[channel]
+                );
+            }
+        }
+        // A deep edge is the reported flat band: the legacy path gives one
+        // colour across all eight frame cells; the shipped path must not.
+        let frame: Vec<f32> = (0..=8)
+            .map(|step| {
+                super::water_edge_colour(
+                    &water,
+                    step as f32 / 8.0,
+                    100.0,
+                    1.0,
+                    step as f32 * 1024.0,
+                    0.0,
+                    false,
+                )[2]
+            })
+            .collect();
+        let lo = frame.iter().cloned().fold(f32::INFINITY, f32::min);
+        let hi = frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let max = frame.iter().cloned().fold(0.0f32, f32::max);
+        // Linear-light blue is ~0.034 for the default deep palette; the
+        // measurable non-flatness is a fraction of that, not 0.01 absolute.
+        assert!(
+            hi - lo > 0.01 * max,
+            "deep edge must not be one flat blue value, spread {:.5} of max {max:.5}",
+            hi - lo
         );
     }
 

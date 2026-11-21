@@ -76,7 +76,7 @@ pub use daynight::{
     DncLightData, FogSettings, Key, MapLighting, Phase, Preset, SurfaceLight, DAY_HOURS,
     DEFAULT_DAWN_HOUR, DEFAULT_DAY_LENGTH_SECONDS, DEFAULT_DUSK_HOUR,
 };
-pub use fog::{FogMask, FogRenderer};
+pub use fog::{FogMask, FogMaskCache, FogMaskError, FogRenderer};
 pub use geoset::{geoset_color, geoset_tint};
 pub use fx::{
     blizzard_wave, impact_burst, missile_arc_point, projectile_trail, FxBlend, FxFrameStats,
