@@ -50,7 +50,7 @@ fn recomp_hle_abi_bind_and_resolve() {
     assert_eq!(entry.arity, 0);
     assert_eq!(entry.conv, CallConv::Stdcall);
     // Also reachable by slot, without thunk arithmetic.
-    assert_eq!(reg.entry_at_slot(3).map(|e| e.symbol), Some("GetVersion"));
+    assert_eq!(reg.entry_at_slot(3).map(|e| e.symbol.as_str()), Some("GetVersion"));
     assert!(reg.entry_at_slot(4).is_none());
     assert!(reg.entry_at_slot(HLE_SLOTS).is_none());
 }
@@ -106,6 +106,20 @@ fn recomp_hle_abi_call_arity_mismatch() {
     );
     // The wrong-arity call must not have executed the handler.
     assert_eq!(cpu.hle_last_error, 0);
+}
+
+#[test]
+fn recomp_hle_abi_calling_convention_stack_contract() {
+    // The dispatcher removes the argument stack after the call: stdcall pops the
+    // callee's arguments, cdecl leaves them to the caller. Pinned here because a
+    // convention mismatch does not fail at the call site on real x86.
+    assert!(CallConv::Stdcall.pops_args());
+    assert!(!CallConv::Cdecl.pops_args());
+    assert_eq!(CallConv::Stdcall.stack_bytes(0), 0);
+    assert_eq!(CallConv::Stdcall.stack_bytes(1), 4);
+    assert_eq!(CallConv::Stdcall.stack_bytes(5), 20);
+    assert_eq!(CallConv::Cdecl.stack_bytes(5), 0);
+    assert_eq!(CallConv::Cdecl.stack_bytes(255), 0);
 }
 
 #[test]

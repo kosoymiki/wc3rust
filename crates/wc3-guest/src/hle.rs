@@ -14,6 +14,22 @@
 //! donor's own note in `hle_android.c:9-12`). So an entry cannot be bound with
 //! an unknown arity, and a call whose argument count disagrees is rejected
 //! instead of executed.
+//!
+//! # Names are owned
+//!
+//! The donor binds static string literals; here the import names come from the
+//! parsed PE image at runtime. [`HleEntry`] therefore owns its `module` and
+//! `symbol` (`String`). Keeping them `&'static str` would require a
+//! process-lifetime intern pool, and a forged image with many distinct names
+//! would grow that pool without bound. Binding is a boot-time operation, so the
+//! two allocations per entry never touch the call path.
+//!
+//! # Calling convention
+//!
+//! [`CallConv::stack_bytes`] states the ABI contract the dispatcher must apply:
+//! a stdcall callee pops its own arguments, a cdecl callee leaves them to the
+//! caller. The registry does not touch `esp` itself — it receives the arguments
+//! as a slice — but it publishes the number so the lifted call site can.
 
 use crate::cpu::Cpu;
 use crate::layout::{HLE_BASE, HLE_SLOTS, HLE_STRIDE};
@@ -30,6 +46,22 @@ pub enum CallConv {
     Stdcall,
     /// Caller pops the arguments.
     Cdecl,
+}
+
+impl CallConv {
+    /// True when the callee removes the arguments from the stack.
+    pub fn pops_args(self) -> bool {
+        matches!(self, CallConv::Stdcall)
+    }
+
+    /// Bytes of argument stack the callee removes after the call.
+    pub fn stack_bytes(self, arity: u8) -> u32 {
+        if self.pops_args() {
+            u32::from(arity) * 4
+        } else {
+            0
+        }
+    }
 }
 
 /// Arity of an import.
@@ -90,29 +122,18 @@ impl From<ResolveError> for CallError {
 pub type Handler = fn(&mut Cpu, &[u32]) -> u32;
 
 /// One bound import.
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct HleEntry {
     /// Guest DLL name (`KERNEL32.dll`, …).
-    pub module: &'static str,
+    pub module: String,
     /// Import name (`GetVersion`, …).
-    pub symbol: &'static str,
+    pub symbol: String,
     /// Declared argument count.
     pub arity: u8,
     /// Declared calling convention.
     pub conv: CallConv,
     /// Host implementation.
     pub handler: Handler,
-}
-
-impl core::fmt::Debug for HleEntry {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HleEntry")
-            .field("module", &self.module)
-            .field("symbol", &self.symbol)
-            .field("arity", &self.arity)
-            .field("conv", &self.conv)
-            .finish_non_exhaustive()
-    }
 }
 
 /// Slot-indexed HLE registry.
@@ -140,8 +161,8 @@ impl HleRegistry {
     pub fn bind(
         &mut self,
         slot: u32,
-        module: &'static str,
-        symbol: &'static str,
+        module: impl Into<String>,
+        symbol: impl Into<String>,
         arity: Arity,
         conv: CallConv,
         handler: Handler,
@@ -160,7 +181,13 @@ impl HleRegistry {
         if self.entries.len() >= FAST_MAX {
             return Err(BindError::TableFull);
         }
-        self.entries.push(HleEntry { module, symbol, arity, conv, handler });
+        self.entries.push(HleEntry {
+            module: module.into(),
+            symbol: symbol.into(),
+            arity,
+            conv,
+            handler,
+        });
         self.slot_to_index[index] = (self.entries.len() - 1) as u16;
         Ok(())
     }
@@ -197,11 +224,14 @@ impl HleRegistry {
     /// Resolve and call. The argument count must equal the entry's declared
     /// arity.
     pub fn call(&mut self, thunk: u32, cpu: &mut Cpu, args: &[u32]) -> Result<u32, CallError> {
-        let entry = *self.resolve(thunk)?;
-        if args.len() != entry.arity as usize {
-            return Err(CallError::ArityMismatch { expected: entry.arity, got: args.len() });
+        let (arity, handler) = {
+            let entry = self.resolve(thunk)?;
+            (entry.arity, entry.handler)
+        };
+        if args.len() != arity as usize {
+            return Err(CallError::ArityMismatch { expected: arity, got: args.len() });
         }
-        Ok((entry.handler)(cpu, args))
+        Ok(handler(cpu, args))
     }
 }
 
@@ -262,6 +292,32 @@ mod tests {
             Err(BindError::ArityUnknown),
             "a vararg import cannot be checked at the call site"
         );
+    }
+
+    #[test]
+    fn recomp_hle_bind_accepts_runtime_names() {
+        // Import names come from the parsed image, not from a literal; the
+        // registry owns them, so no interning and no process-lifetime pool.
+        let mut registry = HleRegistry::new();
+        let module = String::from("KERNEL32.dll");
+        let symbol = format!("{}Version", "Get");
+        registry
+            .bind(3, module.clone(), symbol.clone(), arity(0), CallConv::Stdcall, get_version)
+            .expect("bind");
+        let entry = registry.resolve(thunk_of(3).unwrap()).expect("bound");
+        assert_eq!(entry.module, module);
+        assert_eq!(entry.symbol, symbol);
+    }
+
+    #[test]
+    fn recomp_hle_callconv_stack_contract() {
+        // stdcall: the callee pops its arguments; cdecl: the caller does.
+        assert!(CallConv::Stdcall.pops_args());
+        assert!(!CallConv::Cdecl.pops_args());
+        assert_eq!(CallConv::Stdcall.stack_bytes(0), 0);
+        assert_eq!(CallConv::Stdcall.stack_bytes(3), 12);
+        assert_eq!(CallConv::Cdecl.stack_bytes(3), 0);
+        assert_eq!(CallConv::Cdecl.stack_bytes(255), 0);
     }
 
     #[test]

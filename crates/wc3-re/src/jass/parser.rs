@@ -5,6 +5,11 @@ use std::fmt;
 use super::ast::*;
 use super::lexer::{Token, TokenKind, lex};
 
+/// Deepest expression / statement nesting the recursive-descent parser accepts.
+/// Retail scripts nest a handful of levels; 20 000 nested `(` used to abort the
+/// process with SIGSEGV on the 8 MiB main stack (WC3-JASS-005).
+const MAX_NESTING: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
     pub line: u32,
@@ -29,6 +34,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens: &tokens,
         pos: 0,
         source_name: String::new(),
+        depth: 0,
     };
     parser.parse_program()
 }
@@ -44,6 +50,8 @@ struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     source_name: String,
+    /// Current expression/block nesting, bounded by [`MAX_NESTING`].
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -215,6 +223,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self, stops: &[&str]) -> Result<Vec<Stmt>, ParseError> {
+        self.enter_nesting()?;
+        let result = self.parse_block_inner(stops);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_block_inner(&mut self, stops: &[&str]) -> Result<Vec<Stmt>, ParseError> {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
@@ -375,7 +390,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_or()
+        self.enter_nesting()?;
+        let result = self.parse_or();
+        self.depth -= 1;
+        result
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
@@ -619,6 +637,19 @@ impl<'a> Parser<'a> {
 
     fn error_here(&self, message: &str) -> ParseError {
         self.error_at(self.peek(), message)
+    }
+
+    /// Bounds the recursive-descent depth so a crafted `war3map.j` produces a
+    /// parse error instead of a stack overflow (WC3-JASS-005).
+    fn enter_nesting(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING {
+            self.depth -= 1;
+            return Err(self.error_here(&format!(
+                "nesting deeper than {MAX_NESTING} levels"
+            )));
+        }
+        Ok(())
     }
 }
 

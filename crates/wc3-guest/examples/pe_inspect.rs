@@ -55,18 +55,26 @@ fn main() -> ExitCode {
     println!("exports       {}", image.exports.len());
     let mut named = 0usize;
     let mut ordinal_only = 0usize;
+    let mut forwarders = 0usize;
     for export in &image.exports {
         if export.name.is_some() {
             named += 1;
         } else {
             ordinal_only += 1;
         }
+        if export.is_forwarder() {
+            forwarders += 1;
+        }
     }
-    println!("  named={named} ordinal_only={ordinal_only}");
+    println!("  named={named} ordinal_only={ordinal_only} forwarders={forwarders}");
     for export in image.exports.iter().take(12) {
-        match &export.name {
-            Some(name) => println!("  #{} {name} @ {:#x}", export.ordinal, export.rva),
-            None => println!("  #{} <ordinal> @ {:#x}", export.ordinal, export.rva),
+        let name = match &export.name {
+            Some(name) => name.clone(),
+            None => "<ordinal>".to_string(),
+        };
+        match &export.forwarder {
+            Some(target) => println!("  #{} {name} -> {target}", export.ordinal),
+            None => println!("  #{} {name} @ {:#x}", export.ordinal, export.rva),
         }
     }
     if image.exports.len() > 12 {
@@ -74,15 +82,13 @@ fn main() -> ExitCode {
     }
 
     println!("imports       {}", image.imports.len());
-    let mut modules: Vec<&str> = image.imports.iter().map(|i| i.module.as_str()).collect();
-    modules.sort_unstable();
-    modules.dedup();
+    let modules = image.import_modules();
     println!("  modules={} {:?}", modules.len(), modules);
     for import in image.imports.iter().take(12) {
         match (&import.name, import.ordinal) {
-            (Some(name), _) => println!("  {}!{name}", import.module),
-            (None, Some(ordinal)) => println!("  {}!#{ordinal}", import.module),
-            (None, None) => println!("  {}!<nameless>", import.module),
+            (Some(name), _) => println!("  {}!{name}", import.module_str()),
+            (None, Some(ordinal)) => println!("  {}!#{ordinal}", import.module_str()),
+            (None, None) => println!("  {}!<nameless>", import.module_str()),
         }
     }
     if image.imports.len() > 12 {

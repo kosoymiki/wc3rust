@@ -215,6 +215,12 @@ pub struct ItemPool {
 pub struct Unit {
     pub id: String,
     pub owner: i32,
+    /// The seat the *script* gave the unit (`CreateUnit`/`SetUnitOwner`/map
+    /// placement). The game bridge mirrors the simulation owner into `owner`,
+    /// which squashes seats outside its own player map onto 0; the script world
+    /// keeps the authored seat here so `GetOwningPlayer` and the death/region
+    /// event attribution stay the map's own player model.
+    pub script_owner: Option<i32>,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -340,12 +346,57 @@ pub enum TriggerEvent {
     Death { unit: u32 },
     EnterRegion { region: u32 },
     LeaveRegion { region: u32 },
-    GameState { state: i64, op: i64, value: f64 },
+    /// A game-state limit event. `player` is `-1` for
+    /// `TriggerRegisterGameStateEvent` (no player) and the seat index for
+    /// `TriggerRegisterPlayerStateEvent`.
+    GameState {
+        player: i32,
+        state: i64,
+        op: i64,
+        value: f64,
+    },
     Variable { name: String, op: i64, value: f64 },
     Dialog { dialog: u32 },
     DialogButton { dialog: u32, button: u32 },
     UnitEvent { unit: u32, event: i64 },
-    Custom,
+    /// `TriggerRegisterGameEvent(trig, whichGameEvent)`: the id is the
+    /// `gameevent` value (`EVENT_GAME_VICTORY` = 0, `EVENT_GAME_SHOW_SKILL` =
+    /// 9, …).
+    Custom { event: i64 },
+}
+
+/// Region membership transition raised by the engine tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionEvent {
+    Enter,
+    Leave,
+}
+
+/// `limitop` comparison (`common.j:479-484`): does `value` satisfy `op` against
+/// `limit`?
+fn limit_holds(op: i64, value: f64, limit: f64) -> bool {
+    match op {
+        0 => value < limit,
+        1 => value <= limit,
+        2 => (value - limit).abs() < 1e-9,
+        3 => value >= limit,
+        4 => value > limit,
+        5 => (value - limit).abs() >= 1e-9,
+        _ => value >= limit,
+    }
+}
+
+/// Point-in-region test: a region is the union of its rectangles and cells
+/// (`RegionAddRect` / `RegionAddCell`).
+pub(crate) fn point_in_region(world: &World, region: &Region, x: f64, y: f64) -> bool {
+    if region.cells.contains(&(x as i32, y as i32)) {
+        return true;
+    }
+    region.rects.iter().any(|handle| {
+        world.rects.get(handle).is_some_and(|rect| {
+            x >= rect.min_x && x <= rect.max_x && y >= rect.min_y && y <= rect.max_y
+        })
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -356,6 +407,24 @@ pub struct Timer {
     pub periodic: bool,
     pub running: bool,
     pub code: Option<String>,
+}
+
+/// One live `TriggerRegisterTimerEvent` registration.
+///
+/// The event itself is the `TriggerEvent::Timer` the trigger carries; this is
+/// the schedule that makes it fire. Retail turns every timer event into a
+/// hidden timer, which is why a `TriggerRegisterTimerEvent(trig, 2.0, false)`
+/// fires two seconds of *game* time later, not inside the registering call.
+#[derive(Debug, Clone, Default)]
+pub struct TimerEventState {
+    pub trigger: u32,
+    pub timeout: f64,
+    pub periodic: bool,
+    pub elapsed: f64,
+    /// A one-shot event has fired; it stays in the list as history but never
+    /// fires again.
+    pub done: bool,
+    pub fires: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -425,6 +494,8 @@ pub struct EventContext {
     pub trigger: Option<u32>,
     pub player: Option<u32>,
     pub unit: Option<u32>,
+    /// Region handle for an enter/leave event (`GetTriggeringRegion`).
+    pub region: Option<u32>,
     pub chat: String,
     pub damage: f64,
     pub dying: Option<u32>,
@@ -463,6 +534,17 @@ pub const EVENT_UNIT_USE_ITEM: i64 = 87;
 pub const EVENT_UNIT_SPELL_CAST: i64 = 290;
 pub const EVENT_UNIT_SPELL_EFFECT: i64 = 291;
 pub const EVENT_UNIT_SPELL_FINISH: i64 = 292;
+/// `EVENT_PLAYER_UNIT_DEATH` / `EVENT_UNIT_DEATH` (`common.j:367,416`).
+pub const EVENT_PLAYER_UNIT_DEATH: i64 = 20;
+pub const EVENT_UNIT_DEATH: i64 = 53;
+/// `GAME_STATE_TIME_OF_DAY` (`common.j:277`, `ConvertFGameState(2)`).
+pub const GAME_STATE_TIME_OF_DAY: i64 = 2;
+/// JASS arrays hold 8192 elements; an index outside `0..=8191` is a script
+/// error, never a new element (WC3-JASS-006).
+pub const JASS_ARRAY_LEN: i64 = 8192;
+/// Deepest nested script call on one thread. The old `call_function` guard
+/// rejected depth > 512; an inline call chain keeps the same ceiling.
+pub const MAX_CALL_DEPTH: usize = 512;
 
 /// Target passed to [`Runtime::cast_ability`] and [`Runtime::use_item`].
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -655,6 +737,10 @@ pub struct World {
     pub regions: BTreeMap<u32, Region>,
     pub triggers: BTreeMap<u32, Trigger>,
     pub timers: BTreeMap<u32, Timer>,
+    /// Live `TriggerRegisterTimerEvent` schedules (one per registration).
+    pub timer_events: Vec<TimerEventState>,
+    /// Timer handle currently inside its expiry callback (`GetExpiredTimer`).
+    pub firing_timer: Option<u32>,
     pub sounds: BTreeMap<u32, Sound>,
     pub camera_setups: BTreeMap<u32, CameraSetup>,
     pub camera_events: Vec<CameraEvent>,
@@ -709,6 +795,9 @@ pub struct World {
     pub boolexprs: BTreeMap<u32, BoolExpr>,
     pub game_time: f64,
     pub time_of_day: f64,
+    /// `SetTimeOfDayScale`: 1.0 is the retail day/night rate (one 24 h cycle
+    /// per 480 s of game time).
+    pub time_of_day_scale: f64,
     pub next_handle: u32,
     pub map_name: String,
     pub camera_bounds: [f64; 8],
@@ -751,6 +840,8 @@ impl Default for World {
             regions: BTreeMap::new(),
             triggers: BTreeMap::new(),
             timers: BTreeMap::new(),
+            timer_events: Vec::new(),
+            firing_timer: None,
             sounds: BTreeMap::new(),
             camera_setups: BTreeMap::new(),
             camera_events: Vec::new(),
@@ -776,6 +867,7 @@ impl Default for World {
             boolexprs: BTreeMap::new(),
             game_time: 0.0,
             time_of_day: 12.0,
+            time_of_day_scale: 1.0,
             next_handle: 0x100,
             map_name: String::new(),
             camera_bounds: [0.0; 8],
@@ -803,25 +895,191 @@ pub struct Runtime {
     pub max_steps: u64,
     pub seed: u64,
     function_index: HashMap<String, usize>,
+    /// Compiled instruction stream; `Frame::function` indexes this, not
+    /// `program.functions`, so global initialisers can run as snippets.
+    code: Vec<CompiledFunction>,
     natives: HashMap<String, NativeDecl>,
-    frames: Vec<Frame>,
+    /// Threads suspended inside `TriggerSleepAction`, waiting for their tick.
+    pub threads: Vec<Thread>,
+    /// How many times a script asked to sleep (`TriggerSleepAction` calls).
+    pub sleeps: u64,
+    /// How many suspended threads have been resumed by the tick loop.
+    pub wakes: u64,
+    next_thread: u32,
+    /// Set by a blocking native (`TriggerSleepAction`/`PolledWait`); the
+    /// interpreter loop turns it into a suspended thread.
+    pending_sleep: Option<f64>,
     /// Handles of triggers currently on the execution stack. A trigger that
     /// re-executes itself (directly or through a cycle) would otherwise recurse
-    /// until the VM call-depth limit; WC3's `TriggerSleepAction` normally breaks
-    /// such loops, but the headless VM has no coroutine suspension. Re-entrant
-    /// `TriggerExecute` is ignored, matching the engine's non-reentrant trigger
-    /// semantics.
+    /// until the VM call-depth limit. Re-entrant `TriggerExecute` is ignored,
+    /// matching the engine's non-reentrant trigger semantics.
     trigger_stack: Vec<u32>,
+    /// Registered triggers executed per event kind (`enter_region`, `death`,
+    /// `game_state`, …). This is the observable proof that the dispatcher ran.
+    pub event_fires: BTreeMap<String, u64>,
+    /// Units currently inside each region that a trigger watches. The engine
+    /// tick diffs it to raise enter/leave events.
+    pub region_members: BTreeMap<u32, BTreeSet<u32>>,
+    /// Units already reported dead, so one death raises one event.
+    pub(crate) dead_seen: BTreeSet<u32>,
+    /// `world.time_of_day` at the previous tick (crossing detection).
+    time_of_day_prev: f64,
+    /// True once a `TriggerRegisterVariableEvent` exists; the store path only
+    /// pays for the scan when a map actually watches a global.
+    pub(crate) has_variable_events: bool,
+    /// Out-of-range JASS array accesses (0..=8191 is the retail contract).
+    pub array_bounds_hits: u64,
+    /// Trigger dispatches whose own conditions vetoed the action list. Shows
+    /// that an event reached the map and the map declined it.
+    pub condition_vetoes: u64,
+    /// Ring of the first events fired, for the boot/tick log.
+    pub event_log: Vec<String>,
 }
 
-struct Frame {
-    locals: HashMap<String, Slot>,
+/// One compiled instruction. Control flow is by instruction index, so a thread
+/// can stop at any instruction and resume later (`TriggerSleepAction`).
+#[derive(Debug, Clone)]
+pub enum Op {
+    /// Push a literal.
+    Push(Value),
+    /// Push a `code` value (`function Name`).
+    PushCode(String),
+    /// Push scalar `name`.
+    Load(String),
+    /// Pop an index, push `name[index]`.
+    LoadArray(String),
+    /// Pop a value into scalar `name`.
+    Store(String),
+    /// Pop an index, pop a value, store `name[index] = value`.
+    StoreArray(String),
+    /// Declare a local; `init` pops its initial value. Arrays ignore `init`.
+    Local {
+        name: String,
+        array: bool,
+        init: bool,
+    },
+    /// Pop `argc` arguments and call. `proc` discards the result (a `call`
+    /// statement); otherwise the result is pushed.
+    Call {
+        name: String,
+        argc: usize,
+        line: u32,
+        proc: bool,
+    },
+    Binary(BinOp),
+    Unary(UnOp),
+    /// Unconditional jump.
+    Jump(usize),
+    /// Pop; jump when falsy.
+    JumpIfFalse(usize),
+    /// Pop; jump when truthy.
+    JumpIfTrue(usize),
+    /// `and` short circuit: leave `false` on the stack and jump when the top is
+    /// falsy, otherwise pop it.
+    AndJump(usize),
+    /// `or` short circuit: leave `true` on the stack and jump when the top is
+    /// truthy, otherwise pop it.
+    OrJump(usize),
+    /// Pop; jump to the loop end when truthy (`exitwhen`).
+    ExitWhen(usize),
+    /// Pop the return value and return from the current function.
+    Return,
+    /// Reset the iteration counter of loop `slot`.
+    LoopEnter(usize),
+    /// Increment loop `slot`'s counter and jump back to `target`; the counter
+    /// is the loop guard.
+    LoopBack {
+        slot: usize,
+        target: usize,
+        line: u32,
+    },
+    /// Discard the top of the stack.
+    Pop,
+    /// Pop; push the value's boolean truth.
+    CoerceBool,
 }
 
-enum Control {
-    Normal,
-    Return(Value),
-    ExitLoop,
+/// A function body compiled to instructions.
+#[derive(Debug, Clone, Default)]
+pub struct CompiledFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub ops: Vec<Op>,
+    pub loops: usize,
+}
+
+/// One activation record of a script thread.
+#[derive(Debug, Clone, Default)]
+pub struct Frame {
+    /// Index into `Runtime::code`.
+    pub function: usize,
+    pub pc: usize,
+    pub locals: HashMap<String, Slot>,
+    pub stack: Vec<Value>,
+    /// Per-loop iteration counters (the loop guard).
+    pub loops: Vec<u64>,
+    /// The call was a `call` statement, so the returned value is discarded
+    /// instead of being pushed onto the caller's stack.
+    pub discard_result: bool,
+}
+
+/// What started a thread (diagnostics and provenance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadOrigin {
+    /// A direct `run_function`/`call_function` entry point.
+    Script,
+    /// A trigger's action list.
+    Trigger(u32),
+    /// A `TimerStart` callback.
+    Timer(u32),
+    /// A `TriggerRegisterTimerEvent` expiry.
+    TimerEvent(u32),
+}
+
+/// A script function still queued on a thread (a trigger's remaining actions).
+#[derive(Debug, Clone)]
+struct PendingCall {
+    function: usize,
+    args: Vec<Value>,
+}
+
+/// A JASS thread: a call stack that can be suspended and resumed.
+#[derive(Debug, Clone)]
+pub struct Thread {
+    pub id: u32,
+    /// Entry function name, for diagnostics.
+    pub name: String,
+    pub frames: Vec<Frame>,
+    /// Actions this thread still has to run once its current stack unwinds.
+    pending: Vec<PendingCall>,
+    pending_at: usize,
+    pub origin: ThreadOrigin,
+    /// `world.game_time` at which a suspended thread resumes.
+    pub wake_at: f64,
+    /// Seconds the thread asked to sleep for (`None` while running).
+    pub sleep: Option<f64>,
+    /// Event context the thread was started in, restored when it resumes.
+    context: EventContext,
+}
+
+/// Outcome of running a thread to its next stop.
+#[derive(Debug)]
+pub enum ThreadStatus {
+    /// The stack unwound; this is the last returned value.
+    Done(Value),
+    /// The thread hit `TriggerSleepAction` and is parked.
+    Suspended,
+}
+
+impl Thread {
+    pub fn is_suspended(&self) -> bool {
+        self.sleep.is_some()
+    }
+
+    /// Frames of the running thread (top frame last).
+    pub fn depth(&self) -> usize {
+        self.frames.len()
+    }
 }
 
 impl Runtime {
@@ -848,10 +1106,25 @@ impl Runtime {
             max_steps: 20_000_000,
             seed,
             function_index,
+            code: Vec::new(),
             natives,
-            frames: Vec::new(),
+            threads: Vec::new(),
+            sleeps: 0,
+            wakes: 0,
+            next_thread: 0,
+            pending_sleep: None,
             trigger_stack: Vec::new(),
+            event_fires: BTreeMap::new(),
+            region_members: BTreeMap::new(),
+            dead_seen: BTreeSet::new(),
+            time_of_day_prev: 0.0,
+            has_variable_events: false,
+            array_bounds_hits: 0,
+            condition_vetoes: 0,
+            event_log: Vec::new(),
         };
+        runtime.time_of_day_prev = runtime.world.time_of_day;
+        runtime.compile_all();
         runtime.init_globals();
         runtime
     }
@@ -872,7 +1145,7 @@ impl Runtime {
                 Slot::Array(BTreeMap::new())
             } else {
                 let value = match &global.init {
-                    Some(expr) => match self.eval_expr(expr) {
+                    Some(expr) => match self.eval_snippet(expr) {
                         Ok(value) => value,
                         Err(err) => {
                             self.errors
@@ -888,12 +1161,71 @@ impl Runtime {
         }
     }
 
+    /// Compiles and runs one expression as a throwaway function body. Global
+    /// initialisers use this so they keep full JASS semantics (they may call
+    /// functions and natives).
+    fn eval_snippet(&mut self, expr: &Expr) -> Result<Value> {
+        let mut compiler = Compiler::default();
+        compiler.expr(expr);
+        compiler.push(Op::Return);
+        let index = self.code.len();
+        self.code.push(CompiledFunction {
+            name: format!("__init_{index}"),
+            params: Vec::new(),
+            ops: compiler.ops,
+            loops: compiler.loops,
+        });
+        let name = self.code[index].name.clone();
+        let mut thread = self.thread_for(ThreadOrigin::Script, &name);
+        thread.frames.push(self.frame_for(index, &[]));
+        match self.run_thread(&mut thread, 0)? {
+            ThreadStatus::Done(value) => Ok(value),
+            ThreadStatus::Suspended => {
+                self.park(thread);
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// Compiles every declared function body to instructions.
+    fn compile_all(&mut self) {
+        let mut code = Vec::with_capacity(self.program.functions.len());
+        let mut index_map = HashMap::with_capacity(self.program.functions.len());
+        for (index, function) in self.program.functions.iter().enumerate() {
+            index_map.insert(function.name.to_ascii_lowercase(), index);
+            code.push(compile_function(function));
+        }
+        self.code = code;
+        self.function_index = index_map;
+    }
+
     pub fn function_names(&self) -> BTreeSet<String> {
         self.program.function_names()
     }
 
     pub fn native_names(&self) -> BTreeSet<String> {
         self.natives.keys().cloned().collect()
+    }
+
+    /// True when the merged program declares `name` (case-insensitive).
+    ///
+    /// `run_function` treats an unknown name as an unhandled native and returns
+    /// its default, so the engine needs this to tell "the map has no `config`"
+    /// (legal) from "the map declared one and it failed".
+    pub fn has_function(&self, name: &str) -> bool {
+        self.function_index.contains_key(&name.to_ascii_lowercase())
+    }
+
+    /// Records one out-of-range JASS array access (WC3-JASS-006). The first
+    /// few become VM errors; the counter stays observable for the run report.
+    fn record_array_bounds(&mut self, name: &str, index: i64) {
+        self.array_bounds_hits += 1;
+        if self.array_bounds_hits <= 8 {
+            self.errors.push(format!(
+                "array {name}[{index}]: index outside 0..{}",
+                JASS_ARRAY_LEN - 1
+            ));
+        }
     }
 
     /// Execute a function by name (case-insensitive). Returns its value.
@@ -920,24 +1252,7 @@ impl Runtime {
             return Err(ReError::Vm(format!("step limit exceeded at {name}")));
         }
         if let Some(&index) = self.function_index.get(&name.to_ascii_lowercase()) {
-            let function = self.program.functions[index].clone();
-            *self.call_counts.entry(function.name.clone()).or_insert(0) += 1;
-            let mut frame = Frame {
-                locals: HashMap::new(),
-            };
-            for (position, (_ty, param_name)) in function.params.iter().enumerate() {
-                frame.locals.insert(
-                    param_name.clone(),
-                    Slot::Scalar(args.get(position).cloned().unwrap_or(Value::Null)),
-                );
-            }
-            self.frames.push(frame);
-            let control = self.exec_block(&function.body, depth);
-            self.frames.pop();
-            match control? {
-                Control::Return(value) => Ok(value),
-                _ => Ok(Value::Null),
-            }
+            self.run_entry_index(index, args.to_vec(), ThreadOrigin::Script, depth)
         } else if self.natives.contains_key(&name.to_ascii_lowercase()) {
             let value = self.call_native(name, args, depth)?;
             Ok(value)
@@ -964,244 +1279,488 @@ impl Runtime {
         }
     }
 
-    fn exec_block(&mut self, block: &[Stmt], depth: usize) -> Result<Control> {
-        for stmt in block {
-            let control = self.exec_stmt(stmt, depth)?;
-            if !matches!(control, Control::Normal) {
-                return Ok(control);
-            }
+    // ---------------------------------------------------------------------
+    // Threads
+    // ---------------------------------------------------------------------
+
+    /// Starts a compiled function as a new thread. A thread that suspends is
+    /// parked and resumes on a later tick; the caller gets `null` meanwhile.
+    fn run_entry(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        origin: ThreadOrigin,
+        depth: usize,
+    ) -> Result<Value> {
+        match self.function_index.get(&name.to_ascii_lowercase()).copied() {
+            Some(index) => self.run_entry_index(index, args, origin, depth),
+            None => self.call_function(name, &args, depth),
         }
-        Ok(Control::Normal)
     }
 
-    fn exec_stmt(&mut self, stmt: &Stmt, depth: usize) -> Result<Control> {
-        self.steps += 1;
-        if self.steps > self.max_steps {
-            return Err(ReError::Vm("step limit exceeded".into()));
+    fn run_entry_index(
+        &mut self,
+        index: usize,
+        args: Vec<Value>,
+        origin: ThreadOrigin,
+        depth: usize,
+    ) -> Result<Value> {
+        let function_name = self.code[index].name.clone();
+        *self.call_counts.entry(function_name.clone()).or_insert(0) += 1;
+        let mut thread = self.thread_for(origin, &function_name);
+        thread.frames.push(self.frame_for(index, &args));
+        match self.run_thread(&mut thread, depth)? {
+            ThreadStatus::Done(value) => Ok(value),
+            ThreadStatus::Suspended => {
+                self.park(thread);
+                Ok(Value::Null)
+            }
         }
-        match stmt {
-            Stmt::Local(local) => {
-                let value = match &local.init {
-                    Some(expr) => self.eval_expr(expr)?,
-                    None => Value::Null,
+    }
+
+    fn thread_for(&mut self, origin: ThreadOrigin, name: &str) -> Thread {
+        self.next_thread += 1;
+        Thread {
+            id: self.next_thread,
+            name: name.to_string(),
+            frames: Vec::new(),
+            pending: Vec::new(),
+            pending_at: 0,
+            origin,
+            wake_at: self.world.game_time,
+            sleep: None,
+            context: self.world.context.clone(),
+        }
+    }
+
+    fn frame_for(&self, function: usize, args: &[Value]) -> Frame {
+        let compiled = &self.code[function];
+        let mut locals = HashMap::new();
+        for (position, param) in compiled.params.iter().enumerate() {
+            locals.insert(
+                param.clone(),
+                Slot::Scalar(args.get(position).cloned().unwrap_or(Value::Null)),
+            );
+        }
+        Frame {
+            function,
+            pc: 0,
+            locals,
+            stack: Vec::new(),
+            loops: vec![0; compiled.loops],
+            discard_result: false,
+        }
+    }
+
+    /// Queues a suspended thread for its wake tick.
+    fn park(&mut self, mut thread: Thread) {
+        if thread.sleep.is_none() {
+            thread.sleep = Some(0.0);
+        }
+        self.threads.push(thread);
+    }
+
+    /// Runs a thread until its stack unwinds or it suspends. The event context
+    /// travels with the thread, so `GetTriggeringTrigger()` still answers the
+    /// trigger that started it after a sleep.
+    fn run_thread(&mut self, thread: &mut Thread, depth: usize) -> Result<ThreadStatus> {
+        let saved_context = std::mem::replace(&mut self.world.context, thread.context.clone());
+        let outcome = self.run_thread_inner(thread, depth);
+        thread.context = self.world.context.clone();
+        self.world.context = saved_context;
+        outcome
+    }
+
+    fn run_thread_inner(&mut self, thread: &mut Thread, depth: usize) -> Result<ThreadStatus> {
+        if depth + thread.frames.len() > 512 {
+            return Err(ReError::Vm(format!(
+                "call depth exceeded in {}",
+                thread.name
+            )));
+        }
+        loop {
+            // Activate the next queued call once the current stack unwinds.
+            if thread.frames.is_empty() {
+                let Some(pending) = thread.pending.get(thread.pending_at).cloned() else {
+                    return Ok(ThreadStatus::Done(Value::Null));
                 };
-                let slot = if local.array {
-                    Slot::Array(BTreeMap::new())
-                } else {
-                    Slot::Scalar(value)
-                };
-                if let Some(frame) = self.frames.last_mut() {
-                    frame.locals.insert(local.name.clone(), slot);
-                } else {
-                    self.globals.insert(local.name.clone(), slot);
-                }
-                Ok(Control::Normal)
+                thread.pending_at += 1;
+                let frame = self.frame_for(pending.function, &pending.args);
+                thread.frames.push(frame);
             }
-            Stmt::Set {
-                name,
-                index,
-                value,
-                line,
-            } => {
-                let value = self.eval_expr(value)?;
-                match index {
-                    Some(index) => {
-                        let index = self.eval_expr(index)?.as_int();
-                        self.set_array(name, index, value);
-                    }
-                    None => self.set_scalar(name, value),
-                }
-                let _ = line;
-                Ok(Control::Normal)
+            let top = thread.frames.len() - 1;
+            let (pc, function) = {
+                let frame = &thread.frames[top];
+                (frame.pc, frame.function)
+            };
+            let Some(op) = self
+                .code
+                .get(function)
+                .and_then(|code| code.ops.get(pc))
+                .cloned()
+            else {
+                return Ok(ThreadStatus::Done(Value::Null));
+            };
+            self.steps += 1;
+            if self.steps > self.max_steps {
+                return Err(ReError::Vm("step limit exceeded".into()));
             }
-            Stmt::Call { name, args, line } => {
-                let values = args
-                    .iter()
-                    .map(|arg| self.eval_expr(arg))
-                    .collect::<Result<Vec<_>>>()?;
-                let result = self.call_function(name, &values, depth + 1);
-                if let Err(err) = result {
-                    self.errors.push(format!("line {line}: call {name}: {err}"));
+            thread.frames[top].pc = pc + 1;
+            match op {
+                Op::Push(value) => thread.frames[top].stack.push(value),
+                Op::PushCode(name) => thread.frames[top].stack.push(Value::Code(name)),
+                Op::Load(name) => {
+                    let value = get_var(&self.globals, &thread.frames[top], &name);
+                    thread.frames[top].stack.push(value);
                 }
-                Ok(Control::Normal)
-            }
-            Stmt::If {
-                branches,
-                else_body,
-                line,
-            } => {
-                for (cond, body) in branches {
-                    if self.eval_expr(cond)?.truthy() {
-                        return self.exec_block(body, depth);
+                Op::LoadArray(name) => {
+                    let index = pop(&mut thread.frames[top]).as_int();
+                    if !array_index_in_bounds(index) {
+                        self.record_array_bounds(&name, index);
+                        thread.frames[top].stack.push(Value::Null);
+                    } else {
+                        let value = get_array(&self.globals, &thread.frames[top], &name, index);
+                        thread.frames[top].stack.push(value);
                     }
                 }
-                if let Some(body) = else_body {
-                    return self.exec_block(body, depth);
+                Op::Store(name) => {
+                    let value = pop(&mut thread.frames[top]);
+                    let previous = get_var(&self.globals, &thread.frames[top], &name);
+                    set_scalar(&mut self.globals, &mut thread.frames[top], &name, value.clone());
+                    if self.has_variable_events && !thread.frames[top].locals.contains_key(&name) {
+                        self.notify_variable_change(&name, previous.as_real(), value.as_real());
+                    }
                 }
-                let _ = line;
-                Ok(Control::Normal)
-            }
-            Stmt::Loop { body, line } => {
-                let mut iterations = 0u64;
-                loop {
-                    iterations += 1;
-                    if iterations > 5_000_000 {
+                Op::StoreArray(name) => {
+                    let index = pop(&mut thread.frames[top]).as_int();
+                    let value = pop(&mut thread.frames[top]);
+                    if !array_index_in_bounds(index) {
+                        self.record_array_bounds(&name, index);
+                    } else {
+                        set_array(&mut self.globals, &mut thread.frames[top], &name, index, value);
+                    }
+                }
+                Op::Local { name, array, init } => {
+                    let slot = if array {
+                        Slot::Array(BTreeMap::new())
+                    } else {
+                        let value = if init {
+                            pop(&mut thread.frames[top])
+                        } else {
+                            Value::Null
+                        };
+                        Slot::Scalar(value)
+                    };
+                    thread.frames[top].locals.insert(name, slot);
+                }
+                Op::Call {
+                    name,
+                    argc,
+                    line,
+                    proc,
+                } => {
+                    let mut args = Vec::with_capacity(argc);
+                    for _ in 0..argc {
+                        args.push(pop(&mut thread.frames[top]));
+                    }
+                    args.reverse();
+                    let key = name.to_ascii_lowercase();
+                    if let Some(index) = self.function_index.get(&key).copied() {
+                        // A script call runs on the *same* thread: retail JASS
+                        // has one thread per activation, so a
+                        // `TriggerSleepAction` inside the callee parks the whole
+                        // call chain, not just the callee.
+                        *self.call_counts.entry(self.code[index].name.clone()).or_insert(0) += 1;
+                        self.steps += 1;
+                        if self.steps > self.max_steps {
+                            return Err(ReError::Vm(format!(
+                                "line {line}: step limit exceeded in {name}"
+                            )));
+                        }
+                        if depth + thread.frames.len() >= MAX_CALL_DEPTH {
+                            return Err(ReError::Vm(format!(
+                                "line {line}: call depth exceeded at {name}"
+                            )));
+                        }
+                        let mut frame = self.frame_for(index, &args);
+                        frame.discard_result = proc;
+                        thread.frames.push(frame);
+                    } else if self.natives.contains_key(&key) {
+                        let call_depth = depth + thread.frames.len();
+                        if proc {
+                            if let Err(err) = self.call_native(&name, &args, call_depth) {
+                                self.errors.push(format!("line {line}: call {name}: {err}"));
+                            }
+                        } else {
+                            let value = self.call_native(&name, &args, call_depth)?;
+                            thread.frames[top].stack.push(value);
+                        }
+                    } else {
+                        self.unimplemented
+                            .entry(key)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                        if !proc {
+                            let value = self.default_return(&name);
+                            thread.frames[top].stack.push(value);
+                        }
+                    }
+                }
+                Op::Binary(op) => {
+                    let right = pop(&mut thread.frames[top]);
+                    let left = pop(&mut thread.frames[top]);
+                    let value = eval_binary(op, left, right, self.world.local_player_any);
+                    thread.frames[top].stack.push(value);
+                }
+                Op::Unary(op) => {
+                    let value = pop(&mut thread.frames[top]);
+                    let value = match op {
+                        UnOp::Neg => match value {
+                            Value::Real(v) => Value::Real(-v),
+                            Value::Int(v) => Value::Int(-v),
+                            other => Value::Int(-other.as_int()),
+                        },
+                        UnOp::Pos => value,
+                        UnOp::Not => Value::Bool(!value.truthy()),
+                    };
+                    thread.frames[top].stack.push(value);
+                }
+                Op::Jump(target) => thread.frames[top].pc = target,
+                Op::JumpIfFalse(target) => {
+                    if !pop(&mut thread.frames[top]).truthy() {
+                        thread.frames[top].pc = target;
+                    }
+                }
+                Op::JumpIfTrue(target) => {
+                    if pop(&mut thread.frames[top]).truthy() {
+                        thread.frames[top].pc = target;
+                    }
+                }
+                Op::AndJump(target) => {
+                    let truthy = thread.frames[top]
+                        .stack
+                        .last()
+                        .is_some_and(Value::truthy);
+                    if truthy {
+                        thread.frames[top].stack.pop();
+                    } else {
+                        thread.frames[top].pc = target;
+                    }
+                }
+                Op::OrJump(target) => {
+                    let truthy = thread.frames[top]
+                        .stack
+                        .last()
+                        .is_some_and(Value::truthy);
+                    if truthy {
+                        thread.frames[top].pc = target;
+                    } else {
+                        thread.frames[top].stack.pop();
+                    }
+                }
+                Op::ExitWhen(target) => {
+                    if pop(&mut thread.frames[top]).truthy() {
+                        thread.frames[top].pc = target;
+                    }
+                }
+                Op::Return => {
+                    let value = pop(&mut thread.frames[top]);
+                    let discard = thread.frames[top].discard_result;
+                    thread.frames.pop();
+                    if thread.frames.is_empty() && thread.pending_at >= thread.pending.len() {
+                        return Ok(ThreadStatus::Done(value));
+                    }
+                    if !discard {
+                        if let Some(frame) = thread.frames.last_mut() {
+                            frame.stack.push(value);
+                        }
+                    }
+                }
+                Op::LoopEnter(slot) => {
+                    if let Some(counter) = thread.frames[top].loops.get_mut(slot) {
+                        *counter = 0;
+                    }
+                }
+                Op::LoopBack { slot, target, line } => {
+                    let counter = thread.frames[top]
+                        .loops
+                        .get_mut(slot)
+                        .map(|counter| {
+                            *counter += 1;
+                            *counter
+                        })
+                        .unwrap_or(0);
+                    if counter > 5_000_000 {
                         return Err(ReError::Vm(format!(
                             "line {line}: loop iteration limit exceeded"
                         )));
                     }
-                    match self.exec_block(body, depth)? {
-                        Control::Normal => {}
-                        Control::ExitLoop => break,
-                        Control::Return(value) => return Ok(Control::Return(value)),
-                    }
+                    thread.frames[top].pc = target;
                 }
-                Ok(Control::Normal)
+                Op::Pop => {
+                    let _ = pop(&mut thread.frames[top]);
+                }
+                Op::CoerceBool => {
+                    let value = pop(&mut thread.frames[top]);
+                    thread.frames[top].stack.push(Value::Bool(value.truthy()));
+                }
             }
-            Stmt::ExitWhen { cond, line } => {
-                if self.eval_expr(cond)?.truthy() {
-                    Ok(Control::ExitLoop)
+            if let Some(seconds) = self.pending_sleep.take() {
+                thread.sleep = Some(seconds);
+                thread.wake_at = self.world.game_time + seconds.max(0.0);
+                return Ok(ThreadStatus::Suspended);
+            }
+        }
+    }
+
+    /// Advance the script clock by `dt` and service timers and sleeping
+    /// threads. Standalone runtimes step this directly; the engine owns its own
+    /// clock and calls [`Runtime::tick_script`] after syncing
+    /// `world.game_time`.
+    pub fn advance(&mut self, dt: f64) -> usize {
+        self.world.game_time += dt;
+        self.tick_script(dt)
+    }
+
+    /// Fires `TimerStart` callbacks and `TriggerRegisterTimerEvent` schedules,
+    /// then resumes the threads whose sleep has expired. Returns the number of
+    /// threads that ran.
+    pub fn tick_script(&mut self, dt: f64) -> usize {
+        let now = self.world.game_time;
+        let mut ran = 0usize;
+
+        // 0. Day/night clock, then the world-state sampler: region enter/leave,
+        //    unit deaths and clock crossings. This is the only caller of the
+        //    death/region dispatch in the headless engine (the game layer syncs
+        //    positions/HP into the JASS world before this tick).
+        //
+        //    Retail runs one 24 h cycle per 480 s of game time; `SetTimeOfDay`
+        //    jumps the clock and `SetTimeOfDayScale` changes the rate, and the
+        //    `TriggerRegisterGameStateEvent(…, GAME_STATE_TIME_OF_DAY, …)`
+        //    registrations fire as the clock crosses their limit.
+        self.world.time_of_day =
+            (self.world.time_of_day + dt * (24.0 / 480.0) * self.world.time_of_day_scale) % 24.0;
+        ran += self.update_world_events();
+
+        // 1. `CreateTimer` + `TimerStart` callbacks.
+        let mut expired: Vec<u32> = Vec::new();
+        for (handle, timer) in self.world.timers.iter_mut() {
+            if !timer.running {
+                continue;
+            }
+            timer.elapsed += dt;
+            timer.remaining -= dt;
+            if timer.remaining <= 0.0 {
+                expired.push(*handle);
+                if timer.periodic {
+                    timer.remaining += timer.timeout.max(f64::EPSILON);
                 } else {
-                    let _ = line;
-                    Ok(Control::Normal)
+                    timer.running = false;
                 }
             }
-            Stmt::Return { value, line } => {
-                let value = match value {
-                    Some(expr) => self.eval_expr(expr)?,
-                    None => Value::Null,
-                };
-                let _ = line;
-                Ok(Control::Return(value))
+        }
+        for handle in expired {
+            let code = self
+                .world
+                .timers
+                .get(&handle)
+                .and_then(|timer| timer.code.clone());
+            self.world.firing_timer = Some(handle);
+            if let Some(code) = code {
+                if let Err(err) =
+                    self.run_entry(&code, Vec::new(), ThreadOrigin::Timer(handle), 0)
+                {
+                    self.errors.push(format!("timer {handle:#x} callback: {err}"));
+                }
+                ran += 1;
             }
-        }
-    }
-
-    fn set_scalar(&mut self, name: &str, value: Value) {
-        if let Some(frame) = self.frames.last_mut()
-            && let Some(slot) = frame.locals.get_mut(name)
-        {
-            *slot = Slot::Scalar(value);
-            return;
-        }
-        if let Some(slot) = self.globals.get_mut(name) {
-            *slot = Slot::Scalar(value);
-            return;
-        }
-        self.globals.insert(name.to_string(), Slot::Scalar(value));
-    }
-
-    fn set_array(&mut self, name: &str, index: i64, value: Value) {
-        if let Some(frame) = self.frames.last_mut()
-            && let Some(Slot::Array(map)) = frame.locals.get_mut(name)
-        {
-            map.insert(index, value);
-            return;
-        }
-        match self.globals.get_mut(name) {
-            Some(Slot::Array(map)) => {
-                map.insert(index, value);
-            }
-            Some(slot) => {
-                let mut map = BTreeMap::new();
-                map.insert(index, value);
-                *slot = Slot::Array(map);
-            }
-            None => {
-                let mut map = BTreeMap::new();
-                map.insert(index, value);
-                self.globals.insert(name.to_string(), Slot::Array(map));
-            }
-        }
-    }
-
-    fn get_var(&self, name: &str) -> Value {
-        if let Some(frame) = self.frames.last() {
-            if let Some(slot) = frame.locals.get(name) {
-                return slot.scalar();
-            }
-        }
-        self.globals
-            .get(name)
-            .map(Slot::scalar)
-            .unwrap_or(Value::Null)
-    }
-
-    fn get_array(&self, name: &str, index: i64) -> Value {
-        if let Some(frame) = self.frames.last() {
-            if let Some(Slot::Array(map)) = frame.locals.get(name) {
-                return map.get(&index).cloned().unwrap_or(Value::Null);
-            }
-        }
-        if let Some(Slot::Array(map)) = self.globals.get(name) {
-            return map.get(&index).cloned().unwrap_or(Value::Null);
-        }
-        Value::Null
-    }
-
-    fn eval_expr(&mut self, expr: &Expr) -> Result<Value> {
-        self.steps += 1;
-        if self.steps > self.max_steps {
-            return Err(ReError::Vm("step limit exceeded".into()));
-        }
-        match expr {
-            Expr::Int(value) => Ok(Value::Int(*value)),
-            Expr::Real(value) => Ok(Value::Real(*value)),
-            Expr::Bool(value) => Ok(Value::Bool(*value)),
-            Expr::Str(value) => Ok(Value::Str(value.clone())),
-            Expr::Null => Ok(Value::Null),
-            Expr::Var(name) => Ok(self.get_var(name)),
-            Expr::Array(name, index) => {
-                let index = self.eval_expr(index)?.as_int();
-                Ok(self.get_array(name, index))
-            }
-            Expr::Call(name, args) => {
-                let values = args
-                    .iter()
-                    .map(|arg| self.eval_expr(arg))
-                    .collect::<Result<Vec<_>>>()?;
-                self.call_function(name, &values, self.frames.len())
-            }
-            Expr::Code(name) => Ok(Value::Code(name.clone())),
-            Expr::Unary(op, expr) => {
-                let value = self.eval_expr(expr)?;
-                Ok(match op {
-                    UnOp::Neg => match value {
-                        Value::Real(v) => Value::Real(-v),
-                        Value::Int(v) => Value::Int(-v),
-                        other => Value::Int(-other.as_int()),
-                    },
-                    UnOp::Pos => value,
-                    UnOp::Not => Value::Bool(!value.truthy()),
+            let triggers: Vec<u32> = self
+                .world
+                .triggers
+                .iter()
+                .filter(|(_, trigger)| {
+                    trigger.events.iter().any(
+                        |event| matches!(event, TriggerEvent::TimerExpire { timer } if *timer == handle),
+                    )
                 })
+                .map(|(handle, _)| *handle)
+                .collect();
+            for trigger in triggers {
+                if let Err(err) = self.execute_trigger(trigger) {
+                    self.errors.push(format!("timer expiry trigger {trigger:#x}: {err}"));
+                }
+                ran += 1;
             }
-            Expr::Binary(op, left, right) => {
-                if matches!(op, BinOp::And) {
-                    let left = self.eval_expr(left)?;
-                    if !left.truthy() {
-                        return Ok(Value::Bool(false));
-                    }
-                    let right = self.eval_expr(right)?;
-                    return Ok(Value::Bool(right.truthy()));
+            self.world.firing_timer = None;
+        }
+
+        // 2. `TriggerRegisterTimerEvent` schedules (the event the trigger
+        //    carries is bookkeeping; this is the clock that makes it fire).
+        let mut due: Vec<u32> = Vec::new();
+        for event in self.world.timer_events.iter_mut() {
+            if event.done {
+                continue;
+            }
+            event.elapsed += dt;
+            let period = event.timeout.max(0.0);
+            if event.elapsed + f64::EPSILON >= period {
+                due.push(event.trigger);
+                event.fires += 1;
+                if event.periodic {
+                    event.elapsed -= period;
+                } else {
+                    event.done = true;
                 }
-                if matches!(op, BinOp::Or) {
-                    let left = self.eval_expr(left)?;
-                    if left.truthy() {
-                        return Ok(Value::Bool(true));
-                    }
-                    let right = self.eval_expr(right)?;
-                    return Ok(Value::Bool(right.truthy()));
-                }
-                let left = self.eval_expr(left)?;
-                let right = self.eval_expr(right)?;
-                Ok(eval_binary(
-                    *op,
-                    left,
-                    right,
-                    self.world.local_player_any,
-                ))
             }
         }
+        for trigger in due {
+            let enabled = self
+                .world
+                .triggers
+                .get(&trigger)
+                .is_some_and(|trigger| trigger.enabled);
+            if !enabled {
+                continue;
+            }
+            if let Err(err) = self.execute_trigger(trigger) {
+                self.errors.push(format!("timer event trigger {trigger:#x}: {err}"));
+            }
+            ran += 1;
+        }
+
+        // 3. Threads whose sleep expired. The list is taken before any of them
+        //    runs, so a thread parked during this tick waits for the next one.
+        let mut waking: Vec<Thread> = Vec::new();
+        let mut index = 0;
+        while index < self.threads.len() {
+            if self.threads[index].wake_at <= now + 1e-9 {
+                waking.push(self.threads.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        for mut thread in waking {
+            thread.sleep = None;
+            self.wakes += 1;
+            match self.run_thread(&mut thread, 0) {
+                Ok(ThreadStatus::Done(_)) => {}
+                Ok(ThreadStatus::Suspended) => self.park(thread),
+                Err(err) => {
+                    self.errors
+                        .push(format!("thread {} ({}): {err}", thread.id, thread.name));
+                }
+            }
+            ran += 1;
+        }
+        ran
+    }
+
+    /// Requests that the running thread suspend for `seconds` (the
+    /// `TriggerSleepAction` contract). The interpreter loop turns this into a
+    /// parked thread; a thread resumed at `world.game_time + seconds`.
+    pub(crate) fn request_sleep(&mut self, seconds: f64) {
+        self.pending_sleep = Some(seconds.max(0.0));
+        self.sleeps += 1;
     }
 
     pub(crate) fn alloc(&mut self) -> u32 {
@@ -1240,6 +1799,15 @@ impl Runtime {
 
     pub fn default_local_player() -> u32 {
         DEFAULT_LOCAL_PLAYER.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Seat the script authored for `unit` (`script_owner`), falling back to
+    /// the mirrored simulation owner.
+    pub fn owner_of(&self, unit: u32) -> Option<i32> {
+        self.world
+            .units
+            .get(&unit)
+            .map(|state| state.script_owner.unwrap_or(state.owner))
     }
 
     pub(crate) fn player_index(&self, value: &Value) -> Option<usize> {
@@ -1284,6 +1852,12 @@ impl Runtime {
         }
         self.trigger_stack.push(handle);
         let result = (|| -> Result<Value> {
+            // `GetTriggeringTrigger()` must answer this trigger *inside its
+            // conditions*: the canonical JASS guard
+            // `IsTriggerEnabled(GetTriggeringTrigger())` only passes when the
+            // context is published before the condition runs.
+            let previous_trigger = self.world.context.trigger;
+            self.world.context.trigger = Some(handle);
             let mut pass = true;
             for condition in &trigger.conditions {
                 if !self.eval_bool_expr(*condition, depth)? {
@@ -1291,15 +1865,13 @@ impl Runtime {
                     break;
                 }
             }
-            let previous_trigger = self.world.context.trigger;
-            self.world.context.trigger = Some(handle);
             if pass {
-                for action in &trigger.actions {
-                    self.call_function(action, &[], depth + 1)?;
-                }
+                self.run_action_list(&trigger, handle, depth)?;
                 if let Some(stored) = self.world.triggers.get_mut(&handle) {
                     stored.exec_count += 1;
                 }
+            } else {
+                self.condition_vetoes += 1;
             }
             if let Some(stored) = self.world.triggers.get_mut(&handle) {
                 stored.eval_count += 1;
@@ -1309,6 +1881,60 @@ impl Runtime {
         })();
         self.trigger_stack.pop();
         result
+    }
+
+    /// Runs a trigger's action list as one thread.
+    ///
+    /// The actions share a thread, so a `TriggerSleepAction` inside one action
+    /// suspends the actions after it and the list continues on the wake tick —
+    /// exactly the retail behaviour. Without this the whole trigger ran inside
+    /// the tick that fired it.
+    fn run_action_list(
+        &mut self,
+        trigger: &Trigger,
+        handle: u32,
+        depth: usize,
+    ) -> Result<()> {
+        let mut entry: Option<usize> = None;
+        let mut pending: Vec<PendingCall> = Vec::new();
+        for action in &trigger.actions {
+            match self
+                .function_index
+                .get(&action.to_ascii_lowercase())
+                .copied()
+            {
+                Some(index) => {
+                    *self.call_counts.entry(self.code[index].name.clone()).or_insert(0) += 1;
+                    match entry {
+                        None => entry = Some(index),
+                        Some(_) => pending.push(PendingCall {
+                            function: index,
+                            args: Vec::new(),
+                        }),
+                    }
+                }
+                // An action that is a native or an unknown name has no body to
+                // suspend; run it the way a `call` statement would.
+                None => {
+                    let _ = self.call_function(action, &[], depth + 1);
+                }
+            }
+        }
+        let Some(index) = entry else {
+            return Ok(());
+        };
+        let function_name = self.code[index].name.clone();
+        let mut thread = self.thread_for(ThreadOrigin::Trigger(handle), &function_name);
+        thread.frames.push(self.frame_for(index, &[]));
+        thread.pending = pending;
+        thread.pending_at = 0;
+        match self.run_thread(&mut thread, depth)? {
+            ThreadStatus::Done(_) => Ok(()),
+            ThreadStatus::Suspended => {
+                self.park(thread);
+                Ok(())
+            }
+        }
     }
 
     /// Fire a player-unit/unit event for `unit`.
@@ -1322,10 +1948,13 @@ impl Runtime {
         let Some(unit_state) = self.world.units.get(&unit) else {
             return 0;
         };
-        let owner = if unit_state.owner >= 0 {
-            Some(unit_state.owner as u32)
-        } else {
-            None
+        let owner = {
+            let seat = unit_state.script_owner.unwrap_or(unit_state.owner);
+            if seat >= 0 {
+                Some(seat as u32)
+            } else {
+                None
+            }
         };
         let unit_id = unit_state.id.clone();
         let mut due = Vec::new();
@@ -1361,20 +1990,401 @@ impl Runtime {
         let previous_unit = self.world.context.unit;
         self.world.context.player = owner;
         self.world.context.unit = Some(unit);
-        let count = due.len();
-        for handle in due {
-            let _ = self.execute_trigger(handle);
-        }
+        let count = self.dispatch("unit_event", due);
         self.world.context.player = previous_player;
         self.world.context.unit = previous_unit;
         count
+    }
+
+    // ---------------------------------------------------------------------
+    // Event dispatch table
+    //
+    // Every `TriggerEvent` variant a map can register has a consumer here.
+    // `update_world_events` is the engine tick's sampler: it diffs region
+    // membership and unit liveness and turns the differences into the enter /
+    // leave / death events retail raises. Game-state, variable and dialog
+    // events are raised by the native that changes the state (WC3-JASS-002).
+    // ---------------------------------------------------------------------
+
+    /// Runs the triggers in `handles` and records the event kind.
+    fn dispatch(&mut self, kind: &str, handles: Vec<u32>) -> usize {
+        if handles.is_empty() {
+            return 0;
+        }
+        let count = handles.len();
+        for handle in handles {
+            if let Err(err) = self.execute_trigger(handle) {
+                self.errors.push(format!("{kind} trigger {handle:#x}: {err}"));
+            }
+            *self.event_fires.entry(kind.to_string()).or_insert(0) += 1;
+            if self.event_log.len() < 128 {
+                let action = self
+                    .world
+                    .triggers
+                    .get(&handle)
+                    .and_then(|trigger| trigger.actions.first().cloned())
+                    .unwrap_or_default();
+                self.event_log.push(format!("{kind}:{handle:#x}:{action}"));
+            }
+        }
+        count
+    }
+
+    /// Handles of every enabled trigger with at least one event matching
+    /// `predicate`.
+    fn triggers_matching<F>(&self, mut predicate: F) -> Vec<u32>
+    where
+        F: FnMut(&TriggerEvent) -> bool,
+    {
+        let mut due = Vec::new();
+        for (handle, trigger) in &self.world.triggers {
+            if !trigger.enabled {
+                continue;
+            }
+            if trigger.events.iter().any(&mut predicate) {
+                due.push(*handle);
+            }
+        }
+        due
+    }
+
+    /// Registered trigger executions per event kind, `kind=count` pairs.
+    pub fn event_summary(&self) -> String {
+        let mut parts = Vec::new();
+        for kind in [
+            "enter_region",
+            "leave_region",
+            "death",
+            "unit_event",
+            "game_state",
+            "variable",
+            "dialog",
+            "dialog_button",
+            "player_event",
+            "game_event",
+        ] {
+            if let Some(count) = self.event_fires.get(kind) {
+                parts.push(format!("{kind}={count}"));
+            }
+        }
+        parts.join(",")
+    }
+
+    /// Fires `TriggerRegisterEnterRegion` / `TriggerRegisterLeaveRegion`
+    /// registrations for `region`.
+    pub fn fire_region_event(&mut self, event: RegionEvent, region: u32, unit: u32) -> usize {
+        let kind = match event {
+            RegionEvent::Enter => "enter_region",
+            RegionEvent::Leave => "leave_region",
+        };
+        let handles = self.triggers_matching(|candidate| match (event, candidate) {
+            (RegionEvent::Enter, TriggerEvent::EnterRegion { region: watched }) => *watched == region,
+            (RegionEvent::Leave, TriggerEvent::LeaveRegion { region: watched }) => *watched == region,
+            _ => false,
+        });
+        if handles.is_empty() {
+            return 0;
+        }
+        let previous = self.world.context.clone();
+        self.world.context.unit = Some(unit);
+        self.world.context.region = Some(region);
+        if let Some(owner) = self
+            .world
+            .units
+            .get(&unit)
+            .map(|state| state.script_owner.unwrap_or(state.owner))
+        {
+            if owner >= 0 {
+                self.world.context.player = Some(owner as u32);
+            }
+        }
+        match event {
+            RegionEvent::Enter => self.world.context.entering = Some(unit),
+            RegionEvent::Leave => self.world.context.leaving = Some(unit),
+        }
+        let count = self.dispatch(kind, handles);
+        self.world.context = previous;
+        count
+    }
+
+    /// Fires a unit death: `TriggerRegisterDeathEvent`,
+    /// `TriggerRegisterPlayerUnitEvent(…, EVENT_PLAYER_UNIT_DEATH)`,
+    /// `TriggerRegisterUnitEvent(…, EVENT_UNIT_DEATH)` and the player event of
+    /// the same id. `GetDyingUnit`/`GetTriggerUnit` answer the dead unit.
+    pub fn fire_death_event(&mut self, unit: u32) -> usize {
+        let Some(state) = self.world.units.get(&unit) else {
+            return 0;
+        };
+        // One death per unit: the native (`KillUnit`) and the tick sampler both
+        // report it, whichever gets there first wins.
+        if !self.dead_seen.insert(unit) {
+            return 0;
+        }
+        let owner = state.script_owner.unwrap_or(state.owner);
+        let unit_id = state.id.clone();
+        let handles = self.triggers_matching(|candidate| match candidate {
+            TriggerEvent::Death { unit: watched } => *watched == 0 || *watched == unit,
+            TriggerEvent::PlayerUnit {
+                player,
+                event,
+                unit_type,
+            } => {
+                *event == EVENT_PLAYER_UNIT_DEATH
+                    && owner >= 0
+                    && *player == owner as u32
+                    && (unit_type.is_empty() || *unit_type == unit_id)
+            }
+            TriggerEvent::UnitEvent {
+                unit: watched,
+                event,
+            } => *event == EVENT_UNIT_DEATH && (*watched == 0 || *watched == unit),
+            TriggerEvent::Player { player, event } => {
+                *event == EVENT_PLAYER_UNIT_DEATH && owner >= 0 && *player == owner as u32
+            }
+            _ => false,
+        });
+        if handles.is_empty() {
+            return 0;
+        }
+        let previous = self.world.context.clone();
+        self.world.context.unit = Some(unit);
+        self.world.context.dying = Some(unit);
+        if owner >= 0 {
+            self.world.context.player = Some(owner as u32);
+        }
+        let count = self.dispatch("death", handles);
+        self.world.context = previous;
+        count
+    }
+
+    /// Fires the `TriggerRegisterGameStateEvent` /
+    /// `TriggerRegisterPlayerStateEvent` registrations whose limit condition
+    /// `value` satisfies right now.
+    pub fn fire_game_state_event(&mut self, player: Option<u32>, state: i64, value: f64) -> usize {
+        let handles = self.triggers_matching(|candidate| match candidate {
+            TriggerEvent::GameState {
+                player: watched,
+                state: watched_state,
+                op,
+                value: limit,
+            } => {
+                *watched_state == state
+                    && (*watched < 0 || player == Some(*watched as u32))
+                    && limit_holds(*op, value, *limit)
+            }
+            _ => false,
+        });
+        self.dispatch_state(player, state, handles)
+    }
+
+    /// Fires a state event only when the state *crossed* the registered limit
+    /// (the retail `limitop` contract: a threshold fires once per crossing).
+    pub fn notify_state_change(
+        &mut self,
+        player: Option<u32>,
+        state: i64,
+        previous: f64,
+        current: f64,
+    ) -> usize {
+        let handles = self.triggers_matching(|candidate| match candidate {
+            TriggerEvent::GameState {
+                player: watched,
+                state: watched_state,
+                op,
+                value: limit,
+            } => {
+                *watched_state == state
+                    && (*watched < 0 || player == Some(*watched as u32))
+                    && !limit_holds(*op, previous, *limit)
+                    && limit_holds(*op, current, *limit)
+            }
+            _ => false,
+        });
+        self.dispatch_state(player, state, handles)
+    }
+
+    fn dispatch_state(&mut self, player: Option<u32>, state: i64, handles: Vec<u32>) -> usize {
+        if handles.is_empty() {
+            return 0;
+        }
+        let previous = self.world.context.clone();
+        self.world.context.game_state = state;
+        if let Some(player) = player {
+            self.world.context.player = Some(player);
+        }
+        let count = self.dispatch("game_state", handles);
+        self.world.context = previous;
+        count
+    }
+
+    /// Fires `TriggerRegisterVariableEvent` registrations whose limit the
+    /// variable now satisfies.
+    pub fn fire_variable_event(&mut self, name: &str, value: f64) -> usize {
+        let handles = self.triggers_matching(|candidate| match candidate {
+            TriggerEvent::Variable {
+                name: watched,
+                op,
+                value: limit,
+            } => watched.eq_ignore_ascii_case(name) && limit_holds(*op, value, *limit),
+            _ => false,
+        });
+        self.dispatch("variable", handles)
+    }
+
+    fn notify_variable_change(&mut self, name: &str, previous: f64, current: f64) -> usize {
+        if (current - previous).abs() < f64::EPSILON {
+            return 0;
+        }
+        let handles = self.triggers_matching(|candidate| match candidate {
+            TriggerEvent::Variable {
+                name: watched,
+                op,
+                value: limit,
+            } => {
+                watched.eq_ignore_ascii_case(name)
+                    && !limit_holds(*op, previous, *limit)
+                    && limit_holds(*op, current, *limit)
+            }
+            _ => false,
+        });
+        self.dispatch("variable", handles)
+    }
+
+    /// Fires `TriggerRegisterDialogEvent` for a dialog that became visible.
+    pub fn fire_dialog_event(&mut self, dialog: u32) -> usize {
+        let handles = self.triggers_matching(|candidate| {
+            matches!(candidate, TriggerEvent::Dialog { dialog: watched } if *watched == dialog)
+        });
+        self.dispatch("dialog", handles)
+    }
+
+    /// Fires `TriggerRegisterDialogButtonEvent` for a clicked button.
+    pub fn fire_dialog_button_event(&mut self, dialog: u32, button: u32) -> usize {
+        let handles = self.triggers_matching(|candidate| {
+            matches!(
+                candidate,
+                TriggerEvent::DialogButton { dialog: d, button: b } if *d == dialog && *b == button
+            )
+        });
+        self.dispatch("dialog_button", handles)
+    }
+
+    /// Fires `TriggerRegisterGameEvent(trig, event)` for one game event.
+    pub fn fire_game_event(&mut self, event: i64) -> usize {
+        let handles = self.triggers_matching(|candidate| {
+            matches!(candidate, TriggerEvent::Custom { event: watched } if *watched == event)
+        });
+        self.dispatch("game_event", handles)
+    }
+
+    /// Fires `TriggerRegisterPlayerEvent(trig, player, event)` for one seat
+    /// (the end-cinematic and victory/defeat class, which carries no unit).
+    pub fn fire_player_event(&mut self, player: u32, event: i64) -> usize {
+        let handles = self.triggers_matching(|candidate| {
+            matches!(
+                candidate,
+                TriggerEvent::Player { player: p, event: e } if *p == player && *e == event
+            )
+        });
+        if handles.is_empty() {
+            return 0;
+        }
+        let previous = self.world.context.clone();
+        self.world.context.player = Some(player);
+        let count = self.dispatch("player_event", handles);
+        self.world.context = previous;
+        count
+    }
+
+    /// Engine-tick sampler: turns world state changes (region membership, unit
+    /// liveness, clock crossings) into registered trigger events. Returns the
+    /// number of trigger executions.
+    pub fn update_world_events(&mut self) -> usize {
+        let mut fired = self.update_region_events();
+        fired += self.update_death_events();
+        fired += self.update_time_of_day_events();
+        fired
+    }
+
+    fn update_region_events(&mut self) -> usize {
+        let mut watched: BTreeSet<u32> = BTreeSet::new();
+        for trigger in self.world.triggers.values() {
+            if !trigger.enabled {
+                continue;
+            }
+            for event in &trigger.events {
+                match event {
+                    TriggerEvent::EnterRegion { region } | TriggerEvent::LeaveRegion { region } => {
+                        watched.insert(*region);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.region_members
+            .retain(|region, _| watched.contains(region));
+        let mut fired = 0;
+        for region in watched {
+            let mut inside: BTreeSet<u32> = BTreeSet::new();
+            let Some(region_state) = self.world.regions.get(&region) else {
+                continue;
+            };
+            if region_state.rects.is_empty() && region_state.cells.is_empty() {
+                continue;
+            }
+            for (handle, unit) in &self.world.units {
+                // A corpse keeps its region membership: retail only raises
+                // `leave` when the unit actually exits (or is removed).
+                if point_in_region(&self.world, region_state, unit.x, unit.y) {
+                    inside.insert(*handle);
+                }
+            }
+            let previous = self.region_members.get(&region).cloned().unwrap_or_default();
+            let entered: Vec<u32> = inside.difference(&previous).copied().collect();
+            let left: Vec<u32> = previous.difference(&inside).copied().collect();
+            for unit in entered {
+                fired += self.fire_region_event(RegionEvent::Enter, region, unit);
+            }
+            for unit in left {
+                fired += self.fire_region_event(RegionEvent::Leave, region, unit);
+            }
+            self.region_members.insert(region, inside);
+        }
+        fired
+    }
+
+    fn update_death_events(&mut self) -> usize {
+        let dead: Vec<u32> = self
+            .world
+            .units
+            .iter()
+            .filter(|(_, unit)| !unit.alive)
+            .map(|(handle, _)| *handle)
+            .collect();
+        let mut fired = 0;
+        for handle in dead {
+            fired += self.fire_death_event(handle);
+        }
+        self.dead_seen
+            .retain(|handle| self.world.units.contains_key(handle));
+        fired
+    }
+
+    fn update_time_of_day_events(&mut self) -> usize {
+        let previous = self.time_of_day_prev;
+        let now = self.world.time_of_day;
+        self.time_of_day_prev = now;
+        if (now - previous).abs() < 1e-9 {
+            return 0;
+        }
+        self.notify_state_change(None, GAME_STATE_TIME_OF_DAY, previous, now)
     }
 
     /// Fire an item event for `item` held/manipulated by `unit` with
     /// `GetManipulatedItem` set for the duration of the handlers.
     pub(crate) fn item_event(&mut self, event: i64, unit: u32, item: u32) {
         let previous = self.world.context.clone();
-        if let Some(owner) = self.world.units.get(&unit).map(|unit| unit.owner) {
+        if let Some(owner) = self.owner_of(unit) {
             if owner >= 0 {
                 self.world.context.player = Some(owner as u32);
             }
@@ -1472,7 +2482,7 @@ impl Runtime {
                 "cast_ability: caster {caster:#x} does not have {id}"
             )));
         }
-        let owner = caster_state.owner;
+        let owner = caster_state.script_owner.unwrap_or(caster_state.owner);
         let previous = self.world.context.clone();
         self.world.context.trigger = None;
         self.world.context.player = if owner >= 0 { Some(owner as u32) } else { None };
@@ -1529,7 +2539,7 @@ impl Runtime {
             return Ok(false);
         }
         let previous = self.world.context.clone();
-        if let Some(owner) = self.world.units.get(&unit).map(|unit| unit.owner) {
+        if let Some(owner) = self.owner_of(unit) {
             if owner >= 0 {
                 self.world.context.player = Some(owner as u32);
             }
@@ -1586,6 +2596,316 @@ impl Runtime {
             .last_created_unit
             .map(Value::Handle)
             .unwrap_or(Value::Null)
+    }
+}
+
+/// Pop the top of a frame's operand stack (`null` when empty, matching the
+/// interpreter's tolerant value model).
+fn pop(frame: &mut Frame) -> Value {
+    frame.stack.pop().unwrap_or(Value::Null)
+}
+
+fn get_var(globals: &HashMap<String, Slot>, frame: &Frame, name: &str) -> Value {
+    if let Some(slot) = frame.locals.get(name) {
+        return slot.scalar();
+    }
+    globals.get(name).map(Slot::scalar).unwrap_or(Value::Null)
+}
+
+/// JASS array indices are `0..=8191` (`common.j` declares `[8192]`).
+#[inline]
+fn array_index_in_bounds(index: i64) -> bool {
+    (0..JASS_ARRAY_LEN).contains(&index)
+}
+
+fn get_array(
+    globals: &HashMap<String, Slot>,
+    frame: &Frame,
+    name: &str,
+    index: i64,
+) -> Value {
+    if let Some(Slot::Array(map)) = frame.locals.get(name) {
+        return map.get(&index).cloned().unwrap_or(Value::Null);
+    }
+    if let Some(Slot::Array(map)) = globals.get(name) {
+        return map.get(&index).cloned().unwrap_or(Value::Null);
+    }
+    Value::Null
+}
+
+fn set_scalar(
+    globals: &mut HashMap<String, Slot>,
+    frame: &mut Frame,
+    name: &str,
+    value: Value,
+) {
+    if let Some(slot) = frame.locals.get_mut(name) {
+        *slot = Slot::Scalar(value);
+        return;
+    }
+    if let Some(slot) = globals.get_mut(name) {
+        *slot = Slot::Scalar(value);
+        return;
+    }
+    globals.insert(name.to_string(), Slot::Scalar(value));
+}
+
+fn set_array(
+    globals: &mut HashMap<String, Slot>,
+    frame: &mut Frame,
+    name: &str,
+    index: i64,
+    value: Value,
+) {
+    if let Some(Slot::Array(map)) = frame.locals.get_mut(name) {
+        map.insert(index, value);
+        return;
+    }
+    match globals.get_mut(name) {
+        Some(Slot::Array(map)) => {
+            map.insert(index, value);
+        }
+        Some(slot) => {
+            let mut map = BTreeMap::new();
+            map.insert(index, value);
+            *slot = Slot::Array(map);
+        }
+        None => {
+            let mut map = BTreeMap::new();
+            map.insert(index, value);
+            globals.insert(name.to_string(), Slot::Array(map));
+        }
+    }
+}
+
+/// Compiler: JASS function body → flat instruction list.
+///
+/// Control flow is resolved to instruction indices at compile time, which is
+/// what lets a thread stop at any instruction (`TriggerSleepAction`) and resume
+/// from the same place on a later tick.
+#[derive(Default)]
+struct Compiler {
+    ops: Vec<Op>,
+    loops: usize,
+    /// Patch sites of the `exitwhen`s of every enclosing loop.
+    exits: Vec<Vec<usize>>,
+}
+
+impl Compiler {
+    fn push(&mut self, op: Op) -> usize {
+        self.ops.push(op);
+        self.ops.len() - 1
+    }
+
+    fn patch(&mut self, site: usize, target: usize) {
+        match &mut self.ops[site] {
+            Op::Jump(target_op)
+            | Op::JumpIfFalse(target_op)
+            | Op::JumpIfTrue(target_op)
+            | Op::AndJump(target_op)
+            | Op::OrJump(target_op)
+            | Op::ExitWhen(target_op) => *target_op = target,
+            other => unreachable!("patch is only called on jump ops, got {other:?}"),
+        }
+    }
+
+    fn block(&mut self, body: &[Stmt]) {
+        for stmt in body {
+            self.stmt(stmt);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Local(local) => {
+                if local.array {
+                    self.push(Op::Local {
+                        name: local.name.clone(),
+                        array: true,
+                        init: false,
+                    });
+                } else {
+                    let init = local.init.is_some();
+                    if let Some(expr) = &local.init {
+                        self.expr(expr);
+                    }
+                    self.push(Op::Local {
+                        name: local.name.clone(),
+                        array: false,
+                        init,
+                    });
+                }
+            }
+            Stmt::Set {
+                name,
+                index,
+                value,
+                ..
+            } => {
+                self.expr(value);
+                match index {
+                    Some(index) => {
+                        self.expr(index);
+                        self.push(Op::StoreArray(name.clone()));
+                    }
+                    None => {
+                        self.push(Op::Store(name.clone()));
+                    }
+                }
+            }
+            Stmt::Call { name, args, line } => {
+                for arg in args {
+                    self.expr(arg);
+                }
+                self.push(Op::Call {
+                    name: name.clone(),
+                    argc: args.len(),
+                    line: *line,
+                    proc: true,
+                });
+            }
+            Stmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut ends = Vec::new();
+                for (cond, body) in branches {
+                    self.expr(cond);
+                    let next = self.push(Op::JumpIfFalse(usize::MAX));
+                    self.block(body);
+                    ends.push(self.push(Op::Jump(usize::MAX)));
+                    self.patch(next, self.ops.len());
+                }
+                if let Some(else_body) = else_body {
+                    self.block(else_body);
+                }
+                let end = self.ops.len();
+                for site in ends {
+                    self.patch(site, end);
+                }
+            }
+            Stmt::Loop { body, line } => {
+                let slot = self.loops;
+                self.loops += 1;
+                self.push(Op::LoopEnter(slot));
+                let start = self.ops.len();
+                self.exits.push(Vec::new());
+                self.block(body);
+                self.push(Op::LoopBack {
+                    slot,
+                    target: start,
+                    line: *line,
+                });
+                let end = self.ops.len();
+                for site in self.exits.pop().unwrap_or_default() {
+                    self.patch(site, end);
+                }
+            }
+            Stmt::ExitWhen { cond, .. } => {
+                self.expr(cond);
+                if self.exits.is_empty() {
+                    // `exitwhen` outside a loop cannot branch anywhere; keep the
+                    // value semantics of the expression and drop it.
+                    self.push(Op::Pop);
+                } else {
+                    let site = self.push(Op::ExitWhen(usize::MAX));
+                    if let Some(sites) = self.exits.last_mut() {
+                        sites.push(site);
+                    }
+                }
+            }
+            Stmt::Return { value, .. } => {
+                match value {
+                    Some(expr) => self.expr(expr),
+                    None => {
+                        self.push(Op::Push(Value::Null));
+                    }
+                }
+                self.push(Op::Return);
+            }
+        }
+    }
+
+    fn expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Int(value) => {
+                self.push(Op::Push(Value::Int(*value)));
+            }
+            Expr::Real(value) => {
+                self.push(Op::Push(Value::Real(*value)));
+            }
+            Expr::Bool(value) => {
+                self.push(Op::Push(Value::Bool(*value)));
+            }
+            Expr::Str(value) => {
+                self.push(Op::Push(Value::Str(value.clone())));
+            }
+            Expr::Null => {
+                self.push(Op::Push(Value::Null));
+            }
+            Expr::Var(name) => {
+                self.push(Op::Load(name.clone()));
+            }
+            Expr::Array(name, index) => {
+                self.expr(index);
+                self.push(Op::LoadArray(name.clone()));
+            }
+            Expr::Call(name, args) => {
+                for arg in args {
+                    self.expr(arg);
+                }
+                self.push(Op::Call {
+                    name: name.clone(),
+                    argc: args.len(),
+                    line: 0,
+                    proc: false,
+                });
+            }
+            Expr::Code(name) => {
+                self.push(Op::PushCode(name.clone()));
+            }
+            Expr::Unary(op, inner) => {
+                self.expr(inner);
+                self.push(Op::Unary(*op));
+            }
+            Expr::Binary(BinOp::And, left, right) => {
+                self.expr(left);
+                self.push(Op::CoerceBool);
+                let site = self.push(Op::AndJump(usize::MAX));
+                self.expr(right);
+                self.push(Op::CoerceBool);
+                self.patch(site, self.ops.len());
+            }
+            Expr::Binary(BinOp::Or, left, right) => {
+                self.expr(left);
+                self.push(Op::CoerceBool);
+                let site = self.push(Op::OrJump(usize::MAX));
+                self.expr(right);
+                self.push(Op::CoerceBool);
+                self.patch(site, self.ops.len());
+            }
+            Expr::Binary(op, left, right) => {
+                self.expr(left);
+                self.expr(right);
+                self.push(Op::Binary(*op));
+            }
+        }
+    }
+}
+
+/// Compiles one declared function. Bodies get an implicit `return null` so a
+/// thread never falls off the end of its instruction list.
+fn compile_function(function: &FunctionDecl) -> CompiledFunction {
+    let mut compiler = Compiler::default();
+    compiler.block(&function.body);
+    compiler.push(Op::Push(Value::Null));
+    compiler.push(Op::Return);
+    CompiledFunction {
+        name: function.name.clone(),
+        params: function.params.iter().map(|(_, name)| name.clone()).collect(),
+        ops: compiler.ops,
+        loops: compiler.loops,
     }
 }
 

@@ -11,7 +11,8 @@
 //! - [`hle`] — the HLE thunk registry: a guest import is a thunk address in the
 //!   reserved window, resolved by arithmetic, with an explicit arity per entry.
 //! - [`pe`] — a bounds-checked PE32 image parser (headers, sections, exports by
-//!   name and ordinal, imports by name and ordinal).
+//!   name and ordinal including forwarders, imports by name and ordinal) with
+//!   hard caps on the flattened import table.
 //!
 //! # Provenance
 //!

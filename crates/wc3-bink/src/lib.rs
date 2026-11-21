@@ -68,6 +68,14 @@ use mpeg4::Mpeg4Decoder;
 /// Number of decoded RGBA frames kept resident for the renderer.
 pub const FRAME_RING: usize = 3;
 
+/// Largest picture the movie path will allocate, in pixels (WC3-BINK-001).
+///
+/// The ring is three RGBA frames, so this caps one movie at 48 MiB of frame
+/// buffers. The largest shipped cinematic is 800x368 (294 400 px) and 1080p is
+/// 2 073 600 px, so the ceiling leaves room for any real movie while a
+/// 338-byte file can no longer declare 65 535x65 535 (17 GB per frame).
+pub const MAX_MOVIE_PIXELS: usize = 2048 * 2048;
+
 /// Descriptor of a decoded frame; the pixels are in [`BinkFile::frame_rgba`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFrame {
@@ -118,7 +126,15 @@ impl BinkFile {
         if w == 0 || h == 0 {
             return Err(BinkError::Corrupt("AVI video stream has zero dimensions"));
         }
-        let rgba_len = w * h * 4;
+        // Validate the untrusted `strf` dimensions before they size the ring
+        // (WC3-BINK-001): three `w*h*4` buffers is 48 MiB at most.
+        let pixels = w
+            .checked_mul(h)
+            .ok_or(BinkError::Corrupt("AVI video dimensions overflow"))?;
+        if pixels > MAX_MOVIE_PIXELS {
+            return Err(BinkError::Corrupt("AVI video dimensions out of range"));
+        }
+        let rgba_len = pixels * 4;
         Ok(Self {
             avi,
             decoder: Mpeg4Decoder::new(),
@@ -223,11 +239,22 @@ impl BinkFile {
                 .ok_or(BinkError::NoSuchFrame(self.next_frame))?
                 .to_vec();
             self.decoder.decode(&payload)?;
+            // The ring is sized from the AVI header, the picture from the
+            // stream's VOL: a disagreement is a corrupt movie, not a panic
+            // (WC3-BINK-002).
+            let (pw, ph) = {
+                let pic = self.decoder.picture();
+                (pic.width, pic.height)
+            };
+            let (aw, ah) = self.size();
+            if pw != aw as usize || ph != ah as usize {
+                return Err(BinkError::Corrupt("AVI/VOL dimension mismatch"));
+            }
             let slot = self.next_slot;
             self.next_slot = (self.next_slot + 1) % FRAME_RING;
             {
                 let pic = self.decoder.picture();
-                pic.to_rgba(&mut self.slot_rgba[slot]);
+                pic.to_rgba(&mut self.slot_rgba[slot])?;
             }
             self.slot_frame[slot] = self.next_frame;
             self.next_frame += 1;
@@ -252,11 +279,19 @@ impl BinkFile {
             .ok_or(BinkError::NoSuchFrame(index))?
             .to_vec();
         self.decoder.decode(&payload)?;
+        let (pw, ph) = {
+            let pic = self.decoder.picture();
+            (pic.width, pic.height)
+        };
+        let (aw, ah) = self.size();
+        if pw != aw as usize || ph != ah as usize {
+            return Err(BinkError::Corrupt("AVI/VOL dimension mismatch"));
+        }
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % FRAME_RING;
         {
             let pic = self.decoder.picture();
-            pic.to_rgba(&mut self.slot_rgba[slot]);
+            pic.to_rgba(&mut self.slot_rgba[slot])?;
         }
         self.slot_frame[slot] = index;
         let (w, h) = self.size();

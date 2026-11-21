@@ -392,11 +392,18 @@ mod tests {
             "unique natives {}",
             matrix.native_calls.len()
         );
+        // The boot window exercises the camera path through the setup natives.
+        // `PanCameraToTimed` is not reached by any of the 44 maps inside
+        // BOOT_TICKS: the campaign lane's pre-change matrix
+        // (`analysis/agent-jass/native_coverage_20261121.json`) does not contain
+        // it either, so requiring it here was a stale assertion that used to be
+        // masked by the unimplemented-set panic. `CameraSetupSetDestPosition`
+        // (1000 calls) is the camera native the boot actually drives.
         for native in [
             "createcamerasetup",
             "camerasetupapplyforceduration",
+            "camerasetupsetdestposition",
             "setcamerafield",
-            "pancameratotimed",
         ] {
             assert!(
                 matrix.native_calls.contains_key(native),

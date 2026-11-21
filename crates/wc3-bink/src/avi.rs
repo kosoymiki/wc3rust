@@ -206,8 +206,7 @@ impl Avi {
                         }
                     }
                     b"movi" => {
-                        let mut stream_idx = 0u8;
-                        parse_movi(&data, body + 4, body_end, &mut stream_idx, &mut chunks)?;
+                        parse_movi(&data, body + 4, body_end, &mut chunks)?;
                     }
                     _ => {}
                 }
@@ -319,6 +318,7 @@ fn parse_hdrl(
     let mut video = None;
     let mut audio = None;
     let mut avih: Option<&[u8]> = None;
+    let mut stream_index = 0u8;
     while pos + 8 <= end {
         let id = &d[pos..pos + 4];
         let size = u32::from_le_bytes([d[pos + 4], d[pos + 5], d[pos + 6], d[pos + 7]]) as usize;
@@ -329,12 +329,17 @@ fn parse_hdrl(
         if id == b"avih" {
             avih = Some(&d[body..body_end]);
         } else if id == b"LIST" && body + 4 <= body_end && &d[body..body + 4] == b"strl" {
-            let (v, a) = parse_strl(d, body + 4, body_end)?;
-            if let Some(v) = v {
-                video = Some(v);
+            // AVI stream numbers are the position of the `strl` list in `hdrl`,
+            // not the stream type: a file that lists `auds` first owns stream 0
+            // and its video chunks carry the `01dc` prefix. Passing the index
+            // through keeps the census correct for those files.
+            let (v, a) = parse_strl(d, body + 4, body_end, stream_index)?;
+            stream_index = stream_index.saturating_add(1);
+            if video.is_none() {
+                video = v;
             }
-            if let Some(a) = a {
-                audio = Some(a);
+            if audio.is_none() {
+                audio = a;
             }
         }
         pos = body_end + (size & 1);
@@ -366,6 +371,7 @@ fn parse_strl(
     d: &[u8],
     mut pos: usize,
     end: usize,
+    stream: u8,
 ) -> Result<(Option<(VideoInfo, u8)>, Option<(AudioInfo, u8)>), AviError> {
     let mut strh: Option<&[u8]> = None;
     let mut strf: Option<&[u8]> = None;
@@ -435,7 +441,7 @@ fn parse_strl(
                         micros_per_frame: 0,
                         total_frames: 0,
                     },
-                    0,
+                    stream,
                 )),
                 None,
             ))
@@ -457,7 +463,7 @@ fn parse_strl(
                         sample_rate: u32::from_le_bytes([strf[4], strf[5], strf[6], strf[7]]),
                         length,
                     },
-                    1,
+                    stream,
                 )),
             ))
         }
@@ -477,7 +483,6 @@ fn parse_movi(
     d: &[u8],
     pos: usize,
     end: usize,
-    stream_idx: &mut u8,
     out: &mut Vec<Chunk>,
 ) -> Result<(), AviError> {
     /// One open `LIST rec ` range; `depth` counts the containers around it.
@@ -540,7 +545,6 @@ fn parse_movi(
                     offset: body,
                     len: size,
                 });
-                *stream_idx = stream;
             }
         }
     }
@@ -686,8 +690,7 @@ mod tests {
     /// Parse a bare `movi` body (the content of `LIST movi`, without its type).
     fn movi_parse(body: &[u8]) -> Result<Vec<Chunk>, AviError> {
         let mut out = Vec::new();
-        let mut stream = 0u8;
-        parse_movi(body, 0, body.len(), &mut stream, &mut out)?;
+        parse_movi(body, 0, body.len(), &mut out)?;
         Ok(out)
     }
 

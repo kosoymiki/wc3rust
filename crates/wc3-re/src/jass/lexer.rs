@@ -77,7 +77,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
             b'"' => {
                 let start_line = line;
                 index += 1;
-                let mut value = String::new();
+                let mut raw: Vec<u8> = Vec::new();
                 let mut closed = false;
                 while index < bytes.len() {
                     let ch = bytes[index];
@@ -88,23 +88,21 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     }
                     if ch == b'\\' && index + 1 < bytes.len() {
                         index += 1;
-                        match bytes[index] {
-                            b'n' => value.push('\n'),
-                            b'r' => value.push('\r'),
-                            b't' => value.push('\t'),
-                            b'"' => value.push('"'),
-                            b'\\' => value.push('\\'),
-                            other => value.push(other as char),
-                        }
+                        raw.push(match bytes[index] {
+                            b'n' => b'\n',
+                            b'r' => b'\r',
+                            b't' => b'\t',
+                            b'"' => b'"',
+                            b'\\' => b'\\',
+                            other => other,
+                        });
                         index += 1;
                         continue;
                     }
                     if ch == b'\n' {
                         line += 1;
                     }
-                    // JASS strings are byte strings; the retail scripts are
-                    // ASCII, so a byte-wise copy is exact for the corpus.
-                    value.push(ch as char);
+                    raw.push(ch);
                     index += 1;
                 }
                 if !closed {
@@ -113,6 +111,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                         message: "unterminated string literal".into(),
                     });
                 }
+                // A map script may be UTF-8 or a legacy single-byte code page
+                // (CP1251 in the Russian install). Decode UTF-8 when the bytes
+                // are valid, otherwise map each byte to one `char` (Latin-1):
+                // JASS string length/indices are then character counts, which
+                // is the retail byte contract for a single-byte script and the
+                // correct text for a UTF-8 one.
+                let value = match String::from_utf8(raw) {
+                    Ok(text) => text,
+                    Err(err) => err
+                        .into_bytes()
+                        .into_iter()
+                        .map(|byte| byte as char)
+                        .collect(),
+                };
                 tokens.push(Token {
                     kind: TokenKind::Str(value),
                     line: start_line,

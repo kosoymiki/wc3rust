@@ -22,8 +22,10 @@
 //!   the operand width for the rotations. `shl/shr/sar/shld/shrd` with a count
 //!   at or beyond the operand width are architecturally undefined; this module
 //!   returns a documented value (zero for the shifts, destination unchanged for
-//!   `shld/shrd` at count 0) and pins that behaviour in a test rather than
+//!   `shld/shrd` above the width) and pins that behaviour in a test rather than
 //!   leaving it to chance.
+//! - `bits` must be 8, 16 or 32. Any other value is treated as 32 so the helpers
+//!   are total — no argument can panic the machine model (audit `L547-10`).
 //! - x87 and SSE are a separate unit (`x87.h` / the SSE parts of `cpu.h` in the
 //!   donor) and are not implemented here; see
 //!   `docs/audit/status-donor-androidrecomp.md`.
@@ -264,6 +266,7 @@ impl Cpu {
     /// `ADD`/`ADC` flags. Returns the masked result; the caller keeps the upper
     /// bits for 8/16-bit operand sizes.
     pub fn add_flags(&mut self, a: u32, b: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let sign = sign_bit(bits);
         let a = a & mask;
@@ -280,6 +283,7 @@ impl Cpu {
 
     /// `SUB`/`SBB`/`CMP` flags. Returns the masked result.
     pub fn sub_flags(&mut self, a: u32, b: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let sign = sign_bit(bits);
         let a = a & mask;
@@ -297,6 +301,7 @@ impl Cpu {
     /// `AND`/`OR`/`XOR`/`TEST` flags: `CF = OF = 0`, result flags from the
     /// masked value.
     pub fn logic_flags(&mut self, result: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let result = result & mask;
         self.cf = false;
@@ -325,11 +330,21 @@ impl Cpu {
 
     /// `ROL` — rotate left. Sets `CF` (and `OF` for a count of one); leaves
     /// `ZF`, `SF`, `PF` and `AF` untouched, as x86 does.
+    ///
+    /// A masked count that is a whole multiple of the operand width (only
+    /// possible for 8- and 16-bit operands, e.g. `rol al, 8`) leaves the value
+    /// unchanged but still loads `CF` from the result — x86 masks the count to
+    /// five bits and only a *zero* masked count skips the flags.
     pub fn rol(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
-        let n = (count & 31) % bits;
+        let masked = count & 31;
+        let n = masked % bits;
         if n == 0 {
+            if masked != 0 {
+                self.cf = value & 1 != 0;
+            }
             return value;
         }
         let result = ((value << n) | (value >> (bits - n))) & mask;
@@ -340,12 +355,18 @@ impl Cpu {
         result
     }
 
-    /// `ROR` — rotate right. Flag rules as [`Cpu::rol`].
+    /// `ROR` — rotate right. Flag rules as [`Cpu::rol`] (including the
+    /// rotate-by-width `CF`).
     pub fn ror(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
-        let n = (count & 31) % bits;
+        let masked = count & 31;
+        let n = masked % bits;
         if n == 0 {
+            if masked != 0 {
+                self.cf = value & sign_bit(bits) != 0;
+            }
             return value;
         }
         let result = ((value >> n) | (value << (bits - n))) & mask;
@@ -361,6 +382,7 @@ impl Cpu {
     /// wide, so a 32-bit `rcl` by 4 differs from `rol` by 4. A count of zero
     /// changes no flag, including `CF`.
     pub fn rcl(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
         let total = bits + 1;
@@ -376,6 +398,7 @@ impl Cpu {
 
     /// `RCR` — rotate right through carry.
     pub fn rcr(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
         let total = bits + 1;
@@ -393,6 +416,7 @@ impl Cpu {
     /// beyond the width yields zero with `CF` clear (documented, not
     /// architectural).
     pub fn shl(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
         let n = count & 31;
@@ -412,6 +436,7 @@ impl Cpu {
 
     /// `SHR` — logical shift right.
     pub fn shr(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let value = value & mask;
         let n = count & 31;
@@ -431,6 +456,7 @@ impl Cpu {
 
     /// `SAR` — arithmetic shift right.
     pub fn sar(&mut self, value: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let sign = sign_bit(bits);
         let value = value & mask;
@@ -459,6 +485,7 @@ impl Cpu {
 
     /// `SHLD` — shift `dst` left, filling from the high bits of `src`.
     pub fn shld(&mut self, dst: u32, src: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let dst = dst & mask;
         let src = src & mask;
@@ -466,7 +493,12 @@ impl Cpu {
         if n == 0 {
             return dst;
         }
-        let result = if n >= bits {
+        // A count equal to the operand width replaces every destination bit
+        // with the source (defined x86 behaviour, reachable on 8/16-bit
+        // operands); above the width the result is undefined and pinned to 0.
+        let result = if n == bits {
+            src
+        } else if n > bits {
             0
         } else {
             ((dst << n) | (src >> (bits - n))) & mask
@@ -480,6 +512,7 @@ impl Cpu {
 
     /// `SHRD` — shift `dst` right, filling from the low bits of `src`.
     pub fn shrd(&mut self, dst: u32, src: u32, count: u32, bits: u32) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let dst = dst & mask;
         let src = src & mask;
@@ -487,7 +520,9 @@ impl Cpu {
         if n == 0 {
             return dst;
         }
-        let result = if n >= bits {
+        let result = if n == bits {
+            src
+        } else if n > bits {
             dst
         } else {
             ((dst >> n) | (src << (bits - n))) & mask
@@ -528,6 +563,7 @@ impl Cpu {
     /// `BT`/`BTS`/`BTR`/`BTC`. The bit index wraps modulo the operand width,
     /// so `bt eax, 33` reads bit 1.
     pub fn bittest(&mut self, dst: u32, bit: u32, bits: u32, op: BitOp) -> u32 {
+        let bits = normalize_bits(bits);
         let mask = width_mask(bits);
         let dst = dst & mask;
         let index = bit % bits;
@@ -565,6 +601,14 @@ impl Cpu {
     }
 }
 
+fn normalize_bits(bits: u32) -> u32 {
+    match bits {
+        8 => 8,
+        16 => 16,
+        _ => 32,
+    }
+}
+
 fn width_mask(bits: u32) -> u32 {
     match bits {
         8 => 0xFF,
@@ -574,7 +618,11 @@ fn width_mask(bits: u32) -> u32 {
 }
 
 fn sign_bit(bits: u32) -> u32 {
-    1u32 << (bits - 1)
+    match bits {
+        8 => 0x80,
+        16 => 0x8000,
+        _ => 0x8000_0000,
+    }
 }
 
 #[cfg(test)]
@@ -718,6 +766,56 @@ mod tests {
         assert_eq!(family, CPUID_FAMILY);
         assert_eq!(model, CPUID_MODEL);
         assert_eq!(CPUID_STEPPING, leaf1.eax & 0xF);
+    }
+
+    #[test]
+    fn recomp_flags_rotate_by_operand_width_loads_carry() {
+        // `rol al, 8` / `ror al, 8` do not change the value, but x86 still
+        // loads CF from the result (only a zero *masked* count skips flags).
+        let mut cpu = Cpu::new();
+        cpu.cf = false;
+        assert_eq!(cpu.rol(0x01, 8, 8), 0x01);
+        assert!(cpu.cf, "rol al,8: CF = LSB");
+        cpu.cf = true;
+        assert_eq!(cpu.rol(0x02, 8, 8), 0x02);
+        assert!(!cpu.cf);
+        cpu.cf = false;
+        assert_eq!(cpu.ror(0x80, 8, 8), 0x80);
+        assert!(cpu.cf, "ror al,8: CF = MSB");
+        cpu.cf = true;
+        assert_eq!(cpu.ror(0x01, 8, 8), 0x01);
+        assert!(!cpu.cf);
+        cpu.cf = true;
+        assert_eq!(cpu.rol(0x01, 32, 32), 0x01);
+        assert!(cpu.cf, "a zero masked count changes no flag");
+    }
+
+    #[test]
+    fn recomp_flags_double_shift_by_width_uses_source() {
+        // SHLD/SHRD with count == operand width: every destination bit is
+        // replaced by the source; reachable on 8/16-bit operands.
+        let mut cpu = Cpu::new();
+        assert_eq!(cpu.shld(0x12, 0x34, 8, 8), 0x34);
+        assert_eq!(cpu.shrd(0x12, 0x34, 8, 8), 0x34);
+        cpu.cf = false;
+        cpu.shld(0x01, 0x00, 8, 8);
+        assert!(cpu.cf, "CF is the last destination bit shifted out");
+        cpu.cf = false;
+        cpu.shrd(0x80, 0x00, 8, 8);
+        assert!(cpu.cf);
+    }
+
+    #[test]
+    fn recomp_flags_width_argument_is_total() {
+        // Audit L547-10: an out-of-range width must not panic; anything other
+        // than 8/16/32 is treated as 32.
+        let mut cpu = Cpu::new();
+        assert_eq!(cpu.add_flags(1, 1, 0), 2);
+        assert_eq!(cpu.add_flags(0xFFFF, 1, 7), 0x1_0000);
+        assert_eq!(cpu.bittest(0b10, 33, 0, BitOp::Test), 0b10);
+        assert!(cpu.cf, "bt index 33 wraps to bit 1 of the 32-bit operand");
+        let _ = cpu.sar(0x8000, 4, 64);
+        assert_eq!(cpu.rol(0x12, 32, 0), 0x12, "zero masked count is a no-op");
     }
 
     #[test]

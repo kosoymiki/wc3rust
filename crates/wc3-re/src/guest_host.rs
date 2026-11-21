@@ -12,6 +12,17 @@
 //! exercised by a synthetic image in the tests so the seam is proven before the
 //! lifter lands.
 //!
+//! # Image-base rule
+//!
+//! `war3.exe` is mapped at the base recorded in its own header and the layout
+//! deliberately does **not** list the executable in its static arena table
+//! (see [`wc3_guest::layout::WAR3_IMAGE_BASE`]). `boot` therefore accepts
+//! exactly one base, [`WAR3_IMAGE_BASE`], and requires the whole
+//! `[base, base + SizeOfImage)` range to stay clear of every static region.
+//! Accepting any address that happens to be covered by a region would map code
+//! over the HLE thunk window, a thread stack, the TEB or the heap (audit
+//! `L547-02`).
+//!
 //! # Provenance
 //!
 //! Guest model ported from `NIK2703/WC3_AndroidRecomp`
@@ -19,9 +30,11 @@
 //! `runtime/hle/abi/hle_abi.{h,c}`, `runtime/guest/pe.{c,h}`), commit
 //! `c753ab89debcf729b1a815ec29a14b035c47a92f`, MIT. See `crates/wc3-guest`.
 
+use std::sync::Arc;
+
 use wc3_guest::cpu::Cpu;
-use wc3_guest::hle::{Arity, CallConv, CallError, HleRegistry, ResolveError};
-use wc3_guest::layout::{self, Owner, HLE_BASE, HLE_SLOTS, PAGE_SIZE, WAR3_IMAGE_BASE};
+use wc3_guest::hle::{Arity, CallConv, CallError, HleEntry, HleRegistry, ResolveError};
+use wc3_guest::layout::{self, HLE_BASE, HLE_SLOTS, HLE_STRIDE, PAGE_SIZE, WAR3_IMAGE_BASE};
 use wc3_guest::pe::{PeError, PeImage};
 
 /// Why a guest image could not be booted.
@@ -31,8 +44,11 @@ pub enum BootError {
     Image(PeError),
     /// The image's preferred base is not the address the layout reserved for it.
     ImageBase { expected: u32, found: u32 },
-    /// `SizeOfImage` does not fit the arena the layout gives the image.
-    ImageTooLarge { size: u32, arena: u32 },
+    /// `[base, base + SizeOfImage)` is empty, overflows or collides with a
+    /// static guest region.
+    ImageRange { base: u32, size: u32 },
+    /// `AddressOfEntryPoint` lies outside `SizeOfImage`.
+    EntryOutOfRange { rva: u32, size_of_image: u32 },
     /// An import the image needs has no HLE binding and cannot be resolved.
     UnboundImport { module: String, symbol: String },
     /// The image needs more thunk slots than the window has.
@@ -46,8 +62,11 @@ impl core::fmt::Display for BootError {
             Self::ImageBase { expected, found } => {
                 write!(f, "image base {found:#X} != layout base {expected:#X}")
             }
-            Self::ImageTooLarge { size, arena } => {
-                write!(f, "image size {size:#X} does not fit arena {arena:#X}")
+            Self::ImageRange { base, size } => {
+                write!(f, "image range {base:#X}+{size:#X} collides with the guest layout")
+            }
+            Self::EntryOutOfRange { rva, size_of_image } => {
+                write!(f, "entry RVA {rva:#X} is outside the image (size {size_of_image:#X})")
             }
             Self::UnboundImport { module, symbol } => {
                 write!(f, "unbound import {module}!{symbol}")
@@ -62,9 +81,21 @@ impl std::error::Error for BootError {}
 /// One bound import: guest thunk → host entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundImport {
-    pub module: String,
+    /// Guest DLL name, shared with the parsed image's descriptor.
+    pub module: Arc<str>,
+    /// Host symbol name (`#5` for an import by ordinal).
     pub symbol: String,
+    /// Import ordinal when the image imported by ordinal.
+    pub ordinal: Option<u16>,
+    /// Guest thunk address the loader writes into the IAT.
     pub thunk: u32,
+}
+
+impl BoundImport {
+    /// The module name as a string slice.
+    pub fn module_str(&self) -> &str {
+        &self.module
+    }
 }
 
 /// A booted guest image: the mapped image, its CPU and its thunk table.
@@ -96,38 +127,59 @@ impl GuestHost {
     /// The guest thunk address for slot `n` is `HLE_BASE + n * 16`; callers
     /// propagate that value into the import table in place of the loader's
     /// pointer, exactly as the donor's `wc3_pe_load` does.
+    ///
+    /// A `bind` that reports success without installing an entry is treated as
+    /// a failure: the host never records a thunk that resolves to `Unbound`.
     pub fn boot(
         bytes: &[u8],
         mut bind: impl FnMut(&mut HleRegistry, &str, &str, u32) -> bool,
     ) -> Result<Self, BootError> {
         let image = PeImage::parse(bytes).map_err(BootError::Image)?;
         if image.image_base != WAR3_IMAGE_BASE {
-            // The layout reserves exactly one arena for the game image; a
+            // The layout reserves exactly one base for the game image; a
             // mismatch means the caller handed us a different binary.
-            let arena = layout::owner_of(image.image_base);
-            if let Owner::Unmapped = arena {
-                return Err(BootError::ImageBase {
-                    expected: WAR3_IMAGE_BASE,
-                    found: image.image_base,
+            return Err(BootError::ImageBase {
+                expected: WAR3_IMAGE_BASE,
+                found: image.image_base,
+            });
+        }
+        if image.size_of_image == 0 {
+            return Err(BootError::ImageRange { base: image.image_base, size: 0 });
+        }
+        let end = image
+            .image_base
+            .checked_add(image.size_of_image)
+            .ok_or(BootError::ImageRange {
+                base: image.image_base,
+                size: image.size_of_image,
+            })?;
+        for region in layout::REGIONS {
+            if image.image_base < region.end() && region.base < end {
+                return Err(BootError::ImageRange {
+                    base: image.image_base,
+                    size: image.size_of_image,
                 });
             }
         }
-        let image_region = layout::REGIONS
-            .iter()
-            .find(|region| region.name == "va")
-            .expect("va arena");
-        if image.size_of_image > image_region.size {
-            return Err(BootError::ImageTooLarge {
-                size: image.size_of_image,
-                arena: image_region.size,
-            });
-        }
+        let entry = if image.entry_rva == 0 {
+            // DLLs may have no entry point.
+            image.image_base
+        } else {
+            if image.entry_rva >= image.size_of_image {
+                return Err(BootError::EntryOutOfRange {
+                    rva: image.entry_rva,
+                    size_of_image: image.size_of_image,
+                });
+            }
+            image.image_base + image.entry_rva
+        };
+
         let mut registry = HleRegistry::new();
         let mut imports = Vec::new();
         let mut next_slot = 0u32;
         for import in &image.imports {
             let symbol = match (&import.name, import.ordinal) {
-                (Some(name), _) => name.clone(),
+                (Some(name), _) => name.to_string(),
                 (None, Some(ordinal)) => format!("#{ordinal}"),
                 (None, None) => continue,
             };
@@ -141,26 +193,21 @@ impl GuestHost {
                 }
                 slot += 1;
             }
-            if !bind(&mut registry, &import.module, &symbol, slot) {
+            let bound = bind(&mut registry, &import.module, &symbol, slot);
+            if !bound || registry.entry_at_slot(slot).is_none() {
                 return Err(BootError::UnboundImport {
-                    module: import.module.clone(),
+                    module: import.module.to_string(),
                     symbol,
                 });
             }
             next_slot = slot + 1;
             imports.push(BoundImport {
-                module: import.module.clone(),
+                module: Arc::clone(&import.module),
                 symbol,
-                thunk: HLE_BASE + slot * layout::HLE_STRIDE,
+                ordinal: import.ordinal,
+                thunk: HLE_BASE + slot * HLE_STRIDE,
             });
         }
-        let entry = image
-            .entry_rva
-            .checked_add(image.image_base)
-            .ok_or(BootError::ImageTooLarge {
-                size: image.size_of_image,
-                arena: image_region.size,
-            })?;
         Ok(Self {
             cpu: Cpu::new(),
             image_base: image.image_base,
@@ -185,15 +232,24 @@ impl GuestHost {
 
     /// One guest call: resolve the thunk, check the arity, run the handler with
     /// the guest CPU (so `esp`/`eip` bookkeeping stays with the caller).
+    ///
+    /// The argument-stack bytes the callee pops are
+    /// [`HleEntry::conv`]`.stack_bytes(arity)`; the dispatcher applies them when
+    /// it models the `ret`.
     pub fn call(&mut self, thunk: u32, args: &[u32]) -> Result<u32, CallError> {
         self.cpu.eip = thunk;
         self.registry.call(thunk, &mut self.cpu, args)
     }
 
     /// Resolve without calling (used by the dispatcher to build its table).
-    pub fn resolve(&self, thunk: u32) -> Result<(&'static str, u8), ResolveError> {
+    pub fn resolve(&self, thunk: u32) -> Result<(&str, u8), ResolveError> {
         let entry = self.registry.resolve(thunk)?;
-        Ok((entry.symbol, entry.arity))
+        Ok((entry.symbol.as_str(), entry.arity))
+    }
+
+    /// The full registry entry: module, symbol, arity and calling convention.
+    pub fn entry(&self, thunk: u32) -> Result<&HleEntry, ResolveError> {
+        self.registry.resolve(thunk)
     }
 
     /// Number of bound imports.
@@ -202,7 +258,7 @@ impl GuestHost {
     }
 }
 
-/// Convenience: bind every import to a stardcall handler with the given arity.
+/// Convenience: bind an import to a stdcall handler with the given arity.
 pub fn bind_fixed(
     registry: &mut HleRegistry,
     module: &str,
@@ -211,29 +267,9 @@ pub fn bind_fixed(
     arity: u8,
     handler: wc3_guest::hle::Handler,
 ) -> bool {
-    let module: &'static str = intern(module);
-    let symbol: &'static str = intern(symbol);
     registry
         .bind(slot, module, symbol, Arity::Exact(arity), CallConv::Stdcall, handler)
         .is_ok()
-}
-
-/// `HleRegistry` stores `&'static str`; import names come from the image at
-/// runtime, so the host keeps a small static pool. The pool is bounded by the
-/// image's import count (a few hundred) and process-lifetime.
-fn intern(name: &str) -> &'static str {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
-    static POOL: OnceLock<Mutex<BTreeMap<String, &'static str>>> = OnceLock::new();
-    let pool = POOL.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut pool = pool.lock().expect("intern pool");
-    if let Some(existing) = pool.get(name) {
-        return existing;
-    }
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    pool.insert(name.to_string(), leaked);
-    leaked
 }
 
 /// Guest page size re-export for callers that map the image.
@@ -242,7 +278,6 @@ pub const GUEST_PAGE: u32 = PAGE_SIZE;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wc3_guest::hle::HleRegistry;
 
     /// Synthetic PE32: one `.text` section, one export `W3Boot`, one import
     /// `KERNEL32.dll!GetVersion`. Built from the PE/COFF field layout, not from
@@ -277,9 +312,6 @@ mod tests {
         // Export directory at RVA 0x1100 (file 0x300): one named export
         // "W3Boot" at RVA 0x1000.
         let dir = 0x300usize;
-        bytes[dir..dir + 4].copy_from_slice(&0u32.to_le_bytes()); // characteristics
-        bytes[dir + 4..dir + 8].copy_from_slice(&0u32.to_le_bytes()); // timestamp
-        bytes[dir + 8..dir + 12].copy_from_slice(&0u32.to_le_bytes()); // major/minor
         bytes[dir + 12..dir + 16].copy_from_slice(&0x1100u32.to_le_bytes()); // name rva
         bytes[dir + 16..dir + 20].copy_from_slice(&1u32.to_le_bytes()); // base ordinal
         bytes[dir + 20..dir + 24].copy_from_slice(&1u32.to_le_bytes()); // number of funcs
@@ -319,6 +351,16 @@ mod tests {
         0x1DB1_0105
     }
 
+    fn boot_with_get_version(bytes: &[u8]) -> Result<GuestHost, BootError> {
+        GuestHost::boot(bytes, |registry, module, symbol, slot| {
+            bind_fixed(registry, module, symbol, slot, 0, get_version)
+        })
+    }
+
+    fn set_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
     #[test]
     fn recomp_host_boots_image_and_dispatches_hle_call() {
         let bytes = synthetic_image();
@@ -333,6 +375,8 @@ mod tests {
         assert_eq!(host.entry, WAR3_IMAGE_BASE + 0x1000);
         assert_eq!(host.import_count(), 1);
         assert!(host.imports[0].thunk >= HLE_BASE);
+        assert_eq!(host.imports[0].module_str(), "KERNEL32.dll");
+        assert_eq!(host.imports[0].ordinal, None);
         assert_eq!(host.thunk_for("GetVersion"), Some(host.imports[0].thunk));
         // The export census is visible to the dispatcher.
         assert_eq!(host.exports, vec![("W3Boot".to_string(), 0x1000)]);
@@ -342,6 +386,10 @@ mod tests {
         let mut host = host;
         let thunk = host.thunk_for("GetVersion").expect("bound thunk");
         assert_eq!(host.resolve(thunk), Ok(("GetVersion", 0)));
+        let entry = host.entry(thunk).expect("registry entry");
+        assert_eq!(entry.module, "KERNEL32.dll");
+        assert_eq!(entry.conv, CallConv::Stdcall);
+        assert_eq!(entry.conv.stack_bytes(entry.arity), 0);
         assert_eq!(host.call(thunk, &[]), Ok(0x1DB1_0105));
         assert_eq!(host.cpu.eax, 0x1DB1_0105);
         assert_eq!(host.cpu.eip, thunk, "eip points at the thunk during a call");
@@ -352,6 +400,18 @@ mod tests {
                 got: 1
             })
         );
+    }
+
+    #[test]
+    fn recomp_host_binds_ordinal_imports() {
+        let mut bytes = synthetic_image();
+        // ILT entry at file 0x430: import by ordinal 5 of KERNEL32.dll.
+        set_u32(&mut bytes, 0x430, 0x8000_0005);
+        let host = boot_with_get_version(&bytes).expect("boot ordinal import");
+        assert_eq!(host.import_count(), 1);
+        assert_eq!(host.imports[0].symbol, "#5");
+        assert_eq!(host.imports[0].ordinal, Some(5));
+        assert_eq!(host.thunk_for("#5"), Some(host.imports[0].thunk));
     }
 
     #[test]
@@ -368,6 +428,15 @@ mod tests {
     }
 
     #[test]
+    fn recomp_host_refuses_a_bind_that_did_not_bind() {
+        // A callback that claims success without installing an entry must not
+        // leave a thunk that resolves to Unbound.
+        let bytes = synthetic_image();
+        let err = GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err();
+        assert!(matches!(err, BootError::UnboundImport { .. }), "{err}");
+    }
+
+    #[test]
     fn recomp_host_refuses_a_foreign_image_base() {
         let mut bytes = synthetic_image();
         let opt = 0x58usize;
@@ -376,6 +445,53 @@ mod tests {
         assert!(
             matches!(err, BootError::ImageBase { found: 0x1000_0000, .. }),
             "a non-game image must not be mapped into the game arena: {err}"
+        );
+    }
+
+    #[test]
+    fn recomp_host_refuses_bases_over_reserved_guest_state() {
+        // Audit L547-02: the HLE thunk window, stacks, TEB and heap all resolve
+        // to a layout owner; none of them may host the game image.
+        for base in [0x7F00_0000u32, 0x3100_0000, 0x3180_0000, 0x3F00_0000, 0x3600_0000] {
+            let mut bytes = synthetic_image();
+            set_u32(&mut bytes, 0x58 + 28, base);
+            let err = GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err();
+            assert!(
+                matches!(err, BootError::ImageBase { found, .. } if found == base),
+                "base {base:#X} must be refused, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn recomp_host_refuses_an_image_that_collides_with_an_arena() {
+        // Correct base, but SizeOfImage reaches the stack pool at 0x3100_0000.
+        let mut bytes = synthetic_image();
+        set_u32(&mut bytes, 0x58 + 56, 0x3100_0000);
+        let err = GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err();
+        assert!(matches!(err, BootError::ImageRange { size: 0x3100_0000, .. }), "{err}");
+        // SizeOfImage larger than the address space: the range overflows.
+        let mut bytes = synthetic_image();
+        set_u32(&mut bytes, 0x58 + 56, 0xFFFF_FFFF);
+        let err = GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err();
+        assert!(matches!(err, BootError::ImageRange { .. }), "{err}");
+        // Zero SizeOfImage is not an image.
+        let mut bytes = synthetic_image();
+        set_u32(&mut bytes, 0x58 + 56, 0);
+        assert!(matches!(
+            GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err(),
+            BootError::ImageRange { size: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn recomp_host_refuses_entry_outside_the_image() {
+        let mut bytes = synthetic_image();
+        set_u32(&mut bytes, 0x58 + 16, 0x3000); // SizeOfImage is 0x2000
+        let err = GuestHost::boot(&bytes, |_, _, _, _| true).unwrap_err();
+        assert!(
+            matches!(err, BootError::EntryOutOfRange { rva: 0x3000, size_of_image: 0x2000 }),
+            "{err}"
         );
     }
 
@@ -390,10 +506,7 @@ mod tests {
         // The consumer must use the crate's own arithmetic: slot n is
         // HLE_BASE + n*16 and nothing else.
         let bytes = synthetic_image();
-        let host = GuestHost::boot(&bytes, |registry, module, symbol, slot| {
-            bind_fixed(registry, module, symbol, slot, 0, get_version)
-        })
-        .expect("boot");
+        let host = boot_with_get_version(&bytes).expect("boot");
         assert_eq!(
             host.thunk_for("GetVersion"),
             Some(wc3_guest::layout::thunk_va(0).unwrap()),

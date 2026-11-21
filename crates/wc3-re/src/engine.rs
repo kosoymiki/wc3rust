@@ -36,6 +36,9 @@ use crate::ai::AiScript;
 use crate::objectdata::ObjectDb;
 use crate::storm::StormFs;
 
+/// Frames between `ENGINE_TICK` evidence lines (1 s at the 30 Hz frame clock).
+const ENGINE_TICK_LOG_EVERY: u64 = 30;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
     Idle,
@@ -97,6 +100,9 @@ pub struct MapSpawnReport {
 
 #[derive(Debug, Clone, Default)]
 pub struct ScriptReport {
+    /// `war3map.j` `config` ran without a VM error (false when the map has no
+    /// `config` entry point).
+    pub config_ok: bool,
     /// `war3map.j` `main` completed without a VM error.
     pub main_ok: bool,
     /// Declared functions in the merged common.j + Blizzard.j + map program.
@@ -126,11 +132,12 @@ pub struct Engine {
     /// True when the map `main` completed (including `InitCustomTriggers`
     /// and `RunInitializationTriggers`).
     pub script_main_ok: bool,
+    /// True when the map declared a `config` entry point and it completed.
+    pub script_config_ok: bool,
     /// AI scripts loaded from `Scripts/*.ai` (canonical `wc3-re::ai` parser).
     pub ai_scripts: Vec<AiScript>,
     /// Map placement → JASS world spawn audit from the last `enter_map`.
     pub map_spawn: MapSpawnReport,
-    fired_timer_events: bool,
 }
 
 impl Engine {
@@ -167,9 +174,9 @@ impl Engine {
             startup_strings: 0,
             script_errors: Vec::new(),
             script_main_ok: false,
+            script_config_ok: false,
             ai_scripts: Vec::new(),
             map_spawn: MapSpawnReport::default(),
-            fired_timer_events: false,
             config: EngineConfig {
                 install_root: config.install_root.clone(),
                 data_root: config.data_root.take(),
@@ -274,14 +281,28 @@ impl Engine {
             .clone()
             .unwrap_or_else(|| self.config.install_root.clone());
         let mut program = Program::default();
+        // The shipped scripts live inside the archives (`Scripts\common.j` is a
+        // `War3.mpq` entry); an extracted tree is only a fast path. Reading the
+        // loose file alone left a campaign map mounted from the operator's MPQ
+        // without `common.j`/`Blizzard.j` at all, so `InitBlizzard` and every
+        // BJ helper were missing from the program.
+        let storm = StormFs::open_wc3_install(&root).ok();
         for (name, path) in [
             ("common.j", root.join("Scripts/common.j")),
             ("Blizzard.j", root.join("Scripts/Blizzard.j")),
         ] {
-            if let Ok(source) = std::fs::read_to_string(&path) {
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => Some(source),
+                Err(_) => storm.as_ref().and_then(|storm| {
+                    storm
+                        .read(&format!("Scripts\\{name}"))
+                        .ok()
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                }),
+            };
+            if let Some(source) = source {
                 let parsed = parse(&source)
                     .map_err(|err| ReError::Parse(format!("{}: {err}", path.display())))?;
-                let _ = name;
                 program.merge(parsed);
             }
         }
@@ -290,6 +311,35 @@ impl Engine {
         program.merge(map_program);
         let mut runtime = Runtime::new(program, self.config.seed);
         runtime.max_steps = 50_000_000;
+        // Retail runs the map's `config` entry point *before* `main`
+        // (`Game.dll` `RunConfig` 0x6f2ccf00, caller 0x6f28dc58; `RunMain`
+        // 0x6f2ccf30, caller 0x6f28ec7c — `analysis/agent-re/formats/ENGINE_MAP.md`
+        // §4.1). `config` is where `InitCustomPlayerSlots`, `InitCustomTeams`,
+        // `SetMapName` and `DefineStartLocation` run: `SetPlayerController(…,
+        // MAP_CONTROL_USER)` is the only thing that marks the mission's human
+        // seat on a `war3map.w3i` v18 map. A map without `config` is legal.
+        let mut config_state = "absent";
+        if runtime.has_function("config") {
+            match runtime.run_function("config") {
+                Ok(_) => {
+                    config_state = "ok";
+                    self.script_config_ok = true;
+                    self.step(
+                        "script.config",
+                        "war3map.j config → SetPlayers/InitCustomPlayerSlots/InitCustomTeams",
+                        true,
+                    );
+                }
+                Err(err) => {
+                    config_state = "error";
+                    self.script_config_ok = false;
+                    self.script_errors.push(format!("config: {err}"));
+                    self.step("script.config", "war3map.j config", false);
+                }
+            }
+        } else {
+            self.step("script.config", "war3map.j has no config entry point", true);
+        }
         match runtime.run_main() {
             Ok(_) => {
                 self.script_main_ok = true;
@@ -305,6 +355,30 @@ impl Engine {
                 self.step("script.main", "war3map.j main", false);
             }
         }
+        // One boot line the headless evidence run greps: entry points, program
+        // size and the trigger table `main` built.
+        let actions: usize = runtime
+            .world
+            .triggers
+            .values()
+            .map(|trigger| trigger.actions.len())
+            .sum();
+        let executed = runtime
+            .world
+            .triggers
+            .values()
+            .filter(|trigger| trigger.exec_count > 0)
+            .count();
+        println!(
+            "ENGINE_SCRIPT config={} main={} functions={} triggers={} actions={} boot_triggers={} steps={}",
+            config_state,
+            if self.script_main_ok { "ok" } else { "error" },
+            runtime.program.functions.len(),
+            runtime.world.triggers.len(),
+            actions,
+            executed,
+            runtime.steps
+        );
         self.script_errors
             .extend(runtime.errors.iter().take(50).cloned());
         self.map_spawn = spawn_map_entities(&mut runtime, &map);
@@ -411,10 +485,12 @@ impl Engine {
         self.map.as_ref()
     }
 
-    /// Map script initialization report: `main`, `InitCustomTriggers` and the
-    /// triggers/actions that actually executed during boot.
+    /// Map script initialization report: `config`, `main`,
+    /// `InitCustomTriggers` and the triggers/actions that actually executed
+    /// during boot.
     pub fn script_report(&self) -> ScriptReport {
         let mut report = ScriptReport {
+            config_ok: self.script_config_ok,
             main_ok: self.script_main_ok,
             ..ScriptReport::default()
         };
@@ -443,72 +519,64 @@ impl Engine {
             return;
         };
         runtime.world.game_time = self.time;
-        // Timers: decrement and fire matching trigger actions once.
-        let timer_handles: Vec<u32> = runtime.world.timers.keys().copied().collect();
-        let mut expired = Vec::new();
-        for handle in timer_handles {
-            let Some(timer) = runtime.world.timers.get_mut(&handle) else {
-                continue;
-            };
-            if !timer.running {
-                continue;
-            }
-            timer.elapsed += dt;
-            timer.remaining -= dt;
-            if timer.remaining <= 0.0 {
-                expired.push(handle);
-                if timer.periodic {
-                    timer.remaining += timer.timeout.max(f64::EPSILON);
-                } else {
-                    timer.running = false;
-                }
-            }
+        // Every script clock lives in the VM: `TimerStart` callbacks,
+        // `TriggerRegisterTimerEvent` schedules, the threads suspended in
+        // `TriggerSleepAction`, and the region/death/clock sampler that feeds
+        // the trigger events. The engine only owns the frame clock.
+        runtime.tick_script(dt);
+        if self.ticks == 1 && !runtime.event_log.is_empty() {
+            let sample: Vec<&str> = runtime
+                .event_log
+                .iter()
+                .take(12)
+                .map(String::as_str)
+                .collect();
+            let mut distinct: Vec<&str> = runtime
+                .event_log
+                .iter()
+                .filter_map(|line| line.split(':').nth(1))
+                .collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            println!(
+                "ENGINE_EVENTS first_tick={} distinct={} regions_with_units={}/{} sample={}",
+                runtime.event_log.len(),
+                distinct.len(),
+                runtime
+                    .region_members
+                    .values()
+                    .filter(|units| !units.is_empty())
+                    .count(),
+                runtime.region_members.len(),
+                sample.join(" ")
+            );
         }
-        for timer in expired {
-            let code = runtime
-                .world
-                .timers
-                .get(&timer)
-                .and_then(|timer| timer.code.clone());
-            if let Some(code) = code {
-                let _ = runtime.run_function(&code);
-            }
-            let triggers: Vec<u32> = runtime
+        if self.ticks % ENGINE_TICK_LOG_EVERY == 0 {
+            let total = runtime.world.triggers.len();
+            let executed = runtime
                 .world
                 .triggers
-                .iter()
-                .filter(|(_, trigger)| {
-                    trigger
-                        .events
-                        .iter()
-                        .any(|event| matches!(event, crate::jass::vm::TriggerEvent::TimerExpire { timer: t } if *t == timer))
-                })
-                .map(|(handle, _)| *handle)
-                .collect();
-            for trigger in triggers {
-                let _ = runtime.execute_trigger(trigger);
-            }
-        }
-        // Zero-time map-initialization triggers (TriggerRegisterTimerEvent 0.0)
-        // are fired on the first frame if the script did not already execute
-        // them through RunInitializationTriggers.
-        if !self.fired_timer_events {
-            self.fired_timer_events = true;
-            let due: Vec<u32> = runtime
+                .values()
+                .filter(|trigger| trigger.exec_count > 0)
+                .count();
+            let actions: u32 = runtime
                 .world
                 .triggers
-                .iter()
-                .filter(|(_, trigger)| {
-                    trigger.exec_count == 0
-                        && trigger.events.iter().any(
-                            |event| matches!(event, crate::jass::vm::TriggerEvent::Timer { timeout, .. } if *timeout <= 0.0),
-                        )
-                })
-                .map(|(handle, _)| *handle)
-                .collect();
-            for trigger in due {
-                let _ = runtime.execute_trigger(trigger);
-            }
+                .values()
+                .map(|trigger| trigger.exec_count)
+                .sum();
+            println!(
+                "ENGINE_TICK t={:.2} triggers_executed={}/{} actions={} events={} vetoes={} array_bounds={} threads={} units={}",
+                self.time,
+                executed,
+                total,
+                actions,
+                runtime.event_summary(),
+                runtime.condition_vetoes,
+                runtime.array_bounds_hits,
+                runtime.threads.len(),
+                runtime.world.units.len()
+            );
         }
     }
 
@@ -548,6 +616,7 @@ fn spawn_map_entities(runtime: &mut Runtime, map: &MapBundle) -> MapSpawnReport 
                 crate::jass::vm::Unit {
                     id,
                     owner: placed.player as i32,
+                    script_owner: Some(placed.player as i32),
                     x: placed.position.x as f64,
                     y: placed.position.y as f64,
                     z: placed.position.z as f64,

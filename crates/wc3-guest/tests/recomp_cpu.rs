@@ -168,6 +168,57 @@ fn recomp_flags_bit_test_matches_donor_vectors() {
 }
 
 #[test]
+fn recomp_flags_rotate_by_operand_width_loads_carry() {
+    // `rol al, 8`/`ror al, 8` leave the value unchanged but still load CF:
+    // x86 masks the count to five bits, and only a zero masked count skips
+    // the flags.
+    let mut c = Cpu::new();
+    c.cf = false;
+    assert_eq!(c.rol(0x01, 8, 8), 0x01);
+    assert!(c.cf, "rol al,8: CF = LSB of the result");
+    c.cf = true;
+    assert_eq!(c.rol(0x02, 8, 8), 0x02);
+    assert!(!c.cf);
+    c.cf = false;
+    assert_eq!(c.ror(0x80, 8, 8), 0x80);
+    assert!(c.cf, "ror al,8: CF = MSB of the result");
+    c.cf = true;
+    assert_eq!(c.ror(0x01, 16, 16), 0x01);
+    assert!(!c.cf);
+    c.cf = true;
+    assert_eq!(c.rol(0x01, 32, 32), 0x01);
+    assert!(c.cf, "a zero masked count changes no flag");
+}
+
+#[test]
+fn recomp_flags_double_shift_by_width_uses_source() {
+    // Count == operand width replaces the destination with the source; this is
+    // defined x86 behaviour reachable on 8/16-bit operands.
+    let mut c = Cpu::new();
+    assert_eq!(c.shld(0x12, 0x34, 8, 8), 0x34);
+    assert_eq!(c.shrd(0x12, 0x34, 8, 8), 0x34);
+    c.cf = false;
+    c.shld(0x01, 0x00, 8, 8);
+    assert!(c.cf, "CF is the last bit shifted out of the destination");
+    c.cf = false;
+    c.shrd(0x80, 0x00, 8, 8);
+    assert!(c.cf);
+}
+
+#[test]
+fn recomp_flags_width_argument_is_total() {
+    // An out-of-range width is treated as 32 instead of panicking (audit
+    // L547-10): a machine model must never abort on an argument.
+    let mut c = Cpu::new();
+    assert_eq!(c.add_flags(1, 1, 0), 2);
+    assert_eq!(c.add_flags(0xFFFF, 1, 7), 0x1_0000);
+    assert_eq!(c.bittest(0b10, 33, 0, BitOp::Test), 0b10);
+    assert!(c.cf);
+    let _ = c.sar(0x8000, 4, 64);
+    assert_eq!(c.rol(0x12, 32, 0), 0x12, "zero masked count is a no-op");
+}
+
+#[test]
 fn recomp_flags_add_boundaries() {
     let mut c = Cpu::new();
     // 0x7fffffff + 1 -> signed overflow, no carry out.

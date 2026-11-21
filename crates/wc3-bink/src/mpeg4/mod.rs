@@ -182,7 +182,7 @@ impl Mpeg4Decoder {
         let au = parse_access_unit(payload, self.vol.as_ref())?
             .ok_or(BinkError::Corrupt("no VOP in frame payload"))?;
         if let Some(vol) = au.vol {
-            self.ensure_size(vol.width, vol.height);
+            self.ensure_size(vol.width, vol.height)?;
             self.vol = Some(vol);
         }
         let vol = self.vol.clone().ok_or(BinkError::Corrupt("no VOL header"))?;
@@ -251,15 +251,27 @@ impl Mpeg4Decoder {
         Ok(vop.coding_type)
     }
 
-    fn ensure_size(&mut self, width: usize, height: usize) {
+    fn ensure_size(&mut self, width: usize, height: usize) -> Result<(), BinkError> {
+        // The VOL is untrusted stream data: bound the picture before it sizes
+        // three planes plus the side-data grids (WC3-BINK-001/003).
+        if width == 0 || height == 0 {
+            return Err(BinkError::Corrupt("MPEG-4 picture has zero dimensions"));
+        }
+        if width
+            .checked_mul(height)
+            .is_none_or(|pixels| pixels > crate::MAX_MOVIE_PIXELS)
+        {
+            return Err(BinkError::Corrupt("MPEG-4 picture dimensions out of range"));
+        }
         if self.cur.width == width && self.cur.height == height {
-            return;
+            return Ok(());
         }
         self.cur = Picture::new(width, height);
         self.last = Picture::new(width, height);
         self.next = Picture::new(width, height);
         self.has_last = false;
         self.has_next = false;
+        Ok(())
     }
 
     fn decode_macroblock_rows(

@@ -1,5 +1,7 @@
 //! Decoded picture storage, per-macroblock side data and YUV to RGBA output.
 
+use crate::BinkError;
+
 /// Plane selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -81,9 +83,13 @@ impl Picture {
             height,
             stride_y,
             stride_c,
-            y: vec![0u8; stride_y * (height + 1)],
-            u: vec![0u8; stride_c * ((height + 1) / 2 + 1)],
-            v: vec![0u8; stride_c * ((height + 1) / 2 + 1)],
+            // The decoder iterates `mb_h` macroblock rows and writes whole
+            // 16x16 / 8x8 blocks, so the planes must cover every padded row
+            // (WC3-BINK-003). A picture whose height is not a multiple of 16
+            // used to index past the last plane row in `idct_put`.
+            y: vec![0u8; stride_y * (mb_h * 16 + 1)],
+            u: vec![0u8; stride_c * (mb_h * 8 + 1)],
+            v: vec![0u8; stride_c * (mb_h * 8 + 1)],
             mb_w,
             mb_h,
             mv: vec![[0, 0]; mv_stride * (mb_h * 2 + 2)],
@@ -316,8 +322,16 @@ impl Picture {
     }
 
     /// Convert to RGBA8 using BT.601 studio-swing coefficients.
-    pub fn to_rgba(&self, out: &mut [u8]) {
-        debug_assert_eq!(out.len(), self.width * self.height * 4);
+    ///
+    /// `out` must hold `width * height * 4` bytes. The frame ring is sized from
+    /// the AVI header while the picture is sized from the MPEG-4 VOL, so a
+    /// container/stream disagreement has to surface as a typed error instead of
+    /// an index panic at the first decoded frame (WC3-BINK-002).
+    pub fn to_rgba(&self, out: &mut [u8]) -> Result<(), BinkError> {
+        let needed = self.width * self.height * 4;
+        if out.len() < needed {
+            return Err(BinkError::Corrupt("RGBA buffer smaller than the picture"));
+        }
         let t = bt601_table();
         for y in 0..self.height {
             let yrow = y * self.stride_y;
@@ -334,6 +348,7 @@ impl Picture {
                 out[o + 3] = 255;
             }
         }
+        Ok(())
     }
 }
 
@@ -396,7 +411,7 @@ mod tests {
         p.u.fill(128);
         p.v.fill(128);
         let mut rgba = vec![0u8; 16 * 16 * 4];
-        p.to_rgba(&mut rgba);
+        p.to_rgba(&mut rgba).expect("rgba length");
         // 1.164*(126-16) = 128.04 -> 128
         assert_eq!(&rgba[0..4], &[128, 128, 128, 255]);
     }
@@ -420,7 +435,7 @@ mod tests {
             p.u.fill(u);
             p.v.fill(v);
             let mut rgba = vec![0u8; 16 * 16 * 4];
-            p.to_rgba(&mut rgba);
+            p.to_rgba(&mut rgba).expect("rgba length");
             let got = [rgba[0], rgba[1], rgba[2]];
             for i in 0..3 {
                 assert!(

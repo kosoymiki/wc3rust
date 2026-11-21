@@ -232,23 +232,90 @@ impl MapAudit {
     }
 }
 
-/// Recursively find every `.w3m`/`.w3x`/`.w3n` map.
+/// Deepest directory nesting map discovery follows.
+///
+/// A real WC3 install nests maps three or four levels (`Maps/Campaign/Human/`),
+/// so 32 is generous for the product path and turns a pathological link farm
+/// into a bounded partial result.
+const MAX_DISCOVERY_DEPTH: usize = 32;
+/// Most directory entries one discovery call inspects. Bounds the wall time of
+/// a hostile tree independently of the depth limit.
+const MAX_DISCOVERY_ENTRIES: usize = 200_000;
+
+fn is_map_path(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        matches!(
+            ext.to_string_lossy().to_ascii_lowercase().as_str(),
+            "w3m" | "w3x" | "w3n"
+        )
+    })
+}
+
+/// Recursively find every `.w3m`/`.w3x`/`.w3n` map under `root`.
+///
+/// Symlink-cycle safe (WC3-I-020). `Path::is_dir()` follows symlinks, so a link
+/// to a parent directory used to recurse until the stack or the user gave out.
+/// Every directory is now keyed by its **canonical** path in a visited set
+/// before descending: a link to an already-walked directory (parent, sibling, a
+/// two-directory cycle, or a self-link) is skipped instead of re-scanned.
+/// Symlinked *files* are still matched by extension. Unreadable directories
+/// (permission denied, a vanished mount, a dangling link) are skipped rather
+/// than failing the whole discovery. Depth and entry budgets cap the walk even
+/// when every directory is unique.
 pub fn discover_maps(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                walk(&path, out)?;
-            } else if let Some(ext) = path.extension() {
-                if matches!(ext.to_string_lossy().to_ascii_lowercase().as_str(), "w3m" | "w3x" | "w3n") {
-                    out.push(path);
+    use std::collections::HashSet;
+
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        visited: &mut HashSet<PathBuf>,
+    ) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        if depth > MAX_DISCOVERY_DEPTH {
+            return Ok(out);
+        }
+        // The canonical path is the identity key: a symlink and its target (and
+        // two links that point at each other) collapse to one entry.
+        let Ok(key) = fs::canonicalize(dir) else {
+            return Ok(out);
+        };
+        if !visited.insert(key) {
+            return Ok(out);
+        }
+        let Ok(reader) = fs::read_dir(dir) else {
+            return Ok(out);
+        };
+        for entry in reader.flatten() {
+            if visited.len() > MAX_DISCOVERY_ENTRIES {
+                break;
+            }
+            let path = entry.path();
+            // `symlink_metadata` does not follow the link; the target is read
+            // only through `metadata`, and only to decide dir/file.
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let is_link = meta.file_type().is_symlink();
+            let target = if is_link {
+                match fs::metadata(&path) {
+                    Ok(target) => Some(target),
+                    Err(_) => continue, // dangling link
                 }
+            } else {
+                None
+            };
+            let is_dir = target.as_ref().map(|meta| meta.is_dir()).unwrap_or_else(|| meta.is_dir());
+            if is_dir {
+                out.extend(walk(&path, depth + 1, visited)?);
+            } else if is_map_path(&path) {
+                out.push(path);
             }
         }
-        Ok(())
+        Ok(out)
     }
-    walk(root, &mut out)?;
+
+    let mut visited = HashSet::new();
+    let mut out = walk(root, 0, &mut visited)?;
     out.sort();
     Ok(out)
 }

@@ -2,11 +2,37 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::Read;
 
 use wc3_sim::{Ability, Command, Sim, TICKS_PER_SECOND, UnitId, UnitKind};
 
 pub const MAGIC: &[u8; 4] = b"H2RP";
 pub const VERSION: u32 = 1;
+
+/// Hard ceiling for a replay file. A replay is a command stream, not a video:
+/// a full match is far below this, and the cap keeps an announced size from
+/// sizing an allocation before a single byte has been trusted.
+pub const MAX_REPLAY_BYTES: u64 = 256 * 1024 * 1024;
+/// Hard ceiling for the announced record count. Independent of the byte cap so
+/// a header cannot ask for a huge `Vec` even when the payload is small; the
+/// per-record minimum below tightens it further.
+pub const MAX_RECORDS: usize = 1 << 20;
+/// Hard ceiling for one encoded command. The widest variant (an id list plus
+/// two points) is ~256 KiB at the format's u16 id limit, so 1 MiB accepts every
+/// command `encode_command` can produce and rejects a corrupt length.
+pub const MAX_COMMAND_BYTES: usize = 1 << 20;
+/// Hard ceiling for the announced tick count and for one verification run:
+/// 24 hours of match time at [`wc3_sim::TICKS_PER_SECOND`]. `verify_with`
+/// refuses a longer replay before it constructs the simulation, so a corrupt
+/// `end_tick` cannot drive a multi-hour loop; `read` refuses a file that
+/// announces one. Callers that need a tighter bound use
+/// [`Replay::verify_with_limit`].
+pub const MAX_VERIFY_TICKS: u64 = 24 * 60 * 60 * wc3_sim::TICKS_PER_SECOND as u64;
+/// Format-facing alias of [`MAX_VERIFY_TICKS`] for the container reader.
+pub const MAX_TICKS: u64 = MAX_VERIFY_TICKS;
+/// Smallest possible encoded record: tick (8) + player (1) + length (4) + the
+/// one-byte command tag.
+const MIN_RECORD_BYTES: usize = 14;
 
 #[derive(Debug)]
 pub enum ReplayError {
@@ -14,6 +40,10 @@ pub enum ReplayError {
     BadMagic,
     BadVersion(u32),
     Corrupt(&'static str),
+    /// The replay's end tick is beyond the verification duration limit. Raised
+    /// before any simulation work, with the declared tick and the limit so the
+    /// caller can report the bound that refused.
+    Duration { ticks: u64, limit: u64 },
     ChecksumMismatch { expected: u64, actual: u64 },
 }
 
@@ -24,6 +54,10 @@ impl fmt::Display for ReplayError {
             Self::BadMagic => f.write_str("bad replay magic"),
             Self::BadVersion(v) => write!(f, "unsupported replay version {v}"),
             Self::Corrupt(why) => write!(f, "corrupt replay: {why}"),
+            Self::Duration { ticks, limit } => write!(
+                f,
+                "replay end_tick {ticks} exceeds the verification duration limit {limit}"
+            ),
             Self::ChecksumMismatch { expected, actual } => {
                 write!(
                     f,
@@ -70,52 +104,118 @@ impl Replay {
     }
 
     pub fn write(&self, mut writer: impl std::io::Write) -> std::io::Result<()> {
-        writer.write_all(MAGIC)?;
-        writer.write_all(&VERSION.to_le_bytes())?;
-        writer.write_all(&self.seed.to_le_bytes())?;
-        writer.write_all(&self.map_hash.to_le_bytes())?;
-        writer.write_all(&self.final_hash.to_le_bytes())?;
-        writer.write_all(&self.ticks.to_le_bytes())?;
-        writer.write_all(&(self.records.len() as u32).to_le_bytes())?;
-        for record in &self.records {
-            writer.write_all(&record.tick.to_le_bytes())?;
-            writer.write_all(&[record.player])?;
-            let data = encode_command(&record.command);
-            writer.write_all(&(data.len() as u32).to_le_bytes())?;
-            writer.write_all(&data)?;
+        // `read`/`parse` enforce these five invariants. A recording the reader
+        // would reject is silently unverifiable, so the same ceilings are
+        // checked here, with the reader's wording, before anything is written.
+        if self.ticks > MAX_TICKS {
+            return Err(reject("corrupt replay: tick count"));
         }
-        Ok(())
+        if self.records.len() > MAX_RECORDS {
+            return Err(reject("corrupt replay: record count"));
+        }
+        let mut last_tick = 0u64;
+        for (index, record) in self.records.iter().enumerate() {
+            if record.tick >= self.ticks {
+                return Err(reject("corrupt replay: record tick outside the replay"));
+            }
+            if index > 0 && record.tick < last_tick {
+                return Err(reject("corrupt replay: record ticks are not ordered"));
+            }
+            last_tick = record.tick;
+        }
+
+        // Assembled in memory first: a rejected command length then cannot leave
+        // a truncated replay on disk.
+        let mut out = Vec::with_capacity(32 + self.records.len() * 16);
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&self.seed.to_le_bytes());
+        out.extend_from_slice(&self.map_hash.to_le_bytes());
+        out.extend_from_slice(&self.final_hash.to_le_bytes());
+        out.extend_from_slice(&self.ticks.to_le_bytes());
+        out.extend_from_slice(&(self.records.len() as u32).to_le_bytes());
+        for record in &self.records {
+            let data = encode_command(&record.command);
+            if data.len() > MAX_COMMAND_BYTES {
+                return Err(reject("corrupt replay: command length"));
+            }
+            out.extend_from_slice(&record.tick.to_le_bytes());
+            out.push(record.player);
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&data);
+        }
+        writer.write_all(&out)
     }
 
+    /// Reads a replay, bounding every announced length by the bytes actually
+    /// present.
+    ///
+    /// A replay is untrusted input: the header carries a record count, every
+    /// record carries a command length, and the file carries a tick count. All
+    /// three are checked against the payload (and against hard ceilings) before
+    /// they can size an allocation or drive a loop, so a corrupt or hostile
+    /// file fails with [`ReplayError::Corrupt`] instead of reserving gigabytes
+    /// or verifying for 2^64 ticks.
     pub fn read(mut reader: impl std::io::Read) -> Result<Self, ReplayError> {
-        let mut magic = [0u8; 4];
-        reader.read_exact(&mut magic)?;
-        if &magic != MAGIC {
+        let mut data = Vec::new();
+        reader
+            .by_ref()
+            .take(MAX_REPLAY_BYTES + 1)
+            .read_to_end(&mut data)?;
+        if data.len() as u64 > MAX_REPLAY_BYTES {
+            return Err(ReplayError::Corrupt("replay exceeds the size cap"));
+        }
+        Self::parse(&data)
+    }
+
+    fn parse(data: &[u8]) -> Result<Self, ReplayError> {
+        let mut r = Reader { data, pos: 0 };
+        if r.bytes(4)? != MAGIC.as_slice() {
             return Err(ReplayError::BadMagic);
         }
-        let version = read_u32(&mut reader)?;
+        let version = r.u32()?;
         if version != VERSION {
             return Err(ReplayError::BadVersion(version));
         }
-        let seed = read_u64(&mut reader)?;
-        let map_hash = read_u64(&mut reader)?;
-        let final_hash = read_u64(&mut reader)?;
-        let ticks = read_u64(&mut reader)?;
-        let count = read_u32(&mut reader)? as usize;
+        let seed = r.u64()?;
+        let map_hash = r.u64()?;
+        let final_hash = r.u64()?;
+        let ticks = r.u64()?;
+        if ticks > MAX_TICKS {
+            return Err(ReplayError::Corrupt("tick count"));
+        }
+        let count = r.u32()? as usize;
+        if count > MAX_RECORDS || count > r.remaining() / MIN_RECORD_BYTES {
+            return Err(ReplayError::Corrupt("record count"));
+        }
         let mut records = Vec::with_capacity(count);
-        for _ in 0..count {
-            let tick = read_u64(&mut reader)?;
-            let mut player = [0u8; 1];
-            reader.read_exact(&mut player)?;
-            let len = read_u32(&mut reader)? as usize;
-            let mut data = vec![0u8; len];
-            reader.read_exact(&mut data)?;
-            let command = decode_command(&data)?;
+        let mut last_tick = 0u64;
+        for index in 0..count {
+            let tick = r.u64()?;
+            // `verify_with` walks `0..ticks` and applies records in file order,
+            // so a record at or past the declared end would never run and an
+            // out-of-order record would be skipped silently.
+            if tick >= ticks {
+                return Err(ReplayError::Corrupt("record tick outside the replay"));
+            }
+            if index > 0 && tick < last_tick {
+                return Err(ReplayError::Corrupt("record ticks are not ordered"));
+            }
+            last_tick = tick;
+            let player = r.u8()?;
+            let len = r.u32()? as usize;
+            if len == 0 || len > MAX_COMMAND_BYTES || len > r.remaining() {
+                return Err(ReplayError::Corrupt("command length"));
+            }
+            let command = decode_command(r.bytes(len)?)?;
             records.push(Record {
                 tick,
-                player: player[0],
+                player,
                 command,
             });
+        }
+        if r.remaining() != 0 {
+            return Err(ReplayError::Corrupt("trailing bytes"));
         }
         Ok(Self {
             seed,
@@ -126,15 +226,41 @@ impl Replay {
         })
     }
 
-    /// Re-simulate and compare the final state hash. The caller supplies the
-    /// initial scenario (unit spawns / map state) because the replay stores
-    /// commands, not the scenario itself.
+    /// Re-simulate and compare the final state hash, bounded by
+    /// [`MAX_VERIFY_TICKS`]. The caller supplies the initial scenario (unit
+    /// spawns / map state) because the replay stores commands, not the scenario
+    /// itself.
     pub fn verify_with<F: FnOnce(&mut Sim)>(
         &self,
         width: u32,
         height: u32,
         setup: F,
     ) -> Result<u64, ReplayError> {
+        self.verify_with_limit(width, height, MAX_VERIFY_TICKS, setup)
+    }
+
+    /// [`Replay::verify_with`] with an explicit duration bound.
+    ///
+    /// `max_ticks` is the caller's end-tick budget (a UI timeout, a CI gate).
+    /// The crate's own [`MAX_VERIFY_TICKS`] always applies on top, so a caller
+    /// cannot widen the external bound by passing a larger number. The check
+    /// runs before the setup closure and before the simulation is created: a
+    /// replay that is too long is refused with [`ReplayError::Duration`]
+    /// without doing any work.
+    pub fn verify_with_limit<F: FnOnce(&mut Sim)>(
+        &self,
+        width: u32,
+        height: u32,
+        max_ticks: u64,
+        setup: F,
+    ) -> Result<u64, ReplayError> {
+        let limit = max_ticks.min(MAX_VERIFY_TICKS);
+        if self.ticks > limit {
+            return Err(ReplayError::Duration {
+                ticks: self.ticks,
+                limit,
+            });
+        }
         let mut sim = Sim::new(self.seed, width, height);
         setup(&mut sim);
         let mut index = 0usize;
@@ -265,6 +391,34 @@ pub fn encode_command(command: &Command) -> Vec<u8> {
             out.extend_from_slice(&hero.0.to_le_bytes());
             out.extend_from_slice(&altar.0.to_le_bytes());
         }
+        // Commands 14-16 are the card orders the sim grew in the same release
+        // (`b9ccb59`): patrol, building upgrade and research. They were added to
+        // `wc3_sim::Command` without a replay arm, which stopped this crate from
+        // compiling (`E0004`) and left the commands unrecordable. The payload
+        // mirrors the closest sibling: ids for the unit list, a u16-prefixed
+        // def id (interned back to `&'static str` on decode) and the points.
+        Command::Patrol { units, a, b } => {
+            out.push(14);
+            write_ids(&mut out, units);
+            out.extend_from_slice(&a.x.to_le_bytes());
+            out.extend_from_slice(&a.y.to_le_bytes());
+            out.extend_from_slice(&b.x.to_le_bytes());
+            out.extend_from_slice(&b.y.to_le_bytes());
+        }
+        Command::UpgradeBuilding { building, to } => {
+            out.push(15);
+            out.extend_from_slice(&building.0.to_le_bytes());
+            let bytes = to.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+        Command::Research { building, upgrade } => {
+            out.push(16);
+            out.extend_from_slice(&building.0.to_le_bytes());
+            let bytes = upgrade.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
     }
     out
 }
@@ -352,8 +506,33 @@ pub fn decode_command(data: &[u8]) -> Result<Command, ReplayError> {
             hero: UnitId(r.u32()?),
             altar: UnitId(r.u32()?),
         },
+        14 => {
+            let units = r.ids()?;
+            let a = glam::Vec2::new(r.f32()?, r.f32()?);
+            let b = glam::Vec2::new(r.f32()?, r.f32()?);
+            Command::Patrol { units, a, b }
+        }
+        15 => {
+            let building = UnitId(r.u32()?);
+            let raw = r.string()?;
+            let to = wc3_sim::save::intern_static_name(&raw)
+                .ok_or(ReplayError::Corrupt("building id"))?;
+            Command::UpgradeBuilding { building, to }
+        }
+        16 => {
+            let building = UnitId(r.u32()?);
+            let raw = r.string()?;
+            let upgrade = wc3_sim::save::intern_static_name(&raw)
+                .ok_or(ReplayError::Corrupt("upgrade id"))?;
+            Command::Research { building, upgrade }
+        }
         _ => return Err(ReplayError::Corrupt("command tag")),
     };
+    // A record's length prefix must describe exactly one command: trailing
+    // bytes would otherwise be accepted and silently ignored.
+    if r.remaining() != 0 {
+        return Err(ReplayError::Corrupt("trailing command bytes"));
+    }
     Ok(command)
 }
 
@@ -389,6 +568,9 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
     fn bytes(&mut self, n: usize) -> Result<&'a [u8], ReplayError> {
         let end = self
             .pos
@@ -407,6 +589,9 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32, ReplayError> {
         Ok(u32::from_le_bytes(self.bytes(4)?.try_into().expect("4")))
     }
+    fn u64(&mut self) -> Result<u64, ReplayError> {
+        Ok(u64::from_le_bytes(self.bytes(8)?.try_into().expect("8")))
+    }
     fn i32(&mut self) -> Result<i32, ReplayError> {
         Ok(i32::from_le_bytes(self.bytes(4)?.try_into().expect("4")))
     }
@@ -423,24 +608,17 @@ impl<'a> Reader<'a> {
     }
     fn ids(&mut self) -> Result<Vec<UnitId>, ReplayError> {
         let count = u16::from_le_bytes(self.bytes(2)?.try_into().expect("2")) as usize;
+        // The count is untrusted: cap it by the bytes actually present, so a
+        // forged 65 535 cannot reserve a 256 KiB vector from a 3-byte command.
+        if count > self.remaining() / 4 {
+            return Err(ReplayError::Corrupt("unit id count"));
+        }
         let mut ids = Vec::with_capacity(count);
         for _ in 0..count {
             ids.push(UnitId(self.u32()?));
         }
         Ok(ids)
     }
-}
-
-fn read_u32(r: &mut impl std::io::Read) -> Result<u32, ReplayError> {
-    let mut buf = [0u8; 4];
-    r.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
-}
-
-fn read_u64(r: &mut impl std::io::Read) -> Result<u64, ReplayError> {
-    let mut buf = [0u8; 8];
-    r.read_exact(&mut buf)?;
-    Ok(u64::from_le_bytes(buf))
 }
 
 /// Lockstep scheduler: a command submitted for tick T is delivered at
@@ -519,6 +697,12 @@ impl Lockstep {
 
 pub fn ticks_for(seconds: f32) -> u64 {
     (seconds * TICKS_PER_SECOND as f32).round() as u64
+}
+
+/// `io::Error` in the reader's wording, for the ceilings [`Replay::write`] shares
+/// with [`Replay::parse`].
+fn reject(detail: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, detail)
 }
 
 #[cfg(test)]
