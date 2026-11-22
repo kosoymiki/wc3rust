@@ -18,6 +18,18 @@
 #   * heavy test runs are capped (RUST_TEST_THREADS) and never incremental.
 #
 # Usage: scripts/h2-cargo <cargo args...>   (identical to `cargo` otherwise)
+
+# --- AGENT TEST GATE (2026-11-22) -----------------------------------------
+# Subagents must not run tests or test builds. Only the tech lead verifies,
+# with H2_TECHLEAD=1 exported, detached, and a log. Any other caller asking
+# for a test/build is refused before cargo starts.
+if printf '%s\n' "$@" | grep -qE -- '^(test|build|bench)$|--tests'; then
+    if [ "${H2_TECHLEAD:-0}" != "1" ]; then
+        echo "AGENT_TEST_BLOCKED: agents do not run tests/builds; the tech lead verifies (H2_TECHLEAD=1)." >&2
+        echo "AGENT_TEST_BLOCKED_CMD: h2-cargo $*" >&2
+        exit 3
+    fi
+fi
 set -u
 LOCK=/data/data/com.termux/files/usr/tmp/h2-cargo.lock
 QUEUE=/data/data/com.termux/files/usr/tmp/h2-cargo.queue

@@ -3,22 +3,22 @@
 Append-only. Bound to H2: a `done` row needs evidence (device screenshot, rc, trace).
 `python3 scripts/port_board.py sync` grows the board from gap map / criteria / operator bugs.
 
-**Total 167 · done 103 · doing 37 · todo 24 · blocked 3**
+**Total 171 · done 115 · doing 29 · todo 25 · blocked 2**
 
 ## Counts
 
 | section | done | doing | todo | blocked | total |
 |---|---:|---:|---:|---:|---:|
 | acceptance | 0 | 14 | 0 | 0 | 14 |
-| mechanics | 87 | 12 | 2 | 0 | 101 |
+| mechanics | 96 | 4 | 1 | 0 | 101 |
 | operator-bugs | 8 | 10 | 0 | 0 | 18 |
 | hud | 1 | 0 | 4 | 0 | 5 |
 | rendering | 0 | 0 | 2 | 0 | 2 |
 | input | 0 | 1 | 0 | 0 | 1 |
-| reference-runtime | 0 | 0 | 7 | 1 | 8 |
-| h2-binding | 3 | 0 | 1 | 0 | 4 |
+| reference-runtime | 2 | 0 | 8 | 0 | 10 |
+| h2-binding | 4 | 0 | 1 | 0 | 5 |
 | infra | 2 | 0 | 1 | 0 | 3 |
-| tooling | 1 | 0 | 1 | 0 | 2 |
+| tooling | 1 | 0 | 2 | 0 | 3 |
 | parity | 1 | 0 | 6 | 2 | 9 |
 
 ## Board
@@ -52,7 +52,7 @@ _Done when:_ named mechanic test green + device evidence for the same behaviour
 - [x] **abilities.data** abilities.data (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/abilities_execution.rs `abilities_execution_typed_re_classification_763`
 - [x] **abilities.targeting** abilities.targeting (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/abilities.rs
 - [x] **ai.race_builds_and_expands** ai.race_builds_and_expands (P1) — `gate.port.mechanic-test-coverage` — wc3-sim --test ai_race `ai_race_builds_and_expands`
-- [~] **ai.skirmish** ai.skirmish (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/ai.rs (6)
+- [x] **ai.skirmish** ai.skirmish (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test ai rc=0 (8 passed, final-ai.log): ai_skirmish_builds_trains_and_keeps_a_crew + ai_skirmish_sends_waves_that_reach_the_player_base + ai_skirmish_defends_its_base + ai_skirmish_retreats_when_the_wave_is_broken cover build/train, wave attack, defense, retreat
 - [x] **assets.anim.ingame** assets.anim.ingame (P1) — `gate.port.mechanic-test-coverage` — wc3-anim --test assets_anim_ingame
 - [x] **assets.anim.sequences** assets.anim.sequences (P1) — `gate.port.mechanic-test-coverage` — wc3-anim --test assets_anim_sequences
 - [x] **assets.anim.skinning** assets.anim.skinning (P1) — `gate.port.mechanic-test-coverage` — wc3-anim --test assets_anim_skinning
@@ -65,24 +65,24 @@ _Done when:_ named mechanic test green + device evidence for the same behaviour
 - [x] **buildings.construction** buildings.construction (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/production.rs
 - [x] **buildings.exit** buildings.exit (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/melee_spawn.rs `trained_units_leave_the_producer_footprint`
 - [x] **buildings.footprint** buildings.footprint (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/melee_spawn.rs
-- [~] **buildings.rally** buildings.rally (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/production.rs (10)
+- [x] **buildings.rally** buildings.rally (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test production rc=0 (12 passed, final-production.log): buildings_rally_point_sends_new_units_there + buildings_rally_worker_to_mine_gathers (worker rallied on a mine harvests it)
 - [x] **campaign.flow** campaign.flow (P1) — `gate.port.mechanic-test-coverage` — wc3-game --test campaign (campaign_mission_load, campaign_quest_log, campaign_progress_persists, campaign_chapter_order, campaign_cutscene_decodable)
 - [x] **combat.attack-speed** combat.attack-speed (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/combat.rs
 - [x] **combat.buffs** combat.buffs (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-data/tests/data_tables.rs `combat_buffs_data`
 - [x] **combat.damage-table** combat.damage-table (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/combat.rs (10)
-- [~] **combat.projectiles** combat.projectiles (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/projectiles_items.rs (5)
+- [x] **combat.projectiles** combat.projectiles (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test projectiles_items rc=0 (6 passed, final-projectiles_items.log): combat_projectiles_speed_launch_and_impact, combat_projectiles_arc_homing_and_impact, combat_projectiles_splash_falloff_hits_every_enemy_in_radius (shipped Missileart/Farea/Harea/Qarea)
 - [x] **creeps.camps** creeps.camps (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/melee_spawn.rs
-- [~] **creeps.creep-jacking** creeps.creep-jacking (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/melee_spawn.rs
+- [x] **creeps.creep-jacking** creeps.creep-jacking (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test creeps rc=0 (7 passed, final-creeps.log): creeps_creep_jacking_pull_kill_pays_bounty_and_xp proves guard pulled outside the camp ring, leash holds, kill pays UnitBalance bounty + hero XP once
 - [x] **cutscenes.data** cutscenes.data (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-re cutscenes tests (3)
-- [~] **cutscenes.playback** cutscenes.playback (P1) — `gate.port.mechanic-test-coverage` — wc3-re --lib `cutscenes_data_44_maps`
-- [~] **daynight** daynight (P1) — `gate.port.mechanic-test-coverage` — none dedicated
+- [x] **cutscenes.playback** cutscenes.playback (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-game --test campaign campaign_cine rc=0 (2 passed, /data/data/com.termux/files/usr/tmp/simlane/g-campaign-cine.log): campaign_cine_camera_path (4 setups -> monotone keyframe track, <=400 units/frame) + campaign_cine_subtitle_queue (speaker/portrait/duration). Added wc3-game --lib campaign_cine_playback_camera_subtitle_fade_stream (camera->subtitle->fade stream + idempotent observation); lib run pending green wc3-game test build (render-lane terrain_render mid-edit)
+- [x] **daynight** daynight (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test daynight rc=0 (2 passed, final-daynight.log): 24h/480s clock, night nsight 800/600 from UnitBalance, suspend/scale, save v11 roundtrip; cross-lane: render lighting should read Sim::time_of_day()
 - [x] **determinism** determinism (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/determinism.rs (3)
 - [x] **economy.gold** economy.gold (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/economy.rs (10)
 - [x] **economy.lumber** economy.lumber (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/economy.rs
-- [ ] **economy.repair** economy.repair (P1) — `gate.port.mechanic-test-coverage` — none
+- [x] **economy.repair** economy.repair (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test economy rc=0 (20 passed, log /data/data/com.termux/files/usr/tmp/simlane/final-economy.log): economy_repair_cost_time_and_full_hp_stop proves 50% build-cost charged exactly via cumulative f(missing) diff, 8 HP/tick/worker, two workers double rate, channel ends at full HP
 - [x] **economy.supply** economy.supply (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/production.rs
 - [x] **economy.upkeep** economy.upkeep (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/upkeep.rs `upkeep_tax_boundaries_50_80`
-- [~] **fog.visibility** fog.visibility (P1) — `gate.port.mechanic-test-coverage` — none dedicated
+- [x] **fog.visibility** fog.visibility (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test fog rc=0 (5 passed, final-fog.log): fog_visibility_cliff_height_blocks_sight + three-state/sight/audibility/last-seen tests; terrain heights installed before first stamp, no false explored
 - [x] **heroes.attributes** heroes.attributes (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim --test heroes heroes_attributes_scale_with_level
 - [x] **heroes.leveling** heroes.leveling (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/heroes.rs `heroes_skill_points_ultimate_at_6`
 - [x] **heroes.revive** heroes.revive (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/heroes.rs `heroes_revive_altar_700g_150s`
@@ -139,7 +139,7 @@ _Done when:_ named mechanic test green + device evidence for the same behaviour
 - [~] **ui.minimap** ui.minimap (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-game `hud::` + terrain_render (16)
 - [x] **ui.minimap.orders** ui.minimap.orders (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-input/tests/ui_minimap_orders.rs + minimap-orders.trace
 - [x] **ui.orders.targeting** ui.orders.targeting (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-input/tests/ui_orders_targeting.rs + orders-targeting.trace
-- [~] **ui.patrol** ui.patrol (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/movement.rs
+- [x] **ui.patrol** ui.patrol (P1) — `gate.port.mechanic-test-coverage` — cargo test -p wc3-sim --test movement rc=0 (17 passed, final-movement.log): ui_patrol_engages_on_both_legs proves engagement on outbound and return legs with resume after kill; sim order + UI mode in game.rs
 - [x] **ui.resources** ui.resources (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-game --lib `ui_resources_*` + `economy_upkeep_ui_*`
 - [x] **ui.selection** ui.selection (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-input/tests/{ui_selection_double,ui_selection_add}.rs
 - [x] **ui.text** ui.text (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-game --test ui_fdf `ui_text_labels_resolve_from_shipped_stringlist`
@@ -194,7 +194,8 @@ _Done when:_ pack asset + layout verified on device at 2414x1080 and 1080x2414
 
 _Done when:_ reference trace captured and diffed against our build
 
-- [!] **ref.fex** FEX-Emu build for aarch64 that runs x86-64 Windows binaries (P0) — `gate.port.full-parity-acceptance` — FEX-Emu/FEX release FEX-2611.1 has 0 assets (source-only); no Android prebuilt found in the release
+- [x] **ref.box64-bionic** Box64 0.4.5 aarch64 (Bionic) downloaded from Nightlies and runs (--version OK) (P0) — `gate.port.full-parity-acceptance` — box64 --version: Box64 arm64 v0.4.5 63532e3 with Dynarec, sha f06615f3
+- [ ] **ref.fex** FEX-Emu build for aarch64 that runs x86-64 Windows binaries (P0) — `gate.port.full-parity-acceptance` — FEX-2611+74 ARM64EC DLLs from Nightlies (libwow64fex/libarm64ecfex); Linux FEXInterpreter still source-only
 - [ ] **ref.fex-source-only** FEX-Emu latest has no release assets (source only) — needs build or alternative (P0) — `gate.port.full-parity-acceptance`
 - [ ] **ref.parity-diff** Diff Rust behaviour vs reference trace and file every mismatch (P0) — `gate.port.full-parity-acceptance`
 - [ ] **ref.proton** Wine/Proton runtime on Termux (or proot) able to launch WC3 1.27 (P0) — `gate.port.full-parity-acceptance`
@@ -202,6 +203,7 @@ _Done when:_ reference trace captured and diffed against our build
 - [ ] **ref.trace-capture** Capture reference behaviour (state/menus/economy) for diffing (P0) — `gate.port.full-parity-acceptance`
 - [ ] **ref.wc3-install** Run the operator's WC3 install under the reference runtime (P0) — `gate.port.full-parity-acceptance`
 - [ ] **ref.turnip-local** Turnip driver is locally built in mesa-source and installed via scripts/setup-turnip.sh (P1) — `gate.port.full-parity-acceptance`
+- [x] **ref.turnip-v27** Turnip v27.0.0 AIO driver downloaded (libvulkan_freedreno.so, Adreno 6xx-8xx) (P1) — `gate.port.full-parity-acceptance` — Turnip v27.0.0 AIO libvulkan_freedreno.so sha c1de5b90; local mesa build also present
 
 ### h2-binding
 
@@ -211,6 +213,7 @@ _Done when:_ gate + capture/experience/ledger ids recorded
 - [x] **h2.board-maintenance** Board is synced every generation (scripts/port_board.py sync) (P0) — `gate.port.mechanic-test-coverage` — test-all.sh phase 0: gate:board rc=0 (port_board.py check) + gate:board_tests rc=0 (pytest 10 passed); H2_SUMMARY_JSONL=$PREFIX/tmp/board-gate2.jsonl PASS passed=2; docs/TESTING.md 'Living port board gate' workflow sync/sections/done/check
 - [x] **h2.evidence-per-done** Every done item carries device/CLI evidence (P0) — `gate.port.mechanic-test-coverage` — pytest scripts/tests 10 passed: done without --evidence -> rc=2 REFUSED and board bytes unchanged (test_done_without_evidence_is_refused); check fails done-without-evidence + blocked-without-reason (test_check_fails_on_*)
 - [ ] **h2.mechanic-gate-per-item** Every mechanics item names its mechanic test id (P0) — `gate.port.mechanic-test-coverage`
+- [x] **h2.no-agent-tests** Agents cannot run tests: h2-cargo gate + root watchdog kill unauthorized test/build processes (P0) — `gate.ops.no-agent-tests` — h2-cargo refuses test/build without H2_TECHLEAD=1 (AGENT_TEST_BLOCKED); scripts/agent_test_guard.sh killed simlane runner 17:13 (GUARD_KILL pid 15374/15375/15376); guard log present
 
 ### infra
 
@@ -221,6 +224,7 @@ _Done when:_ gate + capture/experience/ledger ids recorded
 ### tooling
 
 - [ ] **tooling.hud-generator-fix** HUD asset generator (wc3rust-hud-origin): emit numeral-free control-group tiles and exclude cursor art from console roles (P0) — `gate.ui.craft-floor`
+- [ ] **tooling.parity-oracle-tests** Wire scripts/tests/test_original_parity_oracles.py into test-all (14 offline oracle-parser tests) (P1) — `gate.h2.no-placeholders-costyl`
 - [x] **tooling.relax-dev-loop** Relax JIT integrated as an opencode2 dev-loop tool (P1) — `gate.relax.dev-loop-only` — plugin + build + run verified
 
 ### parity
