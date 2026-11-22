@@ -3,23 +3,23 @@
 Append-only. Bound to H2: a `done` row needs evidence (device screenshot, rc, trace).
 `python3 scripts/port_board.py sync` grows the board from gap map / criteria / operator bugs.
 
-**Total 158 · done 102 · doing 36 · todo 19 · blocked 1**
+**Total 167 · done 103 · doing 37 · todo 24 · blocked 3**
 
 ## Counts
 
 | section | done | doing | todo | blocked | total |
 |---|---:|---:|---:|---:|---:|
 | acceptance | 0 | 14 | 0 | 0 | 14 |
-| mechanics | 87 | 11 | 3 | 0 | 101 |
+| mechanics | 87 | 12 | 2 | 0 | 101 |
 | operator-bugs | 8 | 10 | 0 | 0 | 18 |
 | hud | 1 | 0 | 4 | 0 | 5 |
 | rendering | 0 | 0 | 2 | 0 | 2 |
 | input | 0 | 1 | 0 | 0 | 1 |
 | reference-runtime | 0 | 0 | 7 | 1 | 8 |
 | h2-binding | 3 | 0 | 1 | 0 | 4 |
-| infra | 1 | 0 | 1 | 0 | 2 |
+| infra | 2 | 0 | 1 | 0 | 3 |
 | tooling | 1 | 0 | 1 | 0 | 2 |
-| parity | 1 | 0 | 0 | 0 | 1 |
+| parity | 1 | 0 | 6 | 2 | 9 |
 
 ## Board
 
@@ -46,7 +46,7 @@ _Done when:_ FULL_PORT_CRITERIA row PASS + accept_full_port.sh
 
 _Done when:_ named mechanic test green + device evidence for the same behaviour
 
-- [ ] **mechanics.mechanic-tests-cache-stale** Mechanic-test gate cache is stale/red: 19 rows rc=101 (compile) vs board done (P0) — `gate.port.mechanic-test-coverage`
+- [~] **mechanics.mechanic-tests-cache-stale** Mechanic-test gate cache is stale/red: 19 rows rc=101 (compile) vs board done (P0) — `gate.port.mechanic-test-coverage` — analysis/tech-lead/mechanic_tests.json generated 2026-11-21 15:31 mode=run: 19/131 rows rc=101 (compile), e.g. pathing.water log tail 'could not compile wc3-game (lib test)'; board mechanics done=87; rerun run_mechanic_tests.sh (detached) and reconcile board statuses
 - [ ] **spawn.campaign-race** Campaign map spawns the player with the map/chapter race, not the skirmish menu race (Alliance peasants on Orc01) (P0) — `gate.port.mechanic-test-coverage`
 - [x] **abilities.classification** abilities.classification (P1) — `gate.port.mechanic-test-coverage` — wc3-re --lib `abilities_classification_covers_763_rows`
 - [x] **abilities.data** abilities.data (P1) — `gate.port.mechanic-test-coverage` — crates/wc3-sim/tests/abilities_execution.rs `abilities_execution_typed_re_classification_763`
@@ -216,6 +216,7 @@ _Done when:_ gate + capture/experience/ledger ids recorded
 
 - [x] **app.hud-pack-delivery** HUD pack is delivered to the app and loads (script install-hud-pack.sh) (P0) — `gate.ui.craft-floor` — commit fa021ff + HUD_PACK logs
 - [ ] **app.startup-exit** Process sometimes exits during init after GAME_AUDIO without FATAL/tombstone (P0) — `gate.port.mechanic-test-coverage` — logcat 2026-11-22
+- [x] **infra.apk-artifact-doc** Built APK path/naming documented for hud-input (build/android-p0/<type>/wc3rust-p0.apk) (P1) — `gate.repo.release-all-layers` — docs/TESTING.md '## The built APK: path, naming, install (HUD/input lanes)' + docs/ENGINE.md note; verified sha256 cdef59f9... == build/android-p0/release/build-manifest.json artifact.sha256, bytes 7714218
 
 ### tooling
 
@@ -224,5 +225,13 @@ _Done when:_ gate + capture/experience/ledger ids recorded
 
 ### parity
 
+- [ ] **parity.data-coverage** Data DB loaded from the retail War3.mpq with table rows counted independently (P0) — `gate.h2.real-game-oracle`
 - [x] **parity.real-archive-oracle** Retail War3.mpq byte oracle wired into the gate (P0) — `gate.h2.real-game-oracle` — 10523/10523 matched
+- [!] **parity.render-reference-frames** Terrain render parity needs a retail reference frame (headless Vulkan works) (P0) — `gate.h2.real-game-oracle` — terrain_edge rc=0 headless (vulkaninfo: instance 1.4.368, GPU0 Adreno vendor 0x5143), so no missing GPU; the missing oracle is a retail frame from the reference runtime (ref.trace-capture) to diff against; render lane owns device frames
+- [!] **parity.tft-archive** TFT archive byte parity: TFT_setup.mpq ships no listfile; War3x.mpq not extracted (P0) — `gate.h2.real-game-oracle` — TFT_setup.mpq 459222362 B magic MPQ\x1a, listfile names=0; War3x.mpq extraction needs its own owner (TFT stride 2352)
+- [ ] **parity.audio-defs** All 2530 SoundInfo defs: file coverage with correct DirectoryBase joining (P1) — `gate.port.parity-loop`
+- [ ] **parity.blp-corpus** All shipped BLP textures: our decoder header/mips vs independent BLP1 header (P1) — `gate.port.parity-loop`
+- [ ] **parity.map-placement** 44 shipped maps: W3E/WPM/W3I headers + doodad/unit placement vs independent parsers (P1) — `gate.port.parity-loop`
+- [ ] **parity.mdx-corpus** All shipped MDX models: chunk counts identical in our parser and independent chunk math (P1) — `gate.port.parity-loop`
+- [ ] **parity.pe-corpus** Every operator PE sample (War3.exe, Game.dll, Frozen Throne.exe) vs independent PE32 parser (P1) — `gate.port.parity-loop`
 

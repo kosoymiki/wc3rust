@@ -1590,11 +1590,101 @@
       "id": "mechanics.mechanic-tests-cache-stale",
       "section": "mechanics",
       "title": "Mechanic-test gate cache is stale/red: 19 rows rc=101 (compile) vs board done",
-      "status": "todo",
+      "status": "doing",
       "priority": "P0",
       "gate": "gate.port.mechanic-test-coverage",
-      "evidence": "",
+      "evidence": "analysis/tech-lead/mechanic_tests.json generated 2026-11-21 15:31 mode=run: 19/131 rows rc=101 (compile), e.g. pathing.water log tail 'could not compile wc3-game (lib test)'; board mechanics done=87; rerun run_mechanic_tests.sh (detached) and reconcile board statuses",
       "lane": "sim"
+    },
+    {
+      "id": "infra.apk-artifact-doc",
+      "section": "infra",
+      "title": "Built APK path/naming documented for hud-input (build/android-p0/<type>/wc3rust-p0.apk)",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.repo.release-all-layers",
+      "evidence": "docs/TESTING.md '## The built APK: path, naming, install (HUD/input lanes)' + docs/ENGINE.md note; verified sha256 cdef59f9... == build/android-p0/release/build-manifest.json artifact.sha256, bytes 7714218",
+      "lane": "infra"
+    },
+    {
+      "id": "parity.tft-archive",
+      "section": "parity",
+      "title": "TFT archive byte parity: TFT_setup.mpq ships no listfile; War3x.mpq not extracted",
+      "status": "blocked",
+      "priority": "P0",
+      "gate": "gate.h2.real-game-oracle",
+      "evidence": "TFT_setup.mpq 459222362 B magic MPQ\\x1a, listfile names=0; War3x.mpq extraction needs its own owner (TFT stride 2352)",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.data-coverage",
+      "section": "parity",
+      "title": "Data DB loaded from the retail War3.mpq with table rows counted independently",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.h2.real-game-oracle",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.mdx-corpus",
+      "section": "parity",
+      "title": "All shipped MDX models: chunk counts identical in our parser and independent chunk math",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.parity-loop",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.blp-corpus",
+      "section": "parity",
+      "title": "All shipped BLP textures: our decoder header/mips vs independent BLP1 header",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.parity-loop",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.map-placement",
+      "section": "parity",
+      "title": "44 shipped maps: W3E/WPM/W3I headers + doodad/unit placement vs independent parsers",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.parity-loop",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.audio-defs",
+      "section": "parity",
+      "title": "All 2530 SoundInfo defs: file coverage with correct DirectoryBase joining",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.parity-loop",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.pe-corpus",
+      "section": "parity",
+      "title": "Every operator PE sample (War3.exe, Game.dll, Frozen Throne.exe) vs independent PE32 parser",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.parity-loop",
+      "evidence": "",
+      "lane": "parity-data"
+    },
+    {
+      "id": "parity.render-reference-frames",
+      "section": "parity",
+      "title": "Terrain render parity needs a retail reference frame (headless Vulkan works)",
+      "status": "blocked",
+      "priority": "P0",
+      "gate": "gate.h2.real-game-oracle",
+      "evidence": "terrain_edge rc=0 headless (vulkaninfo: instance 1.4.368, GPU0 Adreno vendor 0x5143), so no missing GPU; the missing oracle is a retail frame from the reference runtime (ref.trace-capture) to diff against; render lane owns device frames",
+      "lane": "parity-data"
     }
   ]
 }
