@@ -57,6 +57,11 @@ construction (a compile-only run or one member cannot prove the layer matrix).
 `--self-test` proves the gate turns red on a deliberately failing member test and
 on a deliberately broken Orc01 run.
 
+A living-board gate runs before all of that: `scripts/port_board.py check` refuses
+a `done` row without evidence and fails when `PORT_BOARD.md` has drifted from the
+generator, and `pytest scripts/tests` proves the CLI keeps refusing; the workflow
+(`sync` / `sections` / `done --evidence` / `check`) is in `docs/TESTING.md`.
+
 Android APK — `scripts/build-native.sh` records which sources produced
 `libmain.so`; `scripts/build-apk.sh` refuses a stale library:
 
@@ -65,6 +70,10 @@ scripts/build-native.sh              # libmain.so + target/release/.libmain-inpu
 scripts/build-apk.sh --release       # -> build/android-p0/release/wc3rust-p0.apk
 scripts/build-apk.sh --debug         # -> build/android-p0/debug/wc3rust-p0.apk
 ```
+
+Both build types emit the same filename `wc3rust-p0.apk`: the directory selects
+the type, and the signed sha256 is recorded in
+`build/android-p0/<type>/build-manifest.json` (`artifact.sha256`).
 
 `build-native.sh` compiles through `scripts/h2-cargo` with the `--remap-path-prefix`
 rules from `.cargo/config.toml`, so no device path survives into the artifact, and

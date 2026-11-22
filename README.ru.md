@@ -57,6 +57,11 @@ scripts/test-all.sh                  # check + проверки Android-тарг
 доказывает, что гейт краснеет на намеренно падающем тесте члена и на намеренно
 сломанном прогоне Orc01.
 
+Перед всем этим идёт гейт живого борда: `scripts/port_board.py check` отказывает
+строке `done` без evidence и падает, когда `PORT_BOARD.md` разошёлся с генератором,
+а `pytest scripts/tests` доказывает, что CLI продолжает отказывать; порядок работы
+(`sync` / `sections` / `done --evidence` / `check`) описан в `docs/TESTING.md`.
+
 APK для Android — `scripts/build-native.sh` записывает, из каких исходников получен
 `libmain.so`; `scripts/build-apk.sh` отказывается упаковывать устаревшую библиотеку:
 
@@ -65,6 +70,9 @@ scripts/build-native.sh              # libmain.so + target/release/.libmain-inpu
 scripts/build-apk.sh --release       # -> build/android-p0/release/wc3rust-p0.apk
 scripts/build-apk.sh --debug         # -> build/android-p0/debug/wc3rust-p0.apk
 ```
+
+Оба типа сборки дают одно имя `wc3rust-p0.apk`: тип задаёт каталог, а подписанный
+sha256 записан в `build/android-p0/<type>/build-manifest.json` (`artifact.sha256`).
 
 `build-native.sh` собирает через `scripts/h2-cargo` с правилами `--remap-path-prefix` из
 `.cargo/config.toml`, поэтому путь устройства не попадает в артефакт, и перечитывает
