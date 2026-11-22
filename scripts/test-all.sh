@@ -378,7 +378,10 @@ fi
 # keeps refusing those cases.
 if [[ $DO_BOARD -eq 1 ]]; then
   run_job gate board python3 "$ROOT/scripts/port_board.py" check
-  run_job gate board_tests python3 -m pytest "$ROOT/scripts/tests" -q
+  # Scope: the board CLI's own suite. Other script tests under scripts/tests
+  # belong to their lanes' gates; this job must fail only for board reasons so
+  # attribution stays exact.
+  run_job gate board_tests python3 -m pytest "$ROOT/scripts/tests/test_port_board.py" -q
 else
   json '{"phase":"gate","job":"board","rc":null,"verdict":"skip","reason":"--no-board"}'
 fi

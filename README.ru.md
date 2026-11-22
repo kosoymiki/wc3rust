@@ -59,7 +59,7 @@ scripts/test-all.sh                  # check + проверки Android-тарг
 
 Перед всем этим идёт гейт живого борда: `scripts/port_board.py check` отказывает
 строке `done` без evidence и падает, когда `PORT_BOARD.md` разошёлся с генератором,
-а `pytest scripts/tests` доказывает, что CLI продолжает отказывать; порядок работы
+а `pytest scripts/tests/test_port_board.py` доказывает, что CLI продолжает отказывать; порядок работы
 (`sync` / `sections` / `done --evidence` / `check`) описан в `docs/TESTING.md`.
 
 APK для Android — `scripts/build-native.sh` записывает, из каких исходников получен

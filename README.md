@@ -59,7 +59,7 @@ on a deliberately broken Orc01 run.
 
 A living-board gate runs before all of that: `scripts/port_board.py check` refuses
 a `done` row without evidence and fails when `PORT_BOARD.md` has drifted from the
-generator, and `pytest scripts/tests` proves the CLI keeps refusing; the workflow
+generator, and `pytest scripts/tests/test_port_board.py` proves the CLI keeps refusing; the workflow
 (`sync` / `sections` / `done --evidence` / `check`) is in `docs/TESTING.md`.
 
 Android APK — `scripts/build-native.sh` records which sources produced

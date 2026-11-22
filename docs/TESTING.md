@@ -250,7 +250,7 @@ tree it was built from. One run executes, in order:
 
 | Phase | Command | Pass condition |
 |---|---|---|
-| living board | `scripts/port_board.py check` + `pytest scripts/tests` | JSON self-consistent, every `done` has evidence, `PORT_BOARD.md` byte-identical to the generator |
+| living board | `scripts/port_board.py check` + `pytest scripts/tests/test_port_board.py` | JSON self-consistent, every `done` has evidence, `PORT_BOARD.md` byte-identical to the generator |
 | workspace check | `cargo check --workspace` | rc=0 for every member from `cargo metadata` |
 | main menu | `tests/gates/menu-layout-gate.sh` | >= 6 tappable entries whose rects contain their tap points |
 | Orc01 chapter | `tests/gates/orc01-smoke.sh` | boots `Maps\Campaign\Orc01.w3m` headless, 3000 ticks, roster/quests/JASS/cutscene match |
