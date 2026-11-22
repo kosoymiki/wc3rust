@@ -160,20 +160,20 @@
       "id": "h2.board-maintenance",
       "section": "h2-binding",
       "title": "Board is synced every generation (scripts/port_board.py sync)",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
       "gate": "gate.port.mechanic-test-coverage",
-      "evidence": "",
+      "evidence": "test-all.sh phase 0: gate:board rc=0 (port_board.py check) + gate:board_tests rc=0 (pytest 10 passed); H2_SUMMARY_JSONL=$PREFIX/tmp/board-gate2.jsonl PASS passed=2; docs/TESTING.md 'Living port board gate' workflow sync/sections/done/check",
       "lane": "h2"
     },
     {
       "id": "h2.evidence-per-done",
       "section": "h2-binding",
       "title": "Every done item carries device/CLI evidence",
-      "status": "todo",
+      "status": "done",
       "priority": "P0",
       "gate": "gate.port.mechanic-test-coverage",
-      "evidence": "",
+      "evidence": "pytest scripts/tests 10 passed: done without --evidence -> rc=2 REFUSED and board bytes unchanged (test_done_without_evidence_is_refused); check fails done-without-evidence + blocked-without-reason (test_check_fails_on_*)",
       "lane": "h2"
     },
     {
@@ -1440,10 +1440,10 @@
       "id": "ref.fex",
       "section": "reference-runtime",
       "title": "FEX-Emu build for aarch64 that runs x86-64 Windows binaries",
-      "status": "todo",
+      "status": "blocked",
       "priority": "P0",
       "gate": "gate.port.full-parity-acceptance",
-      "evidence": "",
+      "evidence": "FEX-Emu/FEX release FEX-2611.1 has 0 assets (source-only); no Android prebuilt found in the release",
       "lane": "reference"
     },
     {
@@ -1505,6 +1505,96 @@
       "gate": "gate.relax.dev-loop-only",
       "evidence": "plugin + build + run verified",
       "lane": "tooling"
+    },
+    {
+      "id": "spawn.campaign-race",
+      "section": "mechanics",
+      "title": "Campaign map spawns the player with the map/chapter race, not the skirmish menu race (Alliance peasants on Orc01)",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "",
+      "lane": "sim"
+    },
+    {
+      "id": "render.aura-texture",
+      "section": "rendering",
+      "title": "Splat/aura quad renders white (missing texture) under units (Trall aura)",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "render"
+    },
+    {
+      "id": "ui.command-card-orc",
+      "section": "hud",
+      "title": "Command card is empty for selected Orc units (only ARMY/CMD visible)",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "",
+      "lane": "hud"
+    },
+    {
+      "id": "h2.background-tests-only",
+      "section": "h2-binding",
+      "title": "Tests and long commands are background-only (setsid + log rc)",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.ops.background-tests-only",
+      "evidence": "docs/TESTING.md 'Long commands are background-only' + test-all.sh header #10; lane630 runs port-parity-all detached (setsid pid 23736, log $PREFIX/tmp/lane630-parity-all.log; rc read from log)",
+      "lane": "h2"
+    },
+    {
+      "id": "ref.proton-aarch64",
+      "section": "reference-runtime",
+      "title": "GE-Proton11-12 aarch64 build downloaded (650 MB) and verified",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.fex-source-only",
+      "section": "reference-runtime",
+      "title": "FEX-Emu latest has no release assets (source only) — needs build or alternative",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.turnip-local",
+      "section": "reference-runtime",
+      "title": "Turnip driver is locally built in mesa-source and installed via scripts/setup-turnip.sh",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "tooling.hud-generator-fix",
+      "section": "tooling",
+      "title": "HUD asset generator (wc3rust-hud-origin): emit numeral-free control-group tiles and exclude cursor art from console roles",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "",
+      "lane": "hud"
+    },
+    {
+      "id": "mechanics.mechanic-tests-cache-stale",
+      "section": "mechanics",
+      "title": "Mechanic-test gate cache is stale/red: 19 rows rc=101 (compile) vs board done",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "",
+      "lane": "sim"
     }
   ]
 }

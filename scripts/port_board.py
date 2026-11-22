@@ -9,27 +9,41 @@ string, because the board is H2-bound: an item without evidence is not done.
 Usage:
   port_board.py status
   port_board.py sync
+  port_board.py check            # read-only gate: schema, evidence, md drift
+  port_board.py sections         # open P0 items (filters: --section/--priority/--status/--all)
   port_board.py add ID --section S --title T [--priority P0] [--gate G] [--lane L]
   port_board.py done ID --evidence "..."
   port_board.py doing ID [--evidence "..."]
   port_board.py block ID --evidence "reason"
   port_board.py todo ID
   port_board.py md
+
+Paths are overridable for tests/dry runs: PORT_BOARD_JSON, PORT_BOARD_MD,
+PORT_BOARD_GAP, PORT_BOARD_CRIT, PORT_BOARD_BUGS.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BOARD = ROOT / "analysis" / "tech-lead" / "PORT_BOARD.json"
-MD = ROOT / "analysis" / "tech-lead" / "PORT_BOARD.md"
-GAP = ROOT / "analysis" / "tech-lead" / "mechanics_gap_map.json"
-CRIT = ROOT / "analysis" / "tech-lead" / "FULL_PORT_CRITERIA.md"
-BUGS = ROOT / "analysis" / "agent-qa" / "operator-bugs" / "REPORT.md"
+
+
+def _env_path(name: str, default: Path) -> Path:
+    raw = os.environ.get(name)
+    return Path(raw).expanduser().resolve() if raw else default
+
+
+BOARD = _env_path("PORT_BOARD_JSON", ROOT / "analysis" / "tech-lead" / "PORT_BOARD.json")
+MD = _env_path("PORT_BOARD_MD", ROOT / "analysis" / "tech-lead" / "PORT_BOARD.md")
+GAP = _env_path("PORT_BOARD_GAP", ROOT / "analysis" / "tech-lead" / "mechanics_gap_map.json")
+CRIT = _env_path("PORT_BOARD_CRIT", ROOT / "analysis" / "tech-lead" / "FULL_PORT_CRITERIA.md")
+BUGS = _env_path("PORT_BOARD_BUGS", ROOT / "analysis" / "agent-qa" / "operator-bugs" / "REPORT.md")
 
 SECTIONS_ORDER = [
     "acceptance", "mechanics", "operator-bugs", "hud", "rendering", "input",
@@ -58,6 +72,10 @@ def add_item(data: dict, item: dict) -> bool:
 
 
 def write_md(data: dict) -> None:
+    MD.write_text(render_md(data), encoding="utf-8")
+
+
+def render_md(data: dict) -> str:
     sections: dict[str, list[dict]] = {}
     for it in data["items"]:
         sections.setdefault(it["section"], []).append(it)
@@ -87,12 +105,12 @@ def write_md(data: dict) -> None:
         if dod:
             lines += [f"_Done when:_ {dod}", ""]
         for it in sorted(sections[sec], key=lambda i: (i["priority"], i["id"])):
-            box = {"done": "x", "doing": "~", "todo": " ", "blocked": "!"}[it["status"]]
+            box = {"done": "x", "doing": "~", "todo": " ", "blocked": "!"}.get(it["status"], "?")
             gate = f" — `{it['gate']}`" if it.get("gate") else ""
             ev = f" — {it['evidence']}" if it.get("evidence") else ""
             lines.append(f"- [{box}] **{it['id']}** {it['title']} ({it['priority']}){gate}{ev}")
         lines.append("")
-    MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
 
 
 def cmd_status(data: dict, _args) -> int:
@@ -105,6 +123,104 @@ def cmd_status(data: dict, _args) -> int:
     for sec in sorted(counts):
         c = counts[sec]
         print(f"  {sec:<18} done={c['done']:<3} doing={c['doing']:<3} todo={c['todo']:<3} blocked={c['blocked']:<3}")
+    return 0
+
+
+REQUIRED_ITEM_KEYS = ("id", "section", "title", "status", "priority")
+VALID_STATUSES = ("done", "doing", "todo", "blocked")
+
+
+def cmd_check(data: dict, _args) -> int:
+    """Read-only gate: the board must be self-consistent and H2-honest.
+
+    Fails (rc=1) on: a malformed item, a duplicate id, an unknown status, a
+    `done` row without evidence, a `blocked` row without a reason, or a
+    PORT_BOARD.md that has drifted from what `sync`/`md` would render. The gate
+    never mutates the board: drift is reported, not repaired.
+    """
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    if not isinstance(data, dict) or data.get("schema") != "wc3rust-port-board-v1":
+        problems.append(f"schema: expected wc3rust-port-board-v1, got {data.get('schema')!r}")
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        print("BOARD_CHECK_FAIL schema: items is not a list")
+        return 1
+    for pos, it in enumerate(items):
+        if not isinstance(it, dict):
+            problems.append(f"item[{pos}]: not an object")
+            continue
+        missing = [k for k in REQUIRED_ITEM_KEYS if not str(it.get(k, "")).strip()]
+        if missing:
+            problems.append(f"item[{pos}] {it.get('id', '?')}: missing {','.join(missing)}")
+            continue
+        seen[it["id"]] = seen.get(it["id"], 0) + 1
+        if it["status"] not in VALID_STATUSES:
+            problems.append(f"{it['id']}: invalid status {it['status']!r}")
+        evidence = str(it.get("evidence") or "").strip()
+        if it["status"] == "done" and not evidence:
+            problems.append(f"{it['id']}: done without evidence (H2: no evidence => not done)")
+        if it["status"] == "blocked" and not evidence:
+            problems.append(f"{it['id']}: blocked without a reason in evidence")
+    for item_id, n in seen.items():
+        if n > 1:
+            problems.append(f"{item_id}: duplicate id x{n}")
+    if MD.is_file():
+        expected = render_md(data)
+        actual = MD.read_text(encoding="utf-8")
+        if actual != expected:
+            problems.append("PORT_BOARD.md is stale: run `python3 scripts/port_board.py md` (or sync) and commit")
+    else:
+        problems.append(f"{MD}: missing (run `port_board.py md`)")
+    counts = {k: sum(1 for i in items if i.get("status") == k) for k in VALID_STATUSES}
+    if problems:
+        print(f"BOARD_CHECK_FAIL problems={len(problems)} total={len(items)} "
+              f"done={counts['done']} doing={counts['doing']} todo={counts['todo']} blocked={counts['blocked']}")
+        for p in problems[:40]:
+            print(f"  FAIL {p}")
+        return 1
+    print(f"BOARD_CHECK_PASS total={len(items)} done={counts['done']} doing={counts['doing']} "
+          f"todo={counts['todo']} blocked={counts['blocked']}")
+    return 0
+
+
+def _csv(value: str) -> set[str] | None:
+    parts = {p.strip() for p in (value or "").split(",") if p.strip()}
+    if not parts or parts & {"all", "any", "*"}:
+        return None
+    return parts
+
+
+def cmd_sections(data: dict, args) -> int:
+    """List board items by section/priority/status (default: open P0 rows)."""
+    statuses = None if args.all else _csv(args.status)
+    priorities = _csv(args.priority)
+    sections = _csv(args.section)
+    sel = [
+        it for it in data["items"]
+        if (statuses is None or it["status"] in statuses)
+        and (priorities is None or it["priority"] in priorities)
+        and (sections is None or it["section"] in sections)
+    ]
+    order = [s for s in SECTIONS_ORDER if any(i["section"] == s for i in sel)]
+    order += sorted({i["section"] for i in sel} - set(order))
+    sel.sort(key=lambda i: (i["priority"], i["section"], i["id"]))
+    by_status = {k: sum(1 for i in sel if i["status"] == k) for k in VALID_STATUSES}
+    if args.json:
+        print(json.dumps({
+            "count": len(sel),
+            "filter": {"status": sorted(statuses) if statuses else "all",
+                       "priority": sorted(priorities) if priorities else "all",
+                       "section": sorted(sections) if sections else "all"},
+            "by_status": by_status, "items": sel,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    print(f"SECTIONS count={len(sel)} todo={by_status['todo']} doing={by_status['doing']} "
+          f"blocked={by_status['blocked']} done={by_status['done']}")
+    for sec in order:
+        print(f"{sec}")
+        for it in (i for i in sel if i["section"] == sec):
+            print(f"  {it['status']:<8}{it['priority']:<4}{it['id']:<12} {it['title'][:90]}")
     return 0
 
 
@@ -180,6 +296,15 @@ def main() -> int:
     for name in ("status", "sync", "md"):
         p = sub.add_parser(name)
         p.set_defaults(func=(cmd_status if name == "status" else cmd_sync if name == "sync" else (lambda d, a: (write_md(d), 0)[1])))
+    p = sub.add_parser("check", help="read-only consistency/evidence gate")
+    p.set_defaults(func=cmd_check)
+    p = sub.add_parser("sections", help="list items (default: open P0 rows)")
+    p.add_argument("--section", default="", help="comma list, e.g. hud,input (default all)")
+    p.add_argument("--priority", default="P0", help="comma list; 'all' disables (default P0)")
+    p.add_argument("--status", default="todo,doing,blocked", help="comma list; ignored with --all")
+    p.add_argument("--all", action="store_true", help="any status (overrides --status)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(func=cmd_sections)
     p = sub.add_parser("add")
     p.add_argument("id")
     p.add_argument("--section", required=True)

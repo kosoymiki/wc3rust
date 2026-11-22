@@ -132,6 +132,9 @@ PORT_PARITY=0 scripts/test-all.sh --check-only   # narrow run; parity skip is re
 scripts/build-native.sh
 scripts/build-apk.sh --release               # build/android-p0/release/wc3rust-p0.apk
 scripts/build-apk.sh --debug                 # build/android-p0/debug/wc3rust-p0.apk
+# Both build types emit the same filename; the directory is the build type.
+# The signed sha256 is recorded in build/android-p0/<type>/build-manifest.json;
+# install/verify/screenshot steps are in docs/TESTING.md.
 ```
 
 Device evidence:

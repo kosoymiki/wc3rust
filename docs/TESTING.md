@@ -196,6 +196,53 @@ black/white/pink/empty thumbnails. Contact sheets are written to
 `GALLERY_LIMIT=N` and `GALLERY_ONLY=models,icons,terrain` are smoke-run knobs.
 The gallery test is `#[ignore]` so it never slows the normal unit suite.
 
+## The built APK: path, naming, install (HUD/input lanes)
+
+`scripts/build-apk.sh` writes the signed package at a fixed path; the **directory
+encodes the build type, the filename never does**:
+
+| Build | Artifact |
+|---|---|
+| release | `build/android-p0/release/wc3rust-p0.apk` |
+| debug | `build/android-p0/debug/wc3rust-p0.apk` |
+
+Both files are named `wc3rust-p0.apk`, so never infer the build type from the name
+or copy one into the other's directory. The manifest and the signed hash live next
+to the APK: `build/android-p0/<type>/build-manifest.json` (`build_type`,
+`artifact.path`, `artifact.sha256`, `artifact.bytes`, plus the native and
+packaging input digests).
+
+```bash
+scripts/build-native.sh
+scripts/build-apk.sh --release            # -> build/android-p0/release/wc3rust-p0.apk
+sha256sum build/android-p0/release/wc3rust-p0.apk   # must equal build-manifest.json artifact.sha256
+su -c 'pm install -r build/android-p0/release/wc3rust-p0.apk'
+su -c 'am start -W -n org.wc3rust.p0/org.libsdl.app.SDLActivity'
+```
+
+Package `org.wc3rust.p0`, activity `org.libsdl.app.SDLActivity` (landscape,
+`singleTask`) — the same component `scripts/qa/device.py` starts, so a HUD/input
+change is verified with `scripts/qa-all.sh --fast --no-build` against the APK you
+just built. `scripts/release_security_summary.py` re-reads the signed APK and writes
+`dist/security-summary-{release,debug}.{json,txt}`; a device screenshot plus that
+summary is the evidence a hud/input board row needs before `done`.
+
+## Long commands are background-only
+
+Every long command in this document — `scripts/test-all.sh`,
+`scripts/port-parity-all.sh`, `scripts/build-native.sh`, `scripts/build-apk.sh`,
+`cargo test`, `pytest` — is launched detached with a log, and its rc is read back
+from that log (`gate.ops.background-tests-only`). A multi-minute foreground run
+blocks the session and the shared cargo slot; only a single bounded check under
+60 s may run in the foreground.
+
+```bash
+log="$PREFIX/tmp/test-all-$(date +%s).log"
+setsid bash -c 'scripts/test-all.sh; echo "TEST_ALL_RC=$?"' >"$log" 2>&1 </dev/null &
+# continue other work, then read the verdict from the log:
+tail -5 "$log"     # last line carries TEST_ALL_RC=<rc>
+```
+
 ## Workspace gate (`scripts/test-all.sh`)
 
 The device procedure above proves the shipped APK; `scripts/test-all.sh` proves the
@@ -203,6 +250,7 @@ tree it was built from. One run executes, in order:
 
 | Phase | Command | Pass condition |
 |---|---|---|
+| living board | `scripts/port_board.py check` + `pytest scripts/tests` | JSON self-consistent, every `done` has evidence, `PORT_BOARD.md` byte-identical to the generator |
 | workspace check | `cargo check --workspace` | rc=0 for every member from `cargo metadata` |
 | main menu | `tests/gates/menu-layout-gate.sh` | >= 6 tappable entries whose rects contain their tap points |
 | Orc01 chapter | `tests/gates/orc01-smoke.sh` | boots `Maps\Campaign\Orc01.w3m` headless, 3000 ticks, roster/quests/JASS/cutscene match |
@@ -217,13 +265,37 @@ usage/metadata, 3 when the filesystem cannot hold the next link step
 (`TEST_ALL_ABORT reason=disk`) — an aborted gate is not a member failure.
 
 Narrow debugging runs: `--only <member>`, `--no-check`, `--no-tests`,
-`--no-targets`, `--no-orc01`, `--no-menu`, `--no-parity`, and `PORT_PARITY=0`. A
+`--no-targets`, `--no-orc01`, `--no-menu`, `--no-parity`, `--no-board`, and
+`PORT_PARITY=0`. A
 skipped phase is recorded as SKIP with its reason in the JSONL, never as a PASS;
 `--check-only`, `--no-tests` and `--only` turn the port-parity loop off by
 construction because a single member or a compile-only run cannot prove the layer
 matrix. `--self-test` proves the gate can fail: it plants a failing test in a crate
 the old hand-written subset never ran and a deliberately broken Orc01 run, and
 requires both to turn the gate red.
+
+### Living port board gate
+
+`analysis/tech-lead/PORT_BOARD.json` is the single TODO surface for the 1:1 port
+(`analysis/tech-lead/PORT_FULL_GOAL.md`, DoD #9) and `PORT_BOARD.md` is generated
+from it — never edit either by hand. The workflow every generation follows:
+
+```bash
+python3 scripts/port_board.py sync       # grow from gap map / criteria / operator bugs (append-only)
+python3 scripts/port_board.py sections   # open P0 rows: what to do next (--section hud,input)
+python3 scripts/port_board.py done ID --evidence "crates/... test rc=0; device shot path"
+python3 scripts/port_board.py check      # gate: schema, evidence, md drift (read-only)
+```
+
+`done` without `--evidence` is refused with rc=2 and the board is not touched: an
+item without evidence is not done. `check` fails on a `done` row with an empty
+evidence field, a `blocked` row without a reason, an unknown status, a duplicate
+id, and a `PORT_BOARD.md` that differs by one byte from what `sync`/`md` renders.
+`scripts/test-all.sh` runs `check` and the board CLI's own pytest suite
+(`scripts/tests/test_port_board.py`, 10 tests: refusal, drift, duplicates,
+`sections` filters) as phase 0, so a hand-edited or unsynced board turns the
+workspace gate red. `--no-board` skips it only for a deliberate narrow run and the
+skip is recorded.
 
 The gate is single-slot by construction: `scripts/h2-cargo` serialises cargo
 through one flock and caps jobs at 2, so a full run queues behind any other lane's

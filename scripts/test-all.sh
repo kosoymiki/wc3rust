@@ -29,6 +29,16 @@
 #      >= 6 tappable entries whose declared rects contain their tap points
 #      (regression guard for the menu-dead-on-device defect).
 #
+#   9. The living port board (FULL PORT DoD #9) is a gate: `port_board.py check`
+#      proves the JSON is self-consistent, every `done` row carries evidence and
+#      PORT_BOARD.md is exactly what the generator renders (no hand edits), and
+#      `pytest scripts/tests` proves the board CLI enforces it. Read-only: the
+#      gate never mutates the board.
+#  10. Long runs are background-only (`gate.ops.background-tests-only`): launch
+#      this gate detached and read the rc from its log, e.g.
+#        setsid bash -c 'scripts/test-all.sh; echo rc=$?' >"$PREFIX/tmp/ta.log" 2>&1 &
+#      Only one bounded check under 60 s may run in the foreground.
+#
 # Usage:
 #   scripts/test-all.sh [options]
 #     --check-only          only `cargo check --workspace`
@@ -40,6 +50,9 @@
 #     --no-parity           skip the port-parity loop (also skipped by
 #                           --check-only, --no-tests and --only; every skip is
 #                           recorded in the JSONL with its reason)
+#     --no-board            skip the living-board gate (PORT_BOARD.json/md +
+#                           its unit tests; runs even under --check-only because
+#                           it is cheap and is FULL PORT DoD #9)
 #     --only m1,m2          restrict the test phase to these members
 #     --timeout SECONDS     per-job timeout (default 1800)
 #     --list                print members/exclusions as JSON and exit
@@ -111,6 +124,7 @@ DO_TARGETS=1
 DO_ORC01=1
 DO_MENU=1
 DO_PARITY=1
+DO_BOARD=1
 DO_SELF_TEST=0
 ONLY=""
 LIST=0
@@ -123,13 +137,14 @@ while [[ $# -gt 0 ]]; do
     --no-orc01) DO_ORC01=0 ;;
     --no-menu) DO_MENU=0 ;;
     --no-parity) DO_PARITY=0 ;;
+    --no-board) DO_BOARD=0 ;;
     --only) shift; ONLY="${1:-}" ;;
     --only=*) ONLY="${1#--only=}" ;;
     --timeout) shift; TIMEOUT_S="${1:-$TIMEOUT_S}" ;;
     --timeout=*) TIMEOUT_S="${1#--timeout=}" ;;
     --list) LIST=1 ;;
     --self-test) DO_SELF_TEST=1 ;;
-    -h|--help) sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "test-all: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -355,6 +370,19 @@ EOF
   exit 0
 fi
 
+# ---------------------------------------------------------------- phase 0
+# Living port board (FULL PORT DoD #9). `check` is read-only: it validates the
+# JSON shape, refuses a `done` row without evidence, and fails when
+# PORT_BOARD.md is not byte-identical to the generator output, so a hand edit or
+# an unsynced generation cannot pass the gate. The unit tests prove the CLI
+# keeps refusing those cases.
+if [[ $DO_BOARD -eq 1 ]]; then
+  run_job gate board python3 "$ROOT/scripts/port_board.py" check
+  run_job gate board_tests python3 -m pytest "$ROOT/scripts/tests" -q
+else
+  json '{"phase":"gate","job":"board","rc":null,"verdict":"skip","reason":"--no-board"}'
+fi
+
 # ---------------------------------------------------------------- phase 1
 
 if [[ $DO_CHECK -eq 1 ]]; then
@@ -411,6 +439,7 @@ if [[ $DO_MENU -eq 1 ]]; then
       '{phase:"gate",job:"menu",verdict:"metrics"} + $ARGS.named')"
   fi
 else
+  SKIPPED=$((SKIPPED + 1))
   json '{"phase":"gate","job":"menu","rc":null,"verdict":"skip","reason":"--no-menu/--check-only"}'
 fi
 
@@ -432,6 +461,7 @@ if [[ $DO_ORC01 -eq 1 ]]; then
       '{phase:"gate",job:"orc01",verdict:"metrics"} + $ARGS.named')"
   fi
 else
+  SKIPPED=$((SKIPPED + 1))
   json '{"phase":"gate","job":"orc01","rc":null,"verdict":"skip","reason":"--no-orc01/--check-only"}'
 fi
 
@@ -480,6 +510,7 @@ if [[ -z "$parity_reason" ]]; then
     echo "PORT_PARITY_FAIL (see /data/data/com.termux/files/usr/tmp/port-parity-all-*.json)" >&2
   fi
 else
+  SKIPPED=$((SKIPPED + 1))
   json "$(jq -cn --arg r "$parity_reason" '{phase:"port_parity",verdict:"skip",rc:null,reason:$r}')"
 fi
 
