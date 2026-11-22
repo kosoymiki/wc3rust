@@ -266,13 +266,18 @@ usage/metadata, 3 when the filesystem cannot hold the next link step
 
 Narrow debugging runs: `--only <member>`, `--no-check`, `--no-tests`,
 `--no-targets`, `--no-orc01`, `--no-menu`, `--no-parity`, `--no-board`, and
-`PORT_PARITY=0`. A
-skipped phase is recorded as SKIP with its reason in the JSONL, never as a PASS;
+`PORT_PARITY=0`. A skipped phase is recorded as SKIP with its reason in the JSONL,
+never as a PASS;
 `--check-only`, `--no-tests` and `--only` turn the port-parity loop off by
 construction because a single member or a compile-only run cannot prove the layer
 matrix. `--self-test` proves the gate can fail: it plants a failing test in a crate
 the old hand-written subset never ran and a deliberately broken Orc01 run, and
 requires both to turn the gate red.
+
+The gate is single-slot by construction: `scripts/h2-cargo` serialises cargo
+through one flock and caps jobs at 2, so a full run queues behind any other lane's
+build. Expect minutes, not seconds, on this device; a run that prints nothing for a
+long time is waiting for the cargo slot, not hung.
 
 ### Living port board gate
 
@@ -296,11 +301,6 @@ id, and a `PORT_BOARD.md` that differs by one byte from what `sync`/`md` renders
 `sections` filters) as phase 0, so a hand-edited or unsynced board turns the
 workspace gate red. `--no-board` skips it only for a deliberate narrow run and the
 skip is recorded.
-
-The gate is single-slot by construction: `scripts/h2-cargo` serialises cargo
-through one flock and caps jobs at 2, so a full run queues behind any other lane's
-build. Expect minutes, not seconds, on this device; a run that prints nothing for a
-long time is waiting for the cargo slot, not hung.
 
 ## Reliability playbook
 
