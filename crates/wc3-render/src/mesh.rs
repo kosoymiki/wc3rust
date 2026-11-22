@@ -1720,7 +1720,7 @@ impl MeshRenderer {
                         shader_index: palette_base as u64 + first_bone as u64,
                     });
                 }
-                if !legacy_contact() {
+                if !legacy_contact() && ground_shadow_enabled() {
                     push_ground_shadow(
                         vertex_scratch,
                         index_scratch,
@@ -2489,6 +2489,13 @@ fn push_ground_shadow(
         return;
     }
     let height = (geometry.max.y - geometry.min.y) * scale.y;
+    // A stray visible vertex (or a wrong model scale) must not paint half the
+    // map black: skip implausible blobs instead of drawing them.
+    if !half_x.is_finite() || !half_z.is_finite() || !height.is_finite()
+        || half_x > 2048.0 || half_z > 2048.0 || height > 4096.0
+    {
+        return;
+    }
     let centre_local = Vec3::new(
         (geometry.min.x + geometry.max.x) * 0.5,
         geometry.min.y,
@@ -2643,6 +2650,20 @@ const CONTACT_MIN_BAND: f32 = 6.0;
 /// height the shadow is pushed away from the sun, the world-unit lift above the
 /// model's base plane (prevents z-fighting with the terrain) and how far the blob
 /// spreads beyond the footprint.
+/// Dev switch: `H2_NO_GROUND_SHADOW=1` skips the blob shadow pass. It exists to
+/// bisect a frame where the shadow fan covers geometry (device 2026-11-22) and
+/// is documented next to the other H2_WORLD_ART_* switches.
+fn ground_shadow_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("H2_NO_GROUND_SHADOW").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
 const SHADOW_ALPHA: f32 = 0.40;
 const SHADOW_OFFSET: f32 = 0.22;
 const SHADOW_LIFT: f32 = 5.0;

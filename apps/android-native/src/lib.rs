@@ -1914,6 +1914,15 @@ fn run() -> Result<(), String> {
     let mut exposed = false;
     let mut input_events: Vec<InputEvent> = Vec::with_capacity(32);
     let mut taps = TapLatency::default();
+    // SDL on this device can deliver one physical touch as two FINGER_DOWN
+    // events in different coordinate spaces (measured 2026-11-22: x=1107,y=105
+    // and x=100,y=100, 16 ms apart for a single `input tap`). The game-side
+    // mirror guard compares positions, so a pair at different coords slipped
+    // through and taps resolved at the wrong point (minimap dead, picks missed).
+    // Pinch sends different finger ids, so keying on (id, time) drops only the
+    // mirrored copy.
+    let mut last_finger_down: Option<(i64, u64)> = None;
+    let mut finger_mirror_dropped = 0u64;
     let mut frames = 0u64;
     let mut last = Instant::now();
     let mut last_frame_at = Instant::now();
@@ -1964,10 +1973,26 @@ fn run() -> Result<(), String> {
                     needs_safe_area = true;
                 }
                 SDL_EVENT_FINGER_DOWN => {
+                    let id = event.finger_id();
+                    let stamp = event.timestamp_ns();
+                    let mirrored = last_finger_down.is_some_and(|(last_id, last_stamp)| {
+                        last_id == id
+                            && stamp.saturating_sub(last_stamp) <= 30_000_000
+                    });
+                    if mirrored {
+                        finger_mirror_dropped += 1;
+                        if finger_mirror_dropped <= 8 {
+                            log(&format!(
+                                "GAME_INPUT_MIRROR_DROPPED id={id} drops={finger_mirror_dropped}"
+                            ));
+                        }
+                        continue;
+                    }
+                    last_finger_down = Some((id, stamp));
                     let at = finger_pos(&event, &config);
-                    taps.down(event.timestamp_ns(), at);
+                    taps.down(stamp, at);
                     input_events.push(InputEvent::FingerDown {
-                        id: event.finger_id(),
+                        id,
                         pos: at,
                     });
                 }

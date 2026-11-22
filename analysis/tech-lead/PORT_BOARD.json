@@ -1,0 +1,1510 @@
+{
+  "schema": "wc3rust-port-board-v1",
+  "generated": "2026-11-22",
+  "source_artefacts": [
+    "analysis/tech-lead/mechanics_gap_map.json",
+    "analysis/tech-lead/FULL_PORT_CRITERIA.md",
+    "analysis/agent-qa/operator-bugs/REPORT.md",
+    "docs/RELAX.md"
+  ],
+  "definition_of_done": {
+    "mechanics": "named mechanic test green + device evidence for the same behaviour",
+    "acceptance": "FULL_PORT_CRITERIA row PASS + accept_full_port.sh",
+    "operator-bugs": "device screenshot showing the fixed behaviour",
+    "hud": "pack asset + layout verified on device at 2414x1080 and 1080x2414",
+    "reference-runtime": "reference trace captured and diffed against our build",
+    "h2-binding": "gate + capture/experience/ledger ids recorded"
+  },
+  "items": [
+    {
+      "id": "P0-1",
+      "section": "acceptance",
+      "title": "Asset coverage 100%: every listfile file parsed, 0 read failures",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-10",
+      "section": "acceptance",
+      "title": "UI/input parity: A/M/S/H/P, control groups 1–9, card, tooltips, minimap, **icons/labels**",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-11",
+      "section": "acceptance",
+      "title": "Audio parity: positional SFX/music, `underruns=0`, **each unit its own voice set**",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-12",
+      "section": "acceptance",
+      "title": "Rendering parity: MDX/BLP/W3E/water/cliffs rendered; art labelled honestly",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-13",
+      "section": "acceptance",
+      "title": "Determinism/replay: identical state hash across runs",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-14",
+      "section": "acceptance",
+      "title": "Per-mechanic tests: every PORTED row has a named passing test",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-2",
+      "section": "acceptance",
+      "title": "Object data consumed: units/weapons/upgrades/buffs 100% typed and used by the sim",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-3",
+      "section": "acceptance",
+      "title": "Ability execution: every ability row is either executable or explicitly classified data-only",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-4",
+      "section": "acceptance",
+      "title": "Map execution: **44/44** shipped maps boot (main + triggers) without crash",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-5",
+      "section": "acceptance",
+      "title": "Melee completeness: 4 races playable, 1v1–4v4 vs AI, expansion mines, upkeep tax",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-6",
+      "section": "acceptance",
+      "title": "Hero completeness: levels, skill points, attributes, items, drops, altar revive",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-7",
+      "section": "acceptance",
+      "title": "Items/shops/drops: all 273 items usable, drop tables, restock",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-8",
+      "section": "acceptance",
+      "title": "Save/load: full state round-trip, identical state hash",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "P0-9",
+      "section": "acceptance",
+      "title": "Multiplayer lockstep: 2 clients, deterministic, no desync",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "FULL_PORT_CRITERIA.md row",
+      "lane": "port"
+    },
+    {
+      "id": "h2.board-maintenance",
+      "section": "h2-binding",
+      "title": "Board is synced every generation (scripts/port_board.py sync)",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "",
+      "lane": "h2"
+    },
+    {
+      "id": "h2.evidence-per-done",
+      "section": "h2-binding",
+      "title": "Every done item carries device/CLI evidence",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "",
+      "lane": "h2"
+    },
+    {
+      "id": "h2.mechanic-gate-per-item",
+      "section": "h2-binding",
+      "title": "Every mechanics item names its mechanic test id",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "",
+      "lane": "h2"
+    },
+    {
+      "id": "ui.hud-pack-cursor-leak",
+      "section": "hud",
+      "title": "cursor_attack art is drawn as a console element",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "screenshot 2026-11-22",
+      "lane": "ui"
+    },
+    {
+      "id": "ui.hud-pack-group-numeral",
+      "section": "hud",
+      "title": "HUD pack control-group art has a baked numeral '1' (all tiles look like 1)",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "control_group_button_active_44.png",
+      "lane": "ui"
+    },
+    {
+      "id": "ui.menu-overflow-fix",
+      "section": "hud",
+      "title": "Main menu entries fit the panel on 2414x1080",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "device screenshot 2026-11-22",
+      "lane": "ui"
+    },
+    {
+      "id": "ui.minimap-hit-rect",
+      "section": "hud",
+      "title": "Minimap touch target does not match the drawn ornament",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "test evidence string",
+      "lane": "ui"
+    },
+    {
+      "id": "app.hud-pack-delivery",
+      "section": "infra",
+      "title": "HUD pack is delivered to the app and loads (script install-hud-pack.sh)",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "commit fa021ff + HUD_PACK logs",
+      "lane": "infra"
+    },
+    {
+      "id": "app.startup-exit",
+      "section": "infra",
+      "title": "Process sometimes exits during init after GAME_AUDIO without FATAL/tombstone",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "logcat 2026-11-22",
+      "lane": "infra"
+    },
+    {
+      "id": "ui.touch-mirror-dedup",
+      "section": "input",
+      "title": "One physical tap delivered as two FINGER_DOWN events in different coordinate spaces",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "native de-dup patched; device verify pending",
+      "lane": "input"
+    },
+    {
+      "id": "abilities.classification",
+      "section": "mechanics",
+      "title": "abilities.classification",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-re --lib `abilities_classification_covers_763_rows`",
+      "lane": "sim"
+    },
+    {
+      "id": "abilities.data",
+      "section": "mechanics",
+      "title": "abilities.data",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/abilities_execution.rs `abilities_execution_typed_re_classification_763`",
+      "lane": "sim"
+    },
+    {
+      "id": "abilities.targeting",
+      "section": "mechanics",
+      "title": "abilities.targeting",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/abilities.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "ai.race_builds_and_expands",
+      "section": "mechanics",
+      "title": "ai.race_builds_and_expands",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test ai_race `ai_race_builds_and_expands`",
+      "lane": "sim"
+    },
+    {
+      "id": "ai.skirmish",
+      "section": "mechanics",
+      "title": "ai.skirmish",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/ai.rs (6)",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.anim.ingame",
+      "section": "mechanics",
+      "title": "assets.anim.ingame",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-anim --test assets_anim_ingame",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.anim.sequences",
+      "section": "mechanics",
+      "title": "assets.anim.sequences",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-anim --test assets_anim_sequences",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.anim.skinning",
+      "section": "mechanics",
+      "title": "assets.anim.skinning",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-anim --test assets_anim_skinning",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.models",
+      "section": "mechanics",
+      "title": "assets.models",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game/tests/anim_check.rs, anim_all_units.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.models.all-units",
+      "section": "mechanics",
+      "title": "assets.models.all-units",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-anim --test assets_models",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.mpq",
+      "section": "mechanics",
+      "title": "assets.mpq",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-re manifest tests (4)",
+      "lane": "sim"
+    },
+    {
+      "id": "assets.terrain",
+      "section": "mechanics",
+      "title": "assets.terrain",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game/tests/terrain_tiles.rs, terrain_render (16)",
+      "lane": "sim"
+    },
+    {
+      "id": "audio.engine",
+      "section": "mechanics",
+      "title": "audio.engine",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "cargo test -p wc3-audio (35 passed) + device 19 samples underruns=0",
+      "lane": "sim"
+    },
+    {
+      "id": "audio.events",
+      "section": "mechanics",
+      "title": "audio.events",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "cargo test -p wc3-audio `audio_events_*`",
+      "lane": "sim"
+    },
+    {
+      "id": "buildings.construction",
+      "section": "mechanics",
+      "title": "buildings.construction",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/production.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "buildings.exit",
+      "section": "mechanics",
+      "title": "buildings.exit",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/melee_spawn.rs `trained_units_leave_the_producer_footprint`",
+      "lane": "sim"
+    },
+    {
+      "id": "buildings.footprint",
+      "section": "mechanics",
+      "title": "buildings.footprint",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/melee_spawn.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "buildings.rally",
+      "section": "mechanics",
+      "title": "buildings.rally",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/production.rs (10)",
+      "lane": "sim"
+    },
+    {
+      "id": "campaign.flow",
+      "section": "mechanics",
+      "title": "campaign.flow",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-game --test campaign (campaign_mission_load, campaign_quest_log, campaign_progress_persists, campaign_chapter_order, campaign_cutscene_decodable)",
+      "lane": "sim"
+    },
+    {
+      "id": "combat.attack-speed",
+      "section": "mechanics",
+      "title": "combat.attack-speed",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/combat.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "combat.buffs",
+      "section": "mechanics",
+      "title": "combat.buffs",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `combat_buffs_data`",
+      "lane": "sim"
+    },
+    {
+      "id": "combat.damage-table",
+      "section": "mechanics",
+      "title": "combat.damage-table",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/combat.rs (10)",
+      "lane": "sim"
+    },
+    {
+      "id": "combat.projectiles",
+      "section": "mechanics",
+      "title": "combat.projectiles",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/projectiles_items.rs (5)",
+      "lane": "sim"
+    },
+    {
+      "id": "creeps.camps",
+      "section": "mechanics",
+      "title": "creeps.camps",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/melee_spawn.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "creeps.creep-jacking",
+      "section": "mechanics",
+      "title": "creeps.creep-jacking",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/melee_spawn.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "cutscenes.data",
+      "section": "mechanics",
+      "title": "cutscenes.data",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-re cutscenes tests (3)",
+      "lane": "sim"
+    },
+    {
+      "id": "cutscenes.playback",
+      "section": "mechanics",
+      "title": "cutscenes.playback",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-re --lib `cutscenes_data_44_maps`",
+      "lane": "sim"
+    },
+    {
+      "id": "daynight",
+      "section": "mechanics",
+      "title": "daynight",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "none dedicated",
+      "lane": "sim"
+    },
+    {
+      "id": "determinism",
+      "section": "mechanics",
+      "title": "determinism",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/determinism.rs (3)",
+      "lane": "sim"
+    },
+    {
+      "id": "economy.gold",
+      "section": "mechanics",
+      "title": "economy.gold",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/economy.rs (10)",
+      "lane": "sim"
+    },
+    {
+      "id": "economy.lumber",
+      "section": "mechanics",
+      "title": "economy.lumber",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/economy.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "economy.repair",
+      "section": "mechanics",
+      "title": "economy.repair",
+      "status": "todo",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "none",
+      "lane": "sim"
+    },
+    {
+      "id": "economy.supply",
+      "section": "mechanics",
+      "title": "economy.supply",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/production.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "economy.upkeep",
+      "section": "mechanics",
+      "title": "economy.upkeep",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/upkeep.rs `upkeep_tax_boundaries_50_80`",
+      "lane": "sim"
+    },
+    {
+      "id": "fog.visibility",
+      "section": "mechanics",
+      "title": "fog.visibility",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "none dedicated",
+      "lane": "sim"
+    },
+    {
+      "id": "heroes.attributes",
+      "section": "mechanics",
+      "title": "heroes.attributes",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim --test heroes heroes_attributes_scale_with_level",
+      "lane": "sim"
+    },
+    {
+      "id": "heroes.leveling",
+      "section": "mechanics",
+      "title": "heroes.leveling",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/heroes.rs `heroes_skill_points_ultimate_at_6`",
+      "lane": "sim"
+    },
+    {
+      "id": "heroes.revive",
+      "section": "mechanics",
+      "title": "heroes.revive",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/heroes.rs `heroes_revive_altar_700g_150s`",
+      "lane": "sim"
+    },
+    {
+      "id": "heroes.xp",
+      "section": "mechanics",
+      "title": "heroes.xp",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/gameplay_config.rs (2)",
+      "lane": "sim"
+    },
+    {
+      "id": "input.idle-gate",
+      "section": "mechanics",
+      "title": "input.idle-gate",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/input_idle_gate.rs (5)",
+      "lane": "sim"
+    },
+    {
+      "id": "items.data",
+      "section": "mechanics",
+      "title": "items.data",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `items_data_rows`",
+      "lane": "sim"
+    },
+    {
+      "id": "items.drops",
+      "section": "mechanics",
+      "title": "items.drops",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `items_drops`",
+      "lane": "sim"
+    },
+    {
+      "id": "items.shops",
+      "section": "mechanics",
+      "title": "items.shops",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `items_shops`",
+      "lane": "sim"
+    },
+    {
+      "id": "items.usable",
+      "section": "mechanics",
+      "title": "items.usable",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `items_usable`",
+      "lane": "sim"
+    },
+    {
+      "id": "maps.boot",
+      "section": "mechanics",
+      "title": "maps.boot",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-re --lib `maps_boot_matrix_44_of_44`",
+      "lane": "sim"
+    },
+    {
+      "id": "maps.jass.natives",
+      "section": "mechanics",
+      "title": "maps.jass.natives",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-re --lib `maps_jass_natives_cover_called_set`",
+      "lane": "sim"
+    },
+    {
+      "id": "maps.unit-placement",
+      "section": "mechanics",
+      "title": "maps.unit-placement",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-game --test world_maps `maps_unit_placement`",
+      "lane": "sim"
+    },
+    {
+      "id": "melee.matrix",
+      "section": "mechanics",
+      "title": "melee.matrix",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test melee_matrix `melee_matrix_4_races_sizes_1_4`",
+      "lane": "sim"
+    },
+    {
+      "id": "melee.race_human",
+      "section": "mechanics",
+      "title": "melee.race_human",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test melee_races `melee_race_human`",
+      "lane": "sim"
+    },
+    {
+      "id": "melee.race_nightelf",
+      "section": "mechanics",
+      "title": "melee.race_nightelf",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test melee_races `melee_race_nightelf`",
+      "lane": "sim"
+    },
+    {
+      "id": "melee.race_orc",
+      "section": "mechanics",
+      "title": "melee.race_orc",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test melee_races `melee_race_orc`",
+      "lane": "sim"
+    },
+    {
+      "id": "melee.race_undead",
+      "section": "mechanics",
+      "title": "melee.race_undead",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test melee_races `melee_race_undead`",
+      "lane": "sim"
+    },
+    {
+      "id": "movement.collision",
+      "section": "mechanics",
+      "title": "movement.collision",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/melee_spawn.rs (3)",
+      "lane": "sim"
+    },
+    {
+      "id": "movement.speed-clamp",
+      "section": "mechanics",
+      "title": "movement.speed-clamp",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/physics_1v1.rs (4), tests/movement.rs (14)",
+      "lane": "sim"
+    },
+    {
+      "id": "movement.turn-rate",
+      "section": "mechanics",
+      "title": "movement.turn-rate",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/physics_1v1.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "net.desync",
+      "section": "mechanics",
+      "title": "net.desync",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test multiplayer `net_desync`",
+      "lane": "sim"
+    },
+    {
+      "id": "net.lockstep",
+      "section": "mechanics",
+      "title": "net.lockstep",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test multiplayer `net_lockstep`",
+      "lane": "sim"
+    },
+    {
+      "id": "net.multiplayer",
+      "section": "mechanics",
+      "title": "net.multiplayer",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test multiplayer",
+      "lane": "sim"
+    },
+    {
+      "id": "net.replay",
+      "section": "mechanics",
+      "title": "net.replay",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test multiplayer `net_replay`",
+      "lane": "sim"
+    },
+    {
+      "id": "pathing.flow-field",
+      "section": "mechanics",
+      "title": "pathing.flow-field",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/movement.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "pathing.water",
+      "section": "mechanics",
+      "title": "pathing.water",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game/src/sim_bridge.rs `water_tests` (2)",
+      "lane": "sim"
+    },
+    {
+      "id": "pathing.water.maps",
+      "section": "mechanics",
+      "title": "pathing.water.maps",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-game --test world_maps `pathing_water_maps`",
+      "lane": "sim"
+    },
+    {
+      "id": "pathing.wpm",
+      "section": "mechanics",
+      "title": "pathing.wpm",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-formats wpm tests (2) + wc3-sim tests/movement.rs (14)",
+      "lane": "sim"
+    },
+    {
+      "id": "persistence.save",
+      "section": "mechanics",
+      "title": "persistence.save",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test save_load",
+      "lane": "sim"
+    },
+    {
+      "id": "production.queue",
+      "section": "mechanics",
+      "title": "production.queue",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/production.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "production.tech-tree",
+      "section": "mechanics",
+      "title": "production.tech-tree",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/roster.rs (6)",
+      "lane": "sim"
+    },
+    {
+      "id": "recomp.cpu-model",
+      "section": "mechanics",
+      "title": "recomp.cpu-model",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-guest/tests/recomp_cpu.rs (13)",
+      "lane": "sim"
+    },
+    {
+      "id": "recomp.flags",
+      "section": "mechanics",
+      "title": "recomp.flags",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-guest/tests/recomp_cpu.rs `recomp_flags_*`",
+      "lane": "sim"
+    },
+    {
+      "id": "recomp.hle-abi",
+      "section": "mechanics",
+      "title": "recomp.hle-abi",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-guest/tests/recomp_hle_abi.rs (8)",
+      "lane": "sim"
+    },
+    {
+      "id": "recomp.layout",
+      "section": "mechanics",
+      "title": "recomp.layout",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-guest/tests/recomp_layout.rs (5)",
+      "lane": "sim"
+    },
+    {
+      "id": "recomp.pe32",
+      "section": "mechanics",
+      "title": "recomp.pe32",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-guest/tests/recomp_pe32.rs (4) + examples/pe_inspect.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.native",
+      "section": "mechanics",
+      "title": "rendering.native",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `rendering_native_scale_math`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.perf",
+      "section": "mechanics",
+      "title": "rendering.perf",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `rendering_perf_deterministic_budget`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.terrain.cliffs",
+      "section": "mechanics",
+      "title": "rendering.terrain.cliffs",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-game --lib terrain_render `rendering_terrain_cliffs`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.terrain.mips",
+      "section": "mechanics",
+      "title": "rendering.terrain.mips",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `rendering_terrain_mips_seam_metric`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.terrain.water-plane",
+      "section": "mechanics",
+      "title": "rendering.terrain.water-plane",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-game --lib terrain_render `rendering_terrain_water_plane`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.units",
+      "section": "mechanics",
+      "title": "rendering.units",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `rendering_units_material_resolution`",
+      "lane": "sim"
+    },
+    {
+      "id": "rendering.water",
+      "section": "mechanics",
+      "title": "rendering.water",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `rendering_water_slk_shoreline_invariants`",
+      "lane": "sim"
+    },
+    {
+      "id": "save.load",
+      "section": "mechanics",
+      "title": "save.load",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test save_load",
+      "lane": "sim"
+    },
+    {
+      "id": "save.versioning",
+      "section": "mechanics",
+      "title": "save.versioning",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test save_load `save_versioning`",
+      "lane": "sim"
+    },
+    {
+      "id": "script.jass",
+      "section": "mechanics",
+      "title": "script.jass",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game/src/sim_bridge.rs (14), map_runtime_campaign_script_boots",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.command-card",
+      "section": "mechanics",
+      "title": "ui.command-card",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game `hud::` (24), mobile_hud (20)",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.fdf.frames",
+      "section": "mechanics",
+      "title": "ui.fdf.frames",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --test ui_fdf `ui_fdf_frames_six_screens_from_shipped_definitions`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.fonts",
+      "section": "mechanics",
+      "title": "ui.fonts",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --test ui_fdf `ui_fonts_shipped_frizqt_covers_latin_and_cyrillic`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.groups.tab",
+      "section": "mechanics",
+      "title": "ui.groups.tab",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/ui_groups_tab.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.hotkeys",
+      "section": "mechanics",
+      "title": "ui.hotkeys",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/{ui_hotkeys,ui_hotkeys_remap}.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.layout",
+      "section": "mechanics",
+      "title": "ui.layout",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --test ui_fdf `ui_layout_anchors_three_resolutions_without_overflow`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.menu",
+      "section": "mechanics",
+      "title": "ui.menu",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `ui_menu_*`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.minimap",
+      "section": "mechanics",
+      "title": "ui.minimap",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game `hud::` + terrain_render (16)",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.minimap.orders",
+      "section": "mechanics",
+      "title": "ui.minimap.orders",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/ui_minimap_orders.rs + minimap-orders.trace",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.orders.targeting",
+      "section": "mechanics",
+      "title": "ui.orders.targeting",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/ui_orders_targeting.rs + orders-targeting.trace",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.patrol",
+      "section": "mechanics",
+      "title": "ui.patrol",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-sim/tests/movement.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.resources",
+      "section": "mechanics",
+      "title": "ui.resources",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --lib `ui_resources_*` + `economy_upkeep_ui_*`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.selection",
+      "section": "mechanics",
+      "title": "ui.selection",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/{ui_selection_double,ui_selection_add}.rs",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.text",
+      "section": "mechanics",
+      "title": "ui.text",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game --test ui_fdf `ui_text_labels_resolve_from_shipped_stringlist`",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.tooltips",
+      "section": "mechanics",
+      "title": "ui.tooltips",
+      "status": "doing",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-game/src/mobile_hud.rs (20)",
+      "lane": "sim"
+    },
+    {
+      "id": "ui.trace",
+      "section": "mechanics",
+      "title": "ui.trace",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-input/tests/ui_trace.rs + 5 fixtures --check",
+      "lane": "sim"
+    },
+    {
+      "id": "upgrades",
+      "section": "mechanics",
+      "title": "upgrades",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "crates/wc3-data/tests/data_tables.rs `upgrades_data_rows`",
+      "lane": "sim"
+    },
+    {
+      "id": "upgrades.execution",
+      "section": "mechanics",
+      "title": "upgrades.execution",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.port.mechanic-test-coverage",
+      "evidence": "wc3-sim --test upgrades_execution",
+      "lane": "sim"
+    },
+    {
+      "id": "opbug-1",
+      "section": "operator-bugs",
+      "title": "Units cannot move across the map",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-10",
+      "section": "operator-bugs",
+      "title": "No build ghost / validity",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-11",
+      "section": "operator-bugs",
+      "title": "Hall foundation raised, model stretched",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-12",
+      "section": "operator-bugs",
+      "title": "All buildings share one texture",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-13",
+      "section": "operator-bugs",
+      "title": "Every unit must have its own voice",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-14",
+      "section": "operator-bugs",
+      "title": "Terrain looks bad",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-15",
+      "section": "operator-bugs",
+      "title": "Pink/magenta triangles on screen",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-16",
+      "section": "operator-bugs",
+      "title": "Trees/doodads absent on the melee map",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-17",
+      "section": "operator-bugs",
+      "title": "Fog/overlay washes the map",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-18",
+      "section": "operator-bugs",
+      "title": "Card labels truncated (KA3, DP..)",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-2",
+      "section": "operator-bugs",
+      "title": "Do not generate a map, take the ready one from the library",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-3",
+      "section": "operator-bugs",
+      "title": "Units stuck in textures",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-4",
+      "section": "operator-bugs",
+      "title": "Voicing: peasant sounds like an orc",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-5",
+      "section": "operator-bugs",
+      "title": "No build menu for the worker",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-6",
+      "section": "operator-bugs",
+      "title": "Ugly dialogs; empty top strip",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-7",
+      "section": "operator-bugs",
+      "title": "No active army panel",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-8",
+      "section": "operator-bugs",
+      "title": "No normal hotkeys / not all abilities",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "opbug-9",
+      "section": "operator-bugs",
+      "title": "HUD is bad",
+      "status": "doing",
+      "priority": "P0",
+      "gate": "gate.ui.craft-floor",
+      "evidence": "analysis/agent-qa/operator-bugs/REPORT.md",
+      "lane": "qa"
+    },
+    {
+      "id": "parity.real-archive-oracle",
+      "section": "parity",
+      "title": "Retail War3.mpq byte oracle wired into the gate",
+      "status": "done",
+      "priority": "P0",
+      "gate": "gate.h2.real-game-oracle",
+      "evidence": "10523/10523 matched",
+      "lane": "parity"
+    },
+    {
+      "id": "ref.fex",
+      "section": "reference-runtime",
+      "title": "FEX-Emu build for aarch64 that runs x86-64 Windows binaries",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.parity-diff",
+      "section": "reference-runtime",
+      "title": "Diff Rust behaviour vs reference trace and file every mismatch",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.proton",
+      "section": "reference-runtime",
+      "title": "Wine/Proton runtime on Termux (or proot) able to launch WC3 1.27",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.trace-capture",
+      "section": "reference-runtime",
+      "title": "Capture reference behaviour (state/menus/economy) for diffing",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "ref.wc3-install",
+      "section": "reference-runtime",
+      "title": "Run the operator's WC3 install under the reference runtime",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "",
+      "lane": "reference"
+    },
+    {
+      "id": "render.terrain-black",
+      "section": "rendering",
+      "title": "Terrain renders black patches and a flat untextured polygon on device",
+      "status": "todo",
+      "priority": "P0",
+      "gate": "gate.port.full-parity-acceptance",
+      "evidence": "screenshots 2026-11-22",
+      "lane": "render"
+    },
+    {
+      "id": "tooling.relax-dev-loop",
+      "section": "tooling",
+      "title": "Relax JIT integrated as an opencode2 dev-loop tool",
+      "status": "done",
+      "priority": "P1",
+      "gate": "gate.relax.dev-loop-only",
+      "evidence": "plugin + build + run verified",
+      "lane": "tooling"
+    }
+  ]
+}
